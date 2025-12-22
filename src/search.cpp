@@ -64,7 +64,7 @@ constexpr int SINGULAR_MARGIN = 64;   // Score margin for singularity
 // ============================================================================
 
 Search::Search() : stopped(false), searching(false), rootBestMove(MOVE_NONE),
-                   rootPonderMove(MOVE_NONE), rootDepth(0), optimumTime(0),
+                   rootPonderMove(MOVE_NONE), rootDepth(0), rootPly(0), optimumTime(0),
                    maximumTime(0), previousMove(MOVE_NONE) {
     static bool lmr_initialized = false;
     if (!lmr_initialized) {
@@ -204,6 +204,7 @@ bool Search::should_stop() const {
 
 void Search::iterative_deepening(Board& board) {
     rootBestMove = MOVE_NONE;
+    rootPly = board.game_ply();  // Store starting ply for relative ply calculation
     int alpha = -VALUE_INFINITE;
     int beta = VALUE_INFINITE;
     int score = 0;
@@ -293,8 +294,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     const bool pvNode = (beta - alpha) > 1;
     // rootNode removed - was unused (warning fix)
 
+    // Calculate relative ply from root position (not absolute game ply)
+    int ply = board.game_ply() - rootPly;
+
     // Update selective depth
-    int ply = board.game_ply();
     if (ply > searchStats.selDepth) {
         searchStats.selDepth = ply;
     }
@@ -705,7 +708,8 @@ int Search::qsearch(Board& board, int alpha, int beta) {
 
     if (stopped) return 0;
 
-    int ply = board.game_ply();
+    // Calculate relative ply from root position
+    int ply = board.game_ply() - rootPly;
     bool inCheck = board.in_check();
 
     // Stand pat

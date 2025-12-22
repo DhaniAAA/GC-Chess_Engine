@@ -186,6 +186,7 @@ private:
     Move rootBestMove;
     Move rootPonderMove;
     int rootDepth;
+    int rootPly;  // Starting ply for relative ply calculation
 
     // Time management
     std::chrono::steady_clock::time_point startTime;
