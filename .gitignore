@@ -6,11 +6,11 @@
 *.lo
 *.o
 *.obj
-
+*.pgn
 # Precompiled Headers
 *.gch
 *.pch
-
+/cutechess
 # Linker files
 *.ilk
 *.txt

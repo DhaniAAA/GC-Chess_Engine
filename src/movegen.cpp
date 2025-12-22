@@ -296,14 +296,28 @@ void MoveGen::generate_evasions(const Board& board, MoveList& moves) {
 // Legality Checking
 // ============================================================================
 
+// File: src/movegen.cpp
+
 bool MoveGen::is_legal(const Board& board, Move m) {
+    if (m.is_none()) return false; // Safety check
+
     Color us = board.side_to_move();
-    Color them = ~us;
     Square from = m.from();
     Square to = m.to();
+
+    Piece pc = board.piece_on(from);
+    if (pc == NO_PIECE || color_of(pc) != us) {
+        return false;
+    }
+
+    if (board.pieces(us) & to) {
+        return false;
+    }
+
+    Color them = ~us;
     Square ksq = board.king_square(us);
 
-    // En passant is tricky - can uncover check on the same rank
+    // En passant is tricky...
     if (m.is_enpassant()) {
         Square captured_sq = to - pawn_push(us);
         Bitboard occupied = (board.pieces() ^ from ^ captured_sq) | to;

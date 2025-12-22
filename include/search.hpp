@@ -60,14 +60,27 @@ struct PVLine {
     int length = 0;
     Move moves[MAX_PLY];
 
-    void clear() { length = 0; }
+    // Clear the PV line - also reset a few moves to prevent stale data
+    void clear() {
+        length = 0;
+        // Clear first few moves to prevent stale ponder moves
+        for (int i = 0; i < 4 && i < MAX_PLY; ++i) {
+            moves[i] = MOVE_NONE;
+        }
+    }
 
     void update(Move m, const PVLine& child) {
         moves[0] = m;
+        int newLen = 1;
         for (int i = 0; i < child.length && i + 1 < MAX_PLY; ++i) {
             moves[i + 1] = child.moves[i];
+            newLen++;
         }
-        length = child.length + 1;
+        // Clear any old moves beyond the new length to prevent stale data
+        for (int i = newLen; i < length && i < MAX_PLY; ++i) {
+            moves[i] = MOVE_NONE;
+        }
+        length = newLen;
     }
 
     std::string to_string() const {
@@ -98,6 +111,7 @@ struct SearchStack {
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;  // Was null move tried at this node?
+    ContinuationHistoryEntry* contHistory;  // Pointer to continuation history entry for this move
 };
 
 // ============================================================================
@@ -160,7 +174,8 @@ private:
     int search(Board& board, int alpha, int beta, int depth, bool cutNode);
 
     // Quiescence search
-    int qsearch(Board& board, int alpha, int beta);
+    // qsDepth: 0 = normal qsearch, > 0 = also search quiet checks
+    int qsearch(Board& board, int alpha, int beta, int qsDepth = 0);
 
 
     // Time management
@@ -175,6 +190,7 @@ private:
     KillerTable killers;
     CounterMoveTable counterMoves;
     HistoryTable history;
+    ContinuationHistory contHistory;  // Continuation history (1-ply and 2-ply ago tracking)
 
     // Search state
     std::atomic<bool> stopped;

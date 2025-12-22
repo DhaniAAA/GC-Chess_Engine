@@ -165,8 +165,11 @@ bool SEE::see_ge(const Board& board, Move m, int threshold) {
 
 MovePicker::MovePicker(const Board& b, Move tt, int p,
                        const KillerTable& kt, const CounterMoveTable& cm,
-                       const HistoryTable& ht, Move prevMove)
+                       const HistoryTable& ht, Move prevMove,
+                       const ContinuationHistoryEntry* contHist1,
+                       const ContinuationHistoryEntry* contHist2)
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
+      contHist1ply(contHist1), contHist2ply(contHist2),
       ttMove(tt), currentIdx(0), ply(p), stage(STAGE_TT_MOVE) {
 
     killer1 = kt.get(p, 0);
@@ -182,6 +185,7 @@ MovePicker::MovePicker(const Board& b, Move tt, int p,
 
 MovePicker::MovePicker(const Board& b, Move tt, const HistoryTable& ht)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
+      contHist1ply(nullptr), contHist2ply(nullptr),
       ttMove(tt), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), currentIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {}
@@ -209,6 +213,9 @@ void MovePicker::score_quiets() {
 
     for (auto& sm : moves) {
         Move m = sm.move;
+        Piece pc = board.piece_on(m.from());
+        PieceType pt = type_of(pc);
+        Square to = m.to();
 
         // Check for killer moves
         if (m == killer1) {
@@ -218,8 +225,25 @@ void MovePicker::score_quiets() {
         } else if (m == counterMove) {
             sm.score = SCORE_COUNTER;
         } else {
-            // History heuristic
-            sm.score = history.get(us, m);
+            // History heuristic (butterfly history)
+            int histScore = history.get(us, m);
+
+            // Continuation history scores (1-ply and 2-ply ago)
+            // These are weighted and added to the base history score
+            int contHist1Score = 0;
+            int contHist2Score = 0;
+
+            if (contHist1ply) {
+                contHist1Score = contHist1ply->get(pt, to);
+            }
+
+            if (contHist2ply) {
+                contHist2Score = contHist2ply->get(pt, to);
+            }
+
+            // Combine scores: regular history + continuation histories
+            // Weight: 1x regular history + 2x cont1 (more relevant) + 1x cont2
+            sm.score = histScore + 2 * contHist1Score + contHist2Score;
         }
 
         // Bonus for promotions

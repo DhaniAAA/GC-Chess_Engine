@@ -51,7 +51,17 @@ INCLUDES	:= $(patsubst %,-I%, $(INCLUDEDIRS:%/=%))
 LIBS		:= $(patsubst %,-L%, $(LIBDIRS:%/=%))
 
 # define the C source files
-SOURCES		:= $(wildcard $(patsubst %,%/*.cpp, $(SOURCEDIRS)))
+# Define the C source files (Original)
+SOURCES_ALL := $(wildcard $(patsubst %,%/*.cpp, $(SOURCEDIRS)))
+
+# Tentukan file yang ingin DIHAPUS dari build (exclude)
+EXCLUDES    := src/testing.cpp \
+               src/testing_benchmark.cpp \
+               src/testing_regression.cpp \
+               src/testing_tactical.cpp
+
+# Filter SOURCES_ALL untuk membuang file EXCLUDES
+SOURCES     := $(filter-out $(EXCLUDES), $(SOURCES_ALL))
 
 # define the C object files
 OBJECTS		:= $(SOURCES:.cpp=.o)

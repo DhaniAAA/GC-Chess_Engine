@@ -218,6 +218,90 @@ private:
 };
 
 // ============================================================================
+// Continuation History
+//
+// Tracks how successful a move is relative to the previous move (1-ply ago)
+// and the move before that (2-ply ago). This provides context-aware scoring
+// that significantly improves move ordering.
+//
+// Indexed by [PieceType of prev move][ToSquare of prev move][PieceType of curr move][ToSquare of curr move]
+// ============================================================================
+
+// Forward declaration for pointer type
+class ContinuationHistoryEntry;
+
+// Single piece-to entry: [PieceType][ToSquare]
+class ContinuationHistoryEntry {
+public:
+    static constexpr int MAX_HISTORY = 16384;
+
+    ContinuationHistoryEntry() { clear(); }
+
+    void clear() {
+        for (int pt = 0; pt < PIECE_TYPE_NB; ++pt) {
+            for (int sq = 0; sq < SQUARE_NB; ++sq) {
+                table[pt][sq] = 0;
+            }
+        }
+    }
+
+    // Get score for a move
+    int get(PieceType pt, Square to) const {
+        return table[pt][to];
+    }
+
+    // Update score for a move
+    void update(PieceType pt, Square to, int bonus) {
+        int& entry = table[pt][to];
+        entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
+    }
+
+    // Access operator for Move
+    int& operator()(PieceType pt, Square to) {
+        return table[pt][to];
+    }
+
+private:
+    int table[PIECE_TYPE_NB][SQUARE_NB];
+};
+
+// Full Continuation History table: [Piece][ToSquare] -> ContinuationHistoryEntry
+class ContinuationHistory {
+public:
+    ContinuationHistory() { clear(); }
+
+    void clear() {
+        for (int pc = 0; pc < PIECE_NB; ++pc) {
+            for (int sq = 0; sq < SQUARE_NB; ++sq) {
+                table[pc][sq].clear();
+            }
+        }
+    }
+
+    // Get the entry for a previous move (piece type and to square)
+    ContinuationHistoryEntry* get_entry(Piece pc, Square to) {
+        return &table[pc][to];
+    }
+
+    const ContinuationHistoryEntry* get_entry(Piece pc, Square to) const {
+        return &table[pc][to];
+    }
+
+    // Get score for current move given previous move context
+    int get(Piece prevPc, Square prevTo, PieceType currPt, Square currTo) const {
+        return table[prevPc][prevTo].get(currPt, currTo);
+    }
+
+    // Update score for current move given previous move context
+    void update(Piece prevPc, Square prevTo, PieceType currPt, Square currTo, int bonus) {
+        table[prevPc][prevTo].update(currPt, currTo, bonus);
+    }
+
+private:
+    ContinuationHistoryEntry table[PIECE_NB][SQUARE_NB];
+};
+
+// ============================================================================
 // Move Picker
 //
 // Generates and orders moves lazily, returning them one at a time
@@ -249,10 +333,12 @@ inline MovePickStage& operator++(MovePickStage& s) {
 
 class MovePicker {
 public:
-    // Constructor for main search
+    // Constructor for main search (with continuation history)
     MovePicker(const Board& b, Move ttMove, int ply,
                const KillerTable& kt, const CounterMoveTable& cm,
-               const HistoryTable& ht, Move prevMove);
+               const HistoryTable& ht, Move prevMove,
+               const ContinuationHistoryEntry* contHist1 = nullptr,
+               const ContinuationHistoryEntry* contHist2 = nullptr);
 
     // Constructor for quiescence search
     MovePicker(const Board& b, Move ttMove, const HistoryTable& ht);
@@ -265,6 +351,8 @@ private:
     const HistoryTable& history;
     const KillerTable* killers;
     const CounterMoveTable* counterMoves;
+    const ContinuationHistoryEntry* contHist1ply;  // 1-ply ago continuation history
+    const ContinuationHistoryEntry* contHist2ply;  // 2-ply ago continuation history
 
     Move ttMove;
     Move killer1, killer2;

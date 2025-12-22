@@ -22,8 +22,8 @@ TimeManager timeMgr;
 // Engine Info
 // ============================================================================
 
-const std::string ENGINE_NAME = "ChessEngine";
-const std::string ENGINE_AUTHOR = "Developer";
+const std::string ENGINE_NAME = "GC-Engine";
+const std::string ENGINE_AUTHOR = "Gemini & Claude Alliance";
 const std::string ENGINE_VERSION = "1.0";
 
 // ============================================================================

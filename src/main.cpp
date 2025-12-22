@@ -371,62 +371,27 @@ void print_help() {
     std::cout << std::endl;
 }
 
+// File: src/main.cpp
+
 int main(int argc, char* argv[]) {
-    // [PERBAIKAN] Tambahkan baris ini AGAR EN CROISSANT TIDAK LOADING TERUS
+    // Agar output lancar (sudah benar)
     std::cout.setf(std::ios::unitbuf);
 
-    // Initialize all subsystems
+    // 1. Inisialisasi Tabel Bitboard Dasar (Pion, Kuda, Raja)
+    Bitboards::init();
+
+    // 2. Inisialisasi Magic Bitboards (Gajah, Benteng, Menteri)
+    // Jika ini terlewat, engine CRASH saat generate langkah sliding piece.
+    Magics::init();
+
+    // 3. Inisialisasi Zobrist Hashing
+    // Jika ini terlewat, Hash Key 0 dan TT akan error.
+    Zobrist::init();
+
+    // (Opsional) Jika Position::init() memang ada dan melakukan hal lain,
+    // biarkan saja. Tapi 3 di atas wajib dipanggil manual jika Position::init
+    // tidak memanggilnya.
     Position::init();
-    // Check command line arguments
-    // if (argc > 1) {
-    //     std::string arg = argv[1];
-
-    //     if (arg == "test") {
-    //         if (argc > 2) {
-    //             std::string subarg = argv[2];
-
-    //             if (subarg == "perft") {
-    //                 int depth = (argc > 3) ? std::stoi(argv[3]) : 5;
-    //                 TestRunner::run_perft_tests(depth);
-    //                 return 0;
-    //             } else if (subarg == "tactical") {
-    //                 int depth = (argc > 3) ? std::stoi(argv[3]) : 10;
-    //                 int time = (argc > 4) ? std::stoi(argv[4]) : 5000;
-    //                 TestRunner::run_tactical_tests(depth, time);
-    //                 return 0;
-    //             } else if (subarg == "all") {
-    //                 TestRunner::run_all_tests();
-    //                 return 0;
-    //             }
-    //         }
-    //         // Default: run legacy tests
-    //         run_tests();
-    //         return 0;
-
-    //     } else if (arg == "bench") {
-    //         if (argc > 2) {
-    //             std::string subarg = argv[2];
-
-    //             if (subarg == "time") {
-    //                 int ms = (argc > 3) ? std::stoi(argv[3]) : 1000;
-    //                 BenchTest::run_time_benchmark(ms);
-    //                 return 0;
-    //             } else {
-    //                 // Assume it's a depth number
-    //                 int depth = std::stoi(subarg);
-    //                 BenchTest::run_depth_benchmark(depth);
-    //                 return 0;
-    //             }
-    //         }
-    //         // Default: run standard benchmark
-    //         run_benchmark();
-    //         return 0;
-
-    //     } else if (arg == "help" || arg == "--help" || arg == "-h") {
-    //         print_help();
-    //         return 0;
-    //     }
-    // }
 
     // Default: UCI mode
     UCI::UCIHandler uci;

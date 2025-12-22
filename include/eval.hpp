@@ -433,7 +433,7 @@ inline EvalScore eval_king_safety(const Board& board, Color c) {
 
     // Get all enemy attacks on king zone using pre-computed attack bitboards
     // This is faster than looping through each piece individually
-    Bitboard enemyPieces = board.pieces(enemy);
+    // Bitboard enemyPieces = board.pieces(enemy);
 
     int attackUnits = 0;
     int attackCount = 0;
