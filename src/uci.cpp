@@ -7,7 +7,7 @@
 #include <chrono>
 #include <functional>
 #include "tuning.hpp"
-#include <fstream>
+
 
 namespace UCI {
 
@@ -38,6 +38,7 @@ UCIHandler::UCIHandler() : searching(false) {
     // Gunakan stateInfoStack untuk inisialisasi aman
     stateStackIdx = 0;
     board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+    stateStackIdx++; // [PERBAIKAN]
 }
 
 UCIHandler::~UCIHandler() {
@@ -47,62 +48,44 @@ UCIHandler::~UCIHandler() {
 void UCIHandler::loop() {
     std::string line, token;
 
-    // Buka file log untuk mencatat komunikasi
-    std::ofstream logFile("debug_log.txt", std::ios::app);
-    logFile << "=== Engine Started ===" << std::endl;
-    logFile.flush();
+    try {
+        while (std::getline(std::cin, line)) {
+            std::istringstream is(line);
+            is >> std::skipws >> token;
 
-    while (std::getline(std::cin, line)) {
-        logFile << "GUI: " << line << std::endl;
-        logFile.flush();
+            if (token.empty()) continue;
 
-        std::istringstream is(line);
-        is >> std::skipws >> token;
-
-        if (token.empty()) continue;
-
-        if (token == "uci") {
-            logFile << "ENGINE: Sending uci response..." << std::endl;
-            logFile.flush();
-            cmd_uci();
-            logFile << "ENGINE: uciok sent" << std::endl;
-            logFile.flush();
-        } else if (token == "isready") {
-            logFile << "ENGINE: Sending readyok..." << std::endl;
-            logFile.flush();
-            cmd_isready();
-            logFile << "ENGINE: readyok sent" << std::endl;
-            logFile.flush();
-        } else if (token == "ucinewgame") {
-            cmd_ucinewgame();
-        } else if (token == "position") {
-            cmd_position(is);
-        } else if (token == "go") {
-            logFile << "ENGINE: Starting search..." << std::endl;
-            logFile.flush();
-            cmd_go(is);
-            logFile << "ENGINE: Search started in thread" << std::endl;
-            logFile.flush();
-        } else if (token == "stop") {
-            logFile << "ENGINE: Stopping search..." << std::endl;
-            logFile.flush();
-            cmd_stop();
-            logFile << "ENGINE: Search stopped" << std::endl;
-            logFile.flush();
-        } else if (token == "quit") {
-            cmd_quit();
-            break;
-        } else if (token == "setoption") {
-            cmd_setoption(is);
-        } else if (token == "perft") {
-            cmd_perft(is);
-        } else if (token == "divide") {
-            cmd_divide(is);
-        } else if (token == "d") {
-            cmd_d();
-        } else if (token == "eval") {
-            cmd_eval();
+            if (token == "uci") {
+                cmd_uci();
+            } else if (token == "isready") {
+                cmd_isready();
+            } else if (token == "ucinewgame") {
+                cmd_ucinewgame();
+            } else if (token == "position") {
+                cmd_position(is);
+            } else if (token == "go") {
+                cmd_go(is);
+            } else if (token == "stop") {
+                cmd_stop();
+            } else if (token == "quit") {
+                cmd_quit();
+                break;
+            } else if (token == "setoption") {
+                cmd_setoption(is);
+            } else if (token == "perft") {
+                cmd_perft(is);
+            } else if (token == "divide") {
+                cmd_divide(is);
+            } else if (token == "d") {
+                cmd_d();
+            } else if (token == "eval") {
+                cmd_eval();
+            }
         }
+    } catch (const std::exception& e) {
+        std::cerr << "Engine Error: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Engine Error: Unknown exception" << std::endl;
     }
 }
 
@@ -115,8 +98,8 @@ void UCIHandler::cmd_uci() {
     std::cout << "id author " << ENGINE_AUTHOR << std::endl;
     std::cout << std::endl;
 
-    // Options
-    std::cout << "option name Hash type spin default 16 min 1 max 4096" << std::endl;
+    std::cout << "option name Hash type spin default 64 min 1 max 4096" << std::endl;
+    std::cout << "option name Table Memory type spin default 64 min 1 max 1024" << std::endl;
     std::cout << "option name Threads type spin default 1 min 1 max 128" << std::endl;
     std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
     std::cout << "option name Ponder type check default false" << std::endl;
@@ -153,7 +136,8 @@ void UCIHandler::cmd_ucinewgame() {
     wait_for_search();
     TT.clear();
     stateStackIdx = 0;
-    board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);  // [PERBAIKAN] Gunakan set() agar pointer st aman
+    board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+    stateStackIdx++; // [PERBAIKAN] Increment index
     Searcher.clear_history();
     Threads.clear_all_history();  // Clear all thread histories
 }
@@ -167,14 +151,16 @@ void UCIHandler::cmd_position(std::istringstream& is) {
     stateStackIdx = 0;  // Reset state stack
 
     if (token == "startpos") {
-        board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);  // [PERBAIKAN] Gunakan set()
+        board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+        stateStackIdx++; // [PERBAIKAN] Increment index
         is >> token;  // Consume "moves" if present
     } else if (token == "fen") {
         std::string fen;
         while (is >> token && token != "moves") {
             fen += token + " ";
         }
-        board.set(fen, &stateInfoStack[stateStackIdx]); // [PERBAIKAN] Gunakan set()
+        board.set(fen, &stateInfoStack[stateStackIdx]);
+        stateStackIdx++; // [PERBAIKAN] Increment index
     }
 
     // Parse moves
@@ -193,6 +179,11 @@ void UCIHandler::parse_moves(std::istringstream& is) {
             Square from = m.from();
             Square to = m.to();
             Piece pc = board.piece_on(from);
+
+            // [PERBAIKAN] Safety check: skip if no piece on from square
+            if (pc == NO_PIECE) {
+                continue;
+            }
 
             // Fix move type based on position context
             if (type_of(pc) == KING) {
@@ -281,13 +272,6 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         }
         std::cout << std::endl;
         std::cout.flush();  // [PERBAIKAN] Force flush bestmove
-
-        // [DEBUG] Log bestmove to file
-        std::ofstream logFile("debug_log.txt", std::ios::app);
-        if (logFile.is_open()) {
-            logFile << "ENGINE BESTMOVE: " << move_to_string(bestMove) << std::endl;
-            logFile.close();
-        }
 
         searching = false;
     });

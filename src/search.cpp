@@ -6,7 +6,6 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 
 // ============================================================================
 // Global Search Instance
@@ -175,6 +174,10 @@ void Search::init_time_management(Color us) {
 }
 
 void Search::check_time() {
+    // [PERBAIKAN] Selalu cek stopped flag terlebih dahulu agar engine responsif terhadap stop command
+    if (stopped) return;
+
+    // Skip time checking for infinite/ponder mode, but still respect stop flag
     if (limits.infinite || limits.ponder) return;
 
     auto now = std::chrono::steady_clock::now();
@@ -296,8 +299,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         searchStats.selDepth = ply;
     }
 
-    // Check for time/node limits
-    if ((searchStats.nodes & 2047) == 0) {
+    // Check for time/node limits - check more frequently for responsiveness
+    if ((searchStats.nodes & 1023) == 0) {
         check_time();
     }
 
@@ -680,8 +683,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     Bound bound = bestScore >= beta ? BOUND_LOWER :
                   bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
 
-    tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
-              bound, depth, bestMove, TT.generation());
+    if (tte) {
+        tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
+                  bound, depth, bestMove, TT.generation());
+    }
 
     return bestScore;
 }
@@ -838,13 +843,6 @@ void Search::report_info(int depth, int score, const PVLine& pv) {
     std::cout << " pv " << pv.to_string();
     std::cout << std::endl;
     std::cout.flush();
-
-    // [DEBUG] Log info to file
-    std::ofstream logFile("debug_log.txt", std::ios::app);
-    if (logFile.is_open()) {
-        logFile << "ENGINE INFO: depth " << depth << " score " << score << " nodes " << searchStats.nodes << std::endl;
-        logFile.close();
-    }
 
     if (infoCallback) {
         SearchInfo info;

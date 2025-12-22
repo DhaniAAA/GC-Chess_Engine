@@ -32,7 +32,11 @@ TranspositionTable::~TranspositionTable() {
 
 void TranspositionTable::resize(size_t mb) {
     if (table) {
+#ifdef _WIN32
+        _aligned_free(table);
+#else
         std::free(table);
+#endif
         table = nullptr;
     }
 
@@ -77,6 +81,11 @@ void TranspositionTable::clear() {
 // ============================================================================
 
 TTEntry* TranspositionTable::probe(Key key, bool& found) {
+    if (!table || clusterCount == 0) {
+        found = false;
+        return nullptr;
+    }
+
     TTEntry* entry = first_entry(key);
     U16 key16 = static_cast<U16>(key >> 48);
 
@@ -122,8 +131,10 @@ int TranspositionTable::hashfull() const {
     int count = 0;
     const int samples = 1000;
 
+    if (!table || clusterCount == 0) return 0;
+
     for (int i = 0; i < samples; ++i) {
-        const TTEntry* entry = &table[i].entries[0];
+        const TTEntry* entry = &table[i % clusterCount].entries[0]; // Safety check added above, and modulus added just in case
         for (int j = 0; j < TTCluster::ENTRIES_PER_CLUSTER; ++j) {
             if (entry[j].depth8 != 0 && entry[j].generation() == generation8) {
                 ++count;

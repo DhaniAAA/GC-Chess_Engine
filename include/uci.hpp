@@ -32,8 +32,8 @@ namespace UCI {
 // ============================================================================
 
 struct EngineOptions {
-    int hash = 16;              // Hash size in MB
-    int threads = 1;            // Number of threads
+    int hash = 64;              // Hash size in MB
+    int threads = 2;            // Number of threads
     int multiPV = 1;            // Number of principal variations
     bool ponder = false;        // Pondering enabled
     std::string bookPath = "";  // Opening book path
