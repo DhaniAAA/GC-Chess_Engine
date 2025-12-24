@@ -934,6 +934,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (depth >= 3 && moveCount > 1 && !isCapture && !isPromotion) {
             reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
 
+            if (createsThreat) {
+                reduction -= 2;
+            }
             // Reduce less in PV nodes
             if (pvNode) {
                 reduction -= 1;
@@ -1178,7 +1181,11 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
 
     bool inCheck = board.in_check();
 
-    // Stand pat
+    // [PERBAIKAN] Jika dalam skak, kita HARUS cek semua legal evasions untuk detect skakmat
+    // Gunakan counter terpisah untuk legal moves saat dalam skak
+    int legalMoveCount = 0;
+
+    // Stand pat (hanya jika tidak dalam skak)
     int staticEval = inCheck ? -VALUE_INFINITE : evaluate(board);
 
     if (!inCheck) {
@@ -1229,17 +1236,19 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
     MovePicker mp(board, ttMove, history);
     Move m;
     int bestScore = inCheck ? -VALUE_INFINITE : staticEval;
-    int moveCount = 0;
 
-    // First search captures
+    // First search captures (or evasions if in check)
     while ((m = mp.next_move()) != MOVE_NONE) {
         if (!MoveGen::is_legal(board, m)) {
             continue;
         }
 
-        ++moveCount;
+        // [PERBAIKAN] Hitung semua legal moves jika dalam skak (untuk detect skakmat)
+        if (inCheck) {
+            ++legalMoveCount;
+        }
 
-        // Delta pruning
+        // Delta pruning (hanya untuk captures saat TIDAK dalam skak)
         if (!inCheck && !m.is_promotion()) {
             int captureValue = PieceValue[type_of(board.piece_on(m.to()))];
             if (staticEval + captureValue + 200 < alpha) {
@@ -1247,7 +1256,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
             }
         }
 
-        // SEE pruning
+        // SEE pruning (hanya saat TIDAK dalam skak)
         if (!inCheck && !SEE::see_ge(board, m, -50)) {
             continue;  // Losing capture
         }
@@ -1274,46 +1283,46 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
         }
     }
 
-    // [PERBAIKAN] Then search quiet checks if any
-    for (size_t i = 0; i < quietChecks.size(); ++i) {
-        m = quietChecks[i].move;
+    // [PERBAIKAN] Then search quiet checks if any (hanya jika TIDAK dalam skak)
+    if (!inCheck) {
+        for (size_t i = 0; i < quietChecks.size(); ++i) {
+            m = quietChecks[i].move;
 
-        if (!MoveGen::is_legal(board, m)) {
-            continue;
-        }
+            if (!MoveGen::is_legal(board, m)) {
+                continue;
+            }
 
-        ++moveCount;
+            // SEE pruning for quiet checks
+            if (!SEE::see_ge(board, m, 0)) {
+                continue;  // Losing move
+            }
 
-        // SEE pruning for quiet checks
-        if (!SEE::see_ge(board, m, 0)) {
-            continue;  // Losing move
-        }
+            // Make move
+            StateInfo si;
+            board.do_move(m, si);
 
-        // Make move
-        StateInfo si;
-        board.do_move(m, si);
+            // Search with reduced qsDepth since this is a quiet check
+            int score = -qsearch(board, -beta, -alpha, qsDepth - 1);
 
-        // Search with reduced qsDepth since this is a quiet check
-        int score = -qsearch(board, -beta, -alpha, qsDepth - 1);
+            board.undo_move(m);
 
-        board.undo_move(m);
+            if (stopped) return 0;
 
-        if (stopped) return 0;
+            if (score > bestScore) {
+                bestScore = score;
 
-        if (score > bestScore) {
-            bestScore = score;
-
-            if (score > alpha) {
-                if (score >= beta) {
-                    return score;  // Beta cutoff
+                if (score > alpha) {
+                    if (score >= beta) {
+                        return score;  // Beta cutoff
+                    }
+                    alpha = score;
                 }
-                alpha = score;
             }
         }
     }
 
-    // Checkmate detection
-    if (inCheck && moveCount == 0) {
+    // [PERBAIKAN] Checkmate detection - menggunakan legalMoveCount yang benar
+    if (inCheck && legalMoveCount == 0) {
         return -VALUE_MATE + ply;
     }
 

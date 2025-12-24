@@ -27,6 +27,9 @@ namespace Tuning {
     EvalScore ConnectedPawnBonus    = S( 10,  10);
     EvalScore PhalanxBonus          = S( 10,  15);
 
+    // King Safety
+    int KingSafetyWeight = 83;  // Scale factor (percentage)
+
     void init() {
         // Initialization logic if needed
     }

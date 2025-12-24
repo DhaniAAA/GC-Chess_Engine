@@ -98,7 +98,7 @@ void UCIHandler::cmd_uci() {
     std::cout << "id author " << ENGINE_AUTHOR << std::endl;
     std::cout << std::endl;
 
-    std::cout << "option name Hash type spin default 64 min 1 max 4096" << std::endl;
+    std::cout << "option name Hash type spin default 256 min 1 max 4096" << std::endl;
     std::cout << "option name Table Memory type spin default 64 min 1 max 1024" << std::endl;
     std::cout << "option name Threads type spin default 1 min 1 max 128" << std::endl;
     std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
@@ -121,6 +121,7 @@ void UCIHandler::cmd_uci() {
     std::cout << "option name QueenValueEG type spin default " << Tuning::QueenValue.eg << " min 0 max 5000" << std::endl;
     std::cout << "option name RookOpenFileBonusMG type spin default " << Tuning::RookOpenFileBonus.mg << " min 0 max 500" << std::endl;
     std::cout << "option name RookOpenFileBonusEG type spin default " << Tuning::RookOpenFileBonus.eg << " min 0 max 500" << std::endl;
+    std::cout << "option name KingSafetyWeight type spin default " << Tuning::KingSafetyWeight << " min 0 max 200" << std::endl;
     std::cout << std::endl;
 
     std::cout << "uciok" << std::endl;
@@ -415,6 +416,7 @@ void UCIHandler::cmd_setoption(std::istringstream& is) {
     else if (name == "QueenValueEG") Tuning::QueenValue.eg = std::stoi(value);
     else if (name == "RookOpenFileBonusMG") Tuning::RookOpenFileBonus.mg = std::stoi(value);
     else if (name == "RookOpenFileBonusEG") Tuning::RookOpenFileBonus.eg = std::stoi(value);
+    else if (name == "KingSafetyWeight") Tuning::KingSafetyWeight = std::stoi(value);
 }
 
 void UCIHandler::cmd_perft(std::istringstream& is) {

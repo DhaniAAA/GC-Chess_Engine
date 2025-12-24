@@ -6,6 +6,7 @@
 // ============================================================================
 
 #include "eval.hpp"
+#include "tuning.hpp"
 
 namespace Eval {
 
@@ -344,6 +345,8 @@ EvalScore eval_king_safety(const Board& board, Color c) {
     // Only apply king safety penalty if there are enough attackers
     if (attackCount >= 2) {
         int safetyPenalty = KingSafetyTable[std::min(attackUnits, 99)];
+        // Apply tunable weight (percentage)
+        safetyPenalty = safetyPenalty * Tuning::KingSafetyWeight / 100;
         score.mg -= safetyPenalty;
     }
 

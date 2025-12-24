@@ -30,6 +30,9 @@ namespace Tuning {
     extern EvalScore ConnectedPawnBonus;
     extern EvalScore PhalanxBonus;
 
+    // King Safety
+    extern int KingSafetyWeight;  // Scale factor (percentage, default 83)
+
     // Initialization
     void init();
 }

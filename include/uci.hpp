@@ -32,7 +32,7 @@ namespace UCI {
 // ============================================================================
 
 struct EngineOptions {
-    int hash = 64;              // Hash size in MB
+    int hash = 256;             // Hash size in MB
     int threads = 2;            // Number of threads
     int multiPV = 1;            // Number of principal variations
     bool ponder = false;        // Pondering enabled
