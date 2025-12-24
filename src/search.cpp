@@ -298,7 +298,7 @@ void Search::iterative_deepening(Board& board) {
             if (!stopped) {
                 // Report this PV line
                 const RootMove& rm = rootMoves[pvIdx];
-                report_info(rootDepth, rm.score, rm.pv, pvIdx + 1);  // pvIdx is 0-based, UCI multipv is 1-based
+                report_info(board, rootDepth, rm.score, rm.pv, pvIdx + 1);  // pvIdx is 0-based, UCI multipv is 1-based
             }
         }
 
@@ -308,10 +308,13 @@ void Search::iterative_deepening(Board& board) {
 
             if (bestRM.pv.length > 0 && bestRM.pv.moves[0] != MOVE_NONE) {
                 Move candidate = bestRM.pv.moves[0];
-                if (MoveGen::is_legal(board, candidate)) {
+                // [PERBAIKAN] Check both pseudo-legal and legal to catch all edge cases
+                if (MoveGen::is_pseudo_legal(board, candidate) && MoveGen::is_legal(board, candidate)) {
                     rootBestMove = candidate;
                 }
-            } else if (bestRM.move != MOVE_NONE) {
+            } else if (bestRM.move != MOVE_NONE &&
+                       MoveGen::is_pseudo_legal(board, bestRM.move) &&
+                       MoveGen::is_legal(board, bestRM.move)) {
                 rootBestMove = bestRM.move;
             }
 
@@ -436,9 +439,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     TTEntry* tte = TT.probe(board.key(), ttHit);
     Move ttMove = ttHit ? tte->move() : MOVE_NONE;
 
-    // [PERBAIKAN] Validasi ttMove dengan is_legal. Jika ilegal (misal hash collision),
-    // abaikan seluruh entry TT untuk mencegah crash atau cutoff yang salah.
-    if (ttMove != MOVE_NONE && !MoveGen::is_legal(board, ttMove)) {
+    // [PERBAIKAN] Validasi ttMove dengan is_pseudo_legal dan is_legal.
+    // Jika ilegal (misal hash collision), abaikan seluruh entry TT untuk mencegah
+    // crash atau cutoff yang salah.
+    if (ttMove != MOVE_NONE && (!MoveGen::is_pseudo_legal(board, ttMove) || !MoveGen::is_legal(board, ttMove))) {
         ttMove = MOVE_NONE;
         ttHit = false;
     }
@@ -1115,8 +1119,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
     TTEntry* tte = TT.probe(board.key(), ttHit);
     Move ttMove = ttHit ? tte->move() : MOVE_NONE;
 
-    // [PERBAIKAN] Validasi ttMove di qsearch dengan is_legal
-    if (ttMove != MOVE_NONE && !MoveGen::is_legal(board, ttMove)) {
+    // [PERBAIKAN] Validasi ttMove di qsearch dengan is_pseudo_legal dan is_legal
+    if (ttMove != MOVE_NONE && (!MoveGen::is_pseudo_legal(board, ttMove) || !MoveGen::is_legal(board, ttMove))) {
         ttMove = MOVE_NONE;
         ttHit = false;
     }
@@ -1240,7 +1244,7 @@ int Search::evaluate(const Board& board) {
 // UCI Output
 // ============================================================================
 
-void Search::report_info(int depth, int score, const PVLine& pv, int multiPVIdx) {
+void Search::report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx) {
     auto now = std::chrono::steady_clock::now();
     U64 elapsed = static_cast<U64>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
@@ -1272,7 +1276,27 @@ void Search::report_info(int depth, int score, const PVLine& pv, int multiPVIdx)
     std::cout << " nps " << nps;
     std::cout << " time " << elapsed;
     std::cout << " hashfull " << TT.hashfull();
-    std::cout << " pv " << pv.to_string();
+
+    // [PERBAIKAN] Validate PV line before output
+    // Output only valid moves to prevent "Illegal PV move" warnings from cutechess
+    std::cout << " pv";
+    Board tempBoard = board;
+    for (int i = 0; i < pv.length; ++i) {
+        Move m = pv.moves[i];
+        if (m == MOVE_NONE) break;
+
+        // Validate move is legal in current position
+        if (!MoveGen::is_pseudo_legal(tempBoard, m) || !MoveGen::is_legal(tempBoard, m)) {
+            break;  // Stop at first illegal move
+        }
+
+        std::cout << " " << move_to_string(m);
+
+        // Make the move on temp board to validate next move in sequence
+        StateInfo si;
+        tempBoard.do_move(m, si);
+    }
+
     std::cout << std::endl;
     std::cout.flush();
 

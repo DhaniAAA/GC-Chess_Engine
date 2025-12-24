@@ -272,7 +272,7 @@ private:
     bool should_stop() const;
 
     // UCI output
-    void report_info(int depth, int score, const PVLine& pv, int multiPVIdx = 1);
+    void report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx = 1);
 
     // Move ordering tables
     KillerTable killers;

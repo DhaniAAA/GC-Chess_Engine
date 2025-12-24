@@ -372,6 +372,16 @@ void iterative_deepening(SearchThread* thread, Board& board) {
 
         if (!Threads.stop_flag) {
             Move bestMoveCandidate = thread->pvLines[0].first();
+
+            // [PERBAIKAN] Validate bestMoveCandidate is legal before storing
+            // This catches PV corruption cases that could lead to illegal moves
+            // Check both pseudo-legal and legal to catch all edge cases
+            if (bestMoveCandidate != MOVE_NONE && thread->rootBoard &&
+                (!MoveGen::is_pseudo_legal(*thread->rootBoard, bestMoveCandidate) ||
+                 !MoveGen::is_legal(*thread->rootBoard, bestMoveCandidate))) {
+                bestMoveCandidate = MOVE_NONE;  // Invalid move, will use fallback
+            }
+
             thread->bestMove = bestMoveCandidate;
 
             // Validate ponder move by making best move first
@@ -458,9 +468,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     TTEntry* tte = TT.probe(board.key(), ttHit);
     Move ttMove = ttHit ? tte->move() : MOVE_NONE;
 
-    // [TT VALIDATION] Validate ttMove is pseudo-legal to prevent hash collision issues
+    // [TT VALIDATION] Validate ttMove is pseudo-legal AND legal to prevent hash collision issues
     // If the move is illegal (could happen with hash collision), ignore the entire TT entry
-    if (ttMove != MOVE_NONE && !MoveGen::is_pseudo_legal(board, ttMove)) {
+    if (ttMove != MOVE_NONE && (!MoveGen::is_pseudo_legal(board, ttMove) || !MoveGen::is_legal(board, ttMove))) {
         ttMove = MOVE_NONE;
         ttHit = false;  // Treat as if we didn't find anything
     }
@@ -791,9 +801,32 @@ void report_info(SearchThread* thread, int depth, int score) {
     std::cout << " nodes " << nodes
               << " nps " << nps
               << " time " << elapsed
-              << " hashfull " << TT.hashfull()
-              << " pv " << thread->pvLines[0].to_string()
-              << std::endl;
+              << " hashfull " << TT.hashfull();
+
+    // [PERBAIKAN] Validate PV line before output
+    // Output only valid moves to prevent "Illegal PV move" warnings from cutechess
+    std::cout << " pv";
+    if (thread->rootBoard) {
+        Board tempBoard = *thread->rootBoard;
+        const auto& pvLine = thread->pvLines[0];
+        for (int i = 0; i < pvLine.length; ++i) {
+            Move m = pvLine.moves[i];
+            if (m == MOVE_NONE) break;
+
+            // Validate move is legal in current position
+            if (!MoveGen::is_pseudo_legal(tempBoard, m) || !MoveGen::is_legal(tempBoard, m)) {
+                break;  // Stop at first illegal move
+            }
+
+            std::cout << " " << move_to_string(m);
+
+            // Make the move on temp board to validate next move in sequence
+            StateInfo si;
+            tempBoard.do_move(m, si);
+        }
+    }
+
+    std::cout << std::endl;
 }
 
 }  // namespace LazySMP

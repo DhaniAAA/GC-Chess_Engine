@@ -257,12 +257,34 @@ void UCIHandler::cmd_go(std::istringstream& is) {
 void UCIHandler::start_search(const SearchLimits& limits) {
     searching = true;
 
+    // [PERBAIKAN] Capture board by value to prevent race condition
+    // If GUI sends new position command while search is running, board member
+    // would change and validation would fail
+    Board searchBoard = board;
+
     // Start search in separate thread
-    searchThread = std::thread([this, limits]() {
-        Searcher.start(board, limits);
+    searchThread = std::thread([this, limits, searchBoard]() mutable {
+        Searcher.start(searchBoard, limits);
 
         // Output best move
         Move bestMove = Searcher.best_move();
+
+        // [PERBAIKAN] Final validation: ensure bestMove is legal before sending
+        // This is the last line of defense against illegal moves
+        // Check both pseudo-legal and legal to catch all edge cases
+        // Use searchBoard (the captured copy) for validation
+        if (bestMove != MOVE_NONE &&
+            (!MoveGen::is_pseudo_legal(searchBoard, bestMove) || !MoveGen::is_legal(searchBoard, bestMove))) {
+            // BestMove is illegal! Try to find any legal move as fallback
+            MoveList legalMoves;
+            MoveGen::generate_legal(searchBoard, legalMoves);
+            if (!legalMoves.empty()) {
+                bestMove = legalMoves[0].move;
+            } else {
+                bestMove = MOVE_NONE;  // No legal moves (checkmate or stalemate)
+            }
+        }
+
         std::cout << "bestmove " << move_to_string(bestMove);
 
         // Output ponder move if available and valid
@@ -270,10 +292,11 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         if (ponderMove != MOVE_NONE && bestMove != MOVE_NONE) {
             // Final validation: make best move and check if ponder is legal
             StateInfo si;
-            Board tempBoard = board;
+            Board tempBoard = searchBoard;
             tempBoard.do_move(bestMove, si);
 
-            if (MoveGen::is_legal(tempBoard, ponderMove)) {
+            if (MoveGen::is_pseudo_legal(tempBoard, ponderMove) &&
+                MoveGen::is_legal(tempBoard, ponderMove)) {
                 std::cout << " ponder " << move_to_string(ponderMove);
             }
         }
