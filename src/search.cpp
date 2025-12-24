@@ -139,9 +139,12 @@ void Search::start(Board& board, const SearchLimits& lim) {
 // ============================================================================
 
 void Search::init_time_management(Color us) {
+    // Safety buffer for communication lag
+    int moveOverhead = 50;
+
     if (limits.movetime > 0) {
-        optimumTime = limits.movetime;
-        maximumTime = limits.movetime;
+        optimumTime = std::max(1, limits.movetime - moveOverhead);
+        maximumTime = std::max(1, limits.movetime - moveOverhead);
         return;
     }
 
@@ -155,17 +158,30 @@ void Search::init_time_management(Color us) {
     int inc = limits.inc[us];
     int moves_to_go = limits.movestogo > 0 ? limits.movestogo : 30;
 
-    // Basic time allocation
-    optimumTime = time_left / moves_to_go + inc * 3 / 4;
-    maximumTime = std::min(time_left / 4, optimumTime * 5);
+    // Reserve time for safety
+    int safeTime = std::max(1, time_left - moveOverhead);
 
-    // Don't use more than available
-    optimumTime = std::min(optimumTime, time_left - 50);
-    maximumTime = std::min(maximumTime, time_left - 50);
+    // Base allocation: time_left / moves + increment bonus
+    optimumTime = safeTime / moves_to_go + inc * 3 / 4;
 
-    // Minimum time
+    // Maximum time: up to 5x optimal, but never more than 1/3 of remaining time
+    maximumTime = std::min(safeTime / 3, optimumTime * 5);
+
+    // Ensure we don't exceed safe time
+    optimumTime = std::min(optimumTime, safeTime - 10);
+    maximumTime = std::min(maximumTime, safeTime - 10);
+
+    // Minimum time bounds
     optimumTime = std::max(optimumTime, 10);
-    maximumTime = std::max(maximumTime, 10);
+    maximumTime = std::max(maximumTime, 20);
+
+    // Panic mode: if time is critically low (< 1 second), use minimal time
+    if (time_left < 1000) {
+        optimumTime = std::min(optimumTime, time_left / 10);
+        maximumTime = std::min(maximumTime, time_left / 5);
+        optimumTime = std::max(optimumTime, 5);
+        maximumTime = std::max(maximumTime, 10);
+    }
 }
 
 void Search::check_time() {

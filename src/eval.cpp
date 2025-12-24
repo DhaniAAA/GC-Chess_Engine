@@ -397,7 +397,9 @@ EvalScore eval_king_safety(const Board& board, Color c) {
 
 // Lazy evaluation margin - if material+PST+pawn score is this far from
 // alpha/beta, skip expensive calculations (mobility, king safety)
-constexpr int LAZY_MARGIN = 500;
+// Using a high margin (900cp ~= 9 pawns) to only skip in very clear positions
+// This preserves tactical accuracy while still providing speedup in won/lost positions
+constexpr int LAZY_MARGIN = 1200;
 
 int evaluate(const Board& board, int alpha, int beta) {
     EvalScore score;

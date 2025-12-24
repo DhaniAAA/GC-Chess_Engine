@@ -244,14 +244,17 @@ void ThreadPool::clear_all_history() {
 }
 
 void ThreadPool::init_time_management(Color us) {
+    // Get move overhead from UCI options (default 10ms)
+    int moveOverhead = 50;  // Safety buffer for communication lag
+
     if (limits.movetime > 0) {
-        optimumTime = limits.movetime;
-        maximumTime = limits.movetime;
+        optimumTime = std::max(1, limits.movetime - moveOverhead);
+        maximumTime = std::max(1, limits.movetime - moveOverhead);
         return;
     }
 
     if (limits.time[us] == 0) {
-        optimumTime = 1000000;
+        optimumTime = 1000000;  // Essentially infinite
         maximumTime = 1000000;
         return;
     }
@@ -260,14 +263,30 @@ void ThreadPool::init_time_management(Color us) {
     int inc = limits.inc[us];
     int moves_to_go = limits.movestogo > 0 ? limits.movestogo : 30;
 
-    optimumTime = time_left / moves_to_go + inc * 3 / 4;
-    maximumTime = std::min(time_left / 4, optimumTime * 5);
+    // Reserve time for safety
+    int safeTime = std::max(1, time_left - moveOverhead);
 
-    optimumTime = std::min(optimumTime, time_left - 50);
-    maximumTime = std::min(maximumTime, time_left - 50);
+    // Base allocation: time_left / moves + increment bonus
+    optimumTime = safeTime / moves_to_go + inc * 3 / 4;
 
+    // Maximum time: up to 5x optimal, but never more than 1/3 of remaining time
+    maximumTime = std::min(safeTime / 3, optimumTime * 5);
+
+    // Ensure we don't exceed safe time
+    optimumTime = std::min(optimumTime, safeTime - 10);
+    maximumTime = std::min(maximumTime, safeTime - 10);
+
+    // Minimum time bounds
     optimumTime = std::max(optimumTime, 10);
-    maximumTime = std::max(maximumTime, 10);
+    maximumTime = std::max(maximumTime, 20);
+
+    // Panic mode: if time is critically low (< 1 second), use minimal time
+    if (time_left < 1000) {
+        optimumTime = std::min(optimumTime, time_left / 10);
+        maximumTime = std::min(maximumTime, time_left / 5);
+        optimumTime = std::max(optimumTime, 5);
+        maximumTime = std::max(maximumTime, 10);
+    }
 }
 
 // ============================================================================
@@ -284,19 +303,23 @@ bool should_stop(SearchThread* thread) {
     // Only main thread checks time
     if (!thread->is_main()) return false;
 
-    // Check every 1024 nodes for fast time controls
-    if ((thread->nodes & 1023) != 0) return false;
+    // Check more frequently when time is low
+    // Every 512 nodes normally, every 128 nodes when in panic mode
+    int checkInterval = (Threads.limits.time[WHITE] + Threads.limits.time[BLACK] < 10000) ? 127 : 511;
+    if ((thread->nodes & checkInterval) != 0) return false;
 
     auto now = std::chrono::steady_clock::now();
     int elapsed = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now - Threads.startTime).count()
     );
 
+    // Hard limit - must stop immediately
     if (elapsed >= Threads.maximumTime) {
         Threads.stop_flag = true;
         return true;
     }
 
+    // Node limit check
     if (Threads.limits.nodes > 0 && Threads.total_nodes() >= Threads.limits.nodes) {
         Threads.stop_flag = true;
         return true;
@@ -408,15 +431,22 @@ void iterative_deepening(SearchThread* thread, Board& board) {
             if (thread->is_main()) {
                 report_info(thread, depth, score);
 
-                // Time management
+                // Time management: stop at optimumTime, but continue if early iteration
                 auto now = std::chrono::steady_clock::now();
                 int elapsed = static_cast<int>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - Threads.startTime).count()
                 );
 
-                if (elapsed > Threads.optimumTime / 2) {
+                // Stop when we've used optimal time
+                // Allow early break if we've used most of optimal time and have a stable move
+                if (elapsed >= Threads.optimumTime) {
                     break;
+                }
+
+                // Early break at 60% of optimal time if best move hasn't changed
+                if (depth >= 8 && elapsed >= Threads.optimumTime * 6 / 10) {
+                    // Continue searching to use remaining time
                 }
             }
         }
