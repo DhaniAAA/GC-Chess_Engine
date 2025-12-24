@@ -20,6 +20,9 @@ struct StateInfo {
     Key pawnKey;           // Pawn structure hash (for pawn hash table)
     Key materialKey;       // Material configuration hash
 
+    // Incremental material+PST score per color (updated in do_move/undo_move)
+    EvalScore psqtScore[COLOR_NB];
+
     // Game state
     CastlingRights castling;
     Square enPassant;
@@ -122,6 +125,9 @@ public:
     Key key() const { return st->positionKey; }
     Key pawn_key() const { return st->pawnKey; }
     Key material_key() const { return st->materialKey; }
+
+    // Incremental PST score (material + piece-square values)
+    EvalScore psqt_score(Color c) const { return st->psqtScore[c]; }
 
     // ========================================================================
     // Attack Detection

@@ -216,6 +216,24 @@ EvalScore eval_pawn_structure(const Board& board, Color c);
 EvalScore eval_pieces(const Board& board, Color c);
 EvalScore eval_king_safety(const Board& board, Color c);
 
+// Incremental PST helper - returns material + PST score for a single piece
+// Used by Board::do_move/undo_move for incremental updates
+inline EvalScore piece_pst_score(Piece pc, Square sq) {
+    Color c = color_of(pc);
+    PieceType pt = type_of(pc);
+    Square psq = c == WHITE ? sq : Square(sq ^ 56);  // flip for black
+
+    switch (pt) {
+        case PAWN:   return PawnValue + PawnPST[psq];
+        case KNIGHT: return KnightValue + KnightPST[psq];
+        case BISHOP: return BishopValue + BishopPST[psq];
+        case ROOK:   return RookValue + RookPST[psq];
+        case QUEEN:  return QueenValue + QueenPST[psq];
+        case KING:   return EvalScore(KingPSTMG[psq], KingPSTEG[psq]);
+        default:     return EvalScore(0, 0);
+    }
+}
+
 // ============================================================================
 // Pawn Hash Table
 // ============================================================================
@@ -250,8 +268,10 @@ private:
 
 extern PawnTable pawnTable;
 
-// Main Evaluation Function
-int evaluate(const Board& board);
+// Main Evaluation Functions
+// Version with alpha/beta enables lazy evaluation (skips expensive calcs if far from window)
+int evaluate(const Board& board, int alpha, int beta);
+int evaluate(const Board& board);  // Compatibility version (no lazy eval)
 
 } // namespace Eval
 

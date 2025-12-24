@@ -253,6 +253,7 @@ public:
 
     // Static evaluation (public for UCI eval command)
     int evaluate(const Board& board);
+    int evaluate(const Board& board, int alpha, int beta);  // With lazy eval
 
 private:
     // Iterative deepening loop

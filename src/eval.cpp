@@ -395,7 +395,11 @@ EvalScore eval_king_safety(const Board& board, Color c) {
 // Main Evaluation Function
 // ============================================================================
 
-int evaluate(const Board& board) {
+// Lazy evaluation margin - if material+PST+pawn score is this far from
+// alpha/beta, skip expensive calculations (mobility, king safety)
+constexpr int LAZY_MARGIN = 500;
+
+int evaluate(const Board& board, int alpha, int beta) {
     EvalScore score;
 
     // Calculate game phase
@@ -406,11 +410,11 @@ int evaluate(const Board& board) {
     phase -= popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
     phase = std::max(0, phase);
 
-    // Material and PST
-    score += eval_material_pst(board, WHITE);
-    score -= eval_material_pst(board, BLACK);
+    // Material and PST - use incrementally updated scores (no loop needed!)
+    score += board.psqt_score(WHITE);
+    score -= board.psqt_score(BLACK);
 
-    // Pawn structure
+    // Pawn structure (relatively cheap with hash table)
     Key pawnKey = board.pawn_key();
     PawnEntry* pawnEntry = pawnTable.probe(pawnKey);
     EvalScore pawnScore;
@@ -426,7 +430,21 @@ int evaluate(const Board& board) {
     }
     score += pawnScore;
 
-    // Piece activity
+    // Lazy evaluation check - compute approximate score with current data
+    {
+        int mg = score.mg;
+        int eg = score.eg;
+        int lazyScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
+        lazyScore = board.side_to_move() == WHITE ? lazyScore : -lazyScore;
+
+        // If score is far above beta or far below alpha, skip expensive calculations
+        if (lazyScore >= beta + LAZY_MARGIN || lazyScore <= alpha - LAZY_MARGIN) {
+            return lazyScore;
+        }
+    }
+
+    // Expensive calculations - only computed if lazy eval didn't cut off
+    // Piece activity (mobility)
     score += eval_pieces(board, WHITE);
     score -= eval_pieces(board, BLACK);
 
@@ -443,4 +461,10 @@ int evaluate(const Board& board) {
     return board.side_to_move() == WHITE ? finalScore : -finalScore;
 }
 
+// Overload without alpha/beta for compatibility (no lazy eval)
+int evaluate(const Board& board) {
+    return evaluate(board, -30000, 30000);
+}
+
 } // namespace Eval
+

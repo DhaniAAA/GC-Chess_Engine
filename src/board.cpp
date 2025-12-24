@@ -1,4 +1,5 @@
 #include "board.hpp"
+#include "eval.hpp"
 #include <sstream>
 #include <iostream>
 #include <cstring>
@@ -183,6 +184,17 @@ void Board::set_state(StateInfo* si) {
     si->positionKey = compute_key();
     si->pawnKey = compute_pawn_key();
     si->materialKey = compute_material_key();
+
+    // Compute initial PST scores (only done on FEN parse, then updated incrementally)
+    si->psqtScore[WHITE] = EvalScore(0, 0);
+    si->psqtScore[BLACK] = EvalScore(0, 0);
+
+    Bitboard bb = pieces();
+    while (bb) {
+        Square sq = pop_lsb(bb);
+        Piece pc = piece_on(sq);
+        si->psqtScore[color_of(pc)] += Eval::piece_pst_score(pc, sq);
+    }
 
     set_check_info();
 }
@@ -460,13 +472,16 @@ void Board::do_move(Move m, StateInfo& newSt) {
     // Update hash key
     Key k = st->positionKey ^ Zobrist::side_key();
 
-    // Handle captures
+    // Handle captures - update PST for captured piece
     if (captured != NO_PIECE) {
         Square capsq = to;
 
         if (m.is_enpassant()) {
             capsq = to - pawn_push(us);
         }
+
+        // Incremental PST update: subtract captured piece's score
+        st->psqtScore[them] -= Eval::piece_pst_score(captured, capsq);
 
         remove_piece(capsq);
 
@@ -509,17 +524,29 @@ void Board::do_move(Move m, StateInfo& newSt) {
             rto = Square(from - 1);    // d1 or d8
         }
 
+        // Incremental PST: update king (from -> to)
+        st->psqtScore[us] -= Eval::piece_pst_score(pc, from);
+        st->psqtScore[us] += Eval::piece_pst_score(pc, to);
+
         // Move king
         k ^= Zobrist::piece_key(pc, from) ^ Zobrist::piece_key(pc, to);
         move_piece(from, to);
 
-        // Move rook
+        // Incremental PST: update rook (rfrom -> rto)
         Piece rook = piece_on(rfrom);
+        st->psqtScore[us] -= Eval::piece_pst_score(rook, rfrom);
+        st->psqtScore[us] += Eval::piece_pst_score(rook, rto);
+
+        // Move rook
         k ^= Zobrist::piece_key(rook, rfrom) ^ Zobrist::piece_key(rook, rto);
         move_piece(rfrom, rto);
 
     } else if (m.is_promotion()) {
         Piece promoted = make_piece(us, m.promotion_type());
+
+        // Incremental PST: remove pawn score, add promoted piece score
+        st->psqtScore[us] -= Eval::piece_pst_score(pc, from);
+        st->psqtScore[us] += Eval::piece_pst_score(promoted, to);
 
         // Remove pawn, add promoted piece
         k ^= Zobrist::piece_key(pc, from);
@@ -534,7 +561,10 @@ void Board::do_move(Move m, StateInfo& newSt) {
         st->halfmoveClock = 0;
 
     } else {
-        // Normal move
+        // Normal move - Incremental PST: subtract from-square, add to-square
+        st->psqtScore[us] -= Eval::piece_pst_score(pc, from);
+        st->psqtScore[us] += Eval::piece_pst_score(pc, to);
+
         k ^= Zobrist::piece_key(pc, from) ^ Zobrist::piece_key(pc, to);
         move_piece(from, to);
 

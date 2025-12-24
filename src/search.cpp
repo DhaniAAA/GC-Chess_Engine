@@ -524,7 +524,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         int correction = corrHistory.get(us, board.pawn_key());
         correctedStaticEval = staticEval + correction;
     } else {
-        staticEval = evaluate(board);
+        // Use lazy evaluation with alpha/beta for potential early cutoff
+        staticEval = evaluate(board, alpha, beta);
         // Apply correction history to improve eval accuracy
         int correction = corrHistory.get(us, board.pawn_key());
         correctedStaticEval = staticEval + correction;
@@ -1185,8 +1186,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
     // Gunakan counter terpisah untuk legal moves saat dalam skak
     int legalMoveCount = 0;
 
-    // Stand pat (hanya jika tidak dalam skak)
-    int staticEval = inCheck ? -VALUE_INFINITE : evaluate(board);
+    // Stand pat (hanya jika tidak dalam skak) - use lazy eval
+    int staticEval = inCheck ? -VALUE_INFINITE : evaluate(board, alpha, beta);
 
     if (!inCheck) {
         if (staticEval >= beta) {
@@ -1340,6 +1341,25 @@ int Search::evaluate(const Board& board) {
     }
 
     int score = Eval::evaluate(board);
+
+    // Apply scale factor for drawish endgames
+    int scaleFactor = Tablebase::EndgameRules::scale_factor(board);
+    if (scaleFactor != 128) {
+        score = score * scaleFactor / 128;
+    }
+
+    return score;
+}
+
+// Overload with alpha/beta for lazy evaluation
+int Search::evaluate(const Board& board, int alpha, int beta) {
+    // Check for known drawn endgames
+    if (Tablebase::EndgameRules::is_known_draw(board)) {
+        return 0;
+    }
+
+    // Use lazy eval version
+    int score = Eval::evaluate(board, alpha, beta);
 
     // Apply scale factor for drawish endgames
     int scaleFactor = Tablebase::EndgameRules::scale_factor(board);
