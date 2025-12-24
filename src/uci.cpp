@@ -257,27 +257,71 @@ void UCIHandler::cmd_go(std::istringstream& is) {
 void UCIHandler::start_search(const SearchLimits& limits) {
     searching = true;
 
-    // [PERBAIKAN] Capture board by value to prevent race condition
-    // If GUI sends new position command while search is running, board member
-    // would change and validation would fail
-    Board searchBoard = board;
+    // Save the FEN before search starts - this is a safe string copy
+    // that doesn't have StateInfo pointer issues
+    std::string searchFen = board.fen();
 
     // Start search in separate thread
-    searchThread = std::thread([this, limits, searchBoard]() mutable {
+    searchThread = std::thread([this, limits, searchFen]() {
+        // Reconstruct board from FEN for search - this creates fresh StateInfo
+        StateInfo searchSi;
+        Board searchBoard;
+        searchBoard.set(searchFen, &searchSi);
+
         Searcher.start(searchBoard, limits);
 
         // Output best move
         Move bestMove = Searcher.best_move();
 
-        // [PERBAIKAN] Final validation: ensure bestMove is legal before sending
-        // This is the last line of defense against illegal moves
-        // Check both pseudo-legal and legal to catch all edge cases
-        // Use searchBoard (the captured copy) for validation
-        if (bestMove != MOVE_NONE &&
-            (!MoveGen::is_pseudo_legal(searchBoard, bestMove) || !MoveGen::is_legal(searchBoard, bestMove))) {
-            // BestMove is illegal! Try to find any legal move as fallback
-            MoveList legalMoves;
-            MoveGen::generate_legal(searchBoard, legalMoves);
+        // [PERBAIKAN] Final validation using fresh board from FEN
+        // The searchBoard StateInfo may be corrupted after search
+        // So we create a new board from the original FEN for validation
+        StateInfo validationSi;
+        Board validationBoard;
+        validationBoard.set(searchFen, &validationSi);
+
+        // Generate ALL legal moves and verify bestMove is in the list
+        // This is the most robust validation - if the move isn't in the
+        // legal move list, it's definitely illegal
+        MoveList legalMoves;
+        MoveGen::generate_legal(validationBoard, legalMoves);
+
+        bool moveFound = false;
+        for (size_t i = 0; i < legalMoves.size(); ++i) {
+            Move legalMove = legalMoves[i].move;
+
+            if (legalMove.from() == bestMove.from() &&
+                legalMove.to() == bestMove.to()) {
+
+                // [PERBAIKAN] Validasi tipe promosi untuk mencegah ambiguitas
+                if (legalMove.is_promotion()) {
+                    if (bestMove.is_promotion()) {
+                        // Jika bestMove punya flag promosi (misal a7a8n), pastikan tipenya cocok
+                        if (legalMove.promotion_type() == bestMove.promotion_type()) {
+                            bestMove = legalMove;
+                            moveFound = true;
+                            break;
+                        }
+                    } else {
+                        // Jika bestMove tidak punya flag (misal dari GUI 'a7a8' tanpa suffix),
+                        // asumsikan promosi ke Queen (standar UCI)
+                        if (legalMove.promotion_type() == QUEEN) {
+                            bestMove = legalMove;
+                            moveFound = true;
+                            break;
+                        }
+                    }
+                } else {
+                    // Bukan langkah promosi, cukup cocokkan koordinat
+                    bestMove = legalMove;
+                    moveFound = true;
+                    break;
+                }
+            }
+        }
+
+        if (bestMove == MOVE_NONE || !moveFound) {
+            // BestMove is illegal or none! Use first legal move as fallback
             if (!legalMoves.empty()) {
                 bestMove = legalMoves[0].move;
             } else {
@@ -292,11 +336,10 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         if (ponderMove != MOVE_NONE && bestMove != MOVE_NONE) {
             // Final validation: make best move and check if ponder is legal
             StateInfo si;
-            Board tempBoard = searchBoard;
-            tempBoard.do_move(bestMove, si);
+            validationBoard.do_move(bestMove, si);
 
-            if (MoveGen::is_pseudo_legal(tempBoard, ponderMove) &&
-                MoveGen::is_legal(tempBoard, ponderMove)) {
+            if (MoveGen::is_pseudo_legal(validationBoard, ponderMove) &&
+                MoveGen::is_legal(validationBoard, ponderMove)) {
                 std::cout << " ponder " << move_to_string(ponderMove);
             }
         }

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <xmmintrin.h>
 
 // ============================================================================
 // Global Search Instance
@@ -44,7 +45,8 @@ using namespace SearchParams;
 // ============================================================================
 
 Search::Search() : stopped(false), searching(false), rootBestMove(MOVE_NONE),
-                   rootPonderMove(MOVE_NONE), rootDepth(0), rootPly(0), pvIdx(0),
+                   rootPonderMove(MOVE_NONE), previousRootBestMove(MOVE_NONE), previousRootScore(VALUE_NONE),
+                   rootDepth(0), rootPly(0), pvIdx(0),
                    optimumTime(0), maximumTime(0), previousMove(MOVE_NONE) {
     static bool lmr_initialized = false;
     if (!lmr_initialized) {
@@ -66,11 +68,21 @@ Search::Search() : stopped(false), searching(false), rootBestMove(MOVE_NONE),
 }
 
 void Search::clear_history() {
+    Eval::pawnTable.clear();
     killers.clear();
     counterMoves.clear();
     history.clear();
     contHistory.clear();
     corrHistory.clear();  // Clear correction history between games
+
+    // Clear capture history
+    for (int i = 0; i < 16; ++i) {
+        for (int j = 0; j < 64; ++j) {
+            for (int k = 0; k < 8; ++k) {
+                captureHistory[i][j][k] = 0;
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -157,10 +169,9 @@ void Search::init_time_management(Color us) {
 }
 
 void Search::check_time() {
-    // [PERBAIKAN] Selalu cek stopped flag terlebih dahulu agar engine responsif terhadap stop command
     if (stopped) return;
 
-    // Skip time checking for infinite/ponder mode, but still respect stop flag
+    // Skip time checking for infinite/ponder mode
     if (limits.infinite || limits.ponder) return;
 
     auto now = std::chrono::steady_clock::now();
@@ -168,10 +179,40 @@ void Search::check_time() {
         std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
     );
 
+    // Hard Limit (Absolute Max): Must stop
     if (elapsed >= maximumTime) {
         stopped = true;
+        return;
     }
 
+    // Soft Limit (Optimal Time): Stop only if position is stable
+    if (elapsed >= optimumTime) {
+        bool unstable = false;
+
+        if (!rootMoves.empty()) {
+            // 1. Best Move Changed? (from previous iteration)
+            if (previousRootBestMove != MOVE_NONE && rootBestMove != previousRootBestMove) {
+                unstable = true;
+            }
+
+            // 2. Score Fluctuation? (Fail Low of previous best move)
+            if (previousRootScore != VALUE_NONE) {
+                // If the score of the primary candidate move has changed drastically
+                int currentPvScore = rootMoves[0].score;
+                if (std::abs(currentPvScore - previousRootScore) > 40) { // 40cp threshold
+                    unstable = true;
+                }
+            }
+        }
+
+        // If stable, stop at soft limit.
+        // If unstable, extend (continue up to maximumTime).
+        if (!unstable) {
+            stopped = true;
+        }
+    }
+
+    // Node limit check
     if (limits.nodes > 0 && searchStats.nodes >= limits.nodes) {
         stopped = true;
     }
@@ -218,8 +259,9 @@ void Search::iterative_deepening(Board& board) {
     int multiPV = std::min(UCI::options.multiPV, static_cast<int>(rootMoves.size()));
     multiPV = std::max(1, std::min(multiPV, MAX_MULTI_PV));
 
-    int previousScore = VALUE_NONE;
-    Move previousBestMove = MOVE_NONE;
+    // Initialize stability calculation members
+    previousRootScore = VALUE_NONE;
+    previousRootBestMove = MOVE_NONE;
 
     // Iterative deepening loop
     for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
@@ -347,26 +389,27 @@ void Search::iterative_deepening(Board& board) {
                     bool unstable = false;
 
                     // 1. Score fluctuation
-                    if (previousScore != VALUE_NONE) {
-                        int fluctuation = std::abs(score - previousScore);
+                    if (previousRootScore != VALUE_NONE) {
+                        int fluctuation = std::abs(score - previousRootScore);
                         if (fluctuation > 50) {
                             unstable = true;
                         }
                     }
 
                     // 2. Best move instability
-                    if (previousBestMove != MOVE_NONE && rootBestMove != previousBestMove) {
+                    if (previousRootBestMove != MOVE_NONE && rootBestMove != previousRootBestMove) {
                         unstable = true;
                     }
 
                     // If unstable, extend time (Panic Mode)
                     if (unstable) {
+                        // Increase soft limit
                         optimumTime = std::min(maximumTime, optimumTime + optimumTime / 2);
                     }
                 }
 
-                previousScore = score;
-                previousBestMove = rootBestMove;
+                previousRootScore = score;
+                previousRootBestMove = rootBestMove;
 
                 auto now = std::chrono::steady_clock::now();
                 int elapsed = static_cast<int>(
@@ -401,6 +444,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         searchStats.selDepth = ply;
     }
 
+    // Prefetch TT entry for the current position early
+    TT.prefetch(board.key());
+
     // Check for time/node limits - check frequently for responsiveness
     // Using 1023 (1024-1) for fast time controls
     if ((searchStats.nodes & 1023) == 0) {
@@ -413,6 +459,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     // This MUST happen before depth check, otherwise when we go to qsearch,
     // the parent will use stale PV data, causing illegal moves in PV
     pvLines[ply].clear();
+
+    // Get stack pointer for current ply
+    // ply is guaranteed < MAX_PLY here
+    SearchStack* ss = &stack[ply + 2];
 
     // Quiescence search at depth 0
     // [PERBAIKAN] Start qsearch with depth 2 to search quiet checks at first plies
@@ -480,13 +530,31 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         correctedStaticEval = staticEval + correction;
     }
 
-    // Note: staticEval and correctedStaticEval are local variables; they will be stored
-    // in the search stack later when ss is properly initialized
+    // Save evaluations to stack
+    ss->staticEval = staticEval;
+    ss->correctedStaticEval = correctedStaticEval;
+
+    // Improving Heuristic
+    // We are improving if the current static eval is better than the one 2 plies ago
+    // ss is stack[ply+2], so grandparent is stack[ply]
+    bool improving = false;
+    if (ply >= 2 && !inCheck && ss->staticEval != VALUE_NONE && stack[ply].staticEval != VALUE_NONE) {
+        if (ss->staticEval >= stack[ply].staticEval) {
+            improving = true;
+        }
+    }
+
+    // Also consider improving if we are in check (to avoid aggressive pruning)
+    if (inCheck) improving = true;
 
     // Razoring (at low depths, if eval is far below alpha)
     // Use corrected eval for more accurate pruning decisions
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
         int razorMargin = RazorMargin[depth];
+
+        // Relax margin if improving
+        if (improving) razorMargin += 50;
+
         if (correctedStaticEval + razorMargin <= alpha) {
             int razorScore = qsearch(board, alpha - razorMargin, alpha - razorMargin + 1);
             if (razorScore <= alpha - razorMargin) {
@@ -499,6 +567,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     // Use corrected eval for more accurate pruning
     if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
         int rfpMargin = RFPMargin[depth];
+
+        // Stricter margin if not improving (prune less)
+        // Correction: Improving -> Prune less (Increase margin)
+        // Not Improving -> Prune more (Standard margin)
+        if (improving) rfpMargin += 50;
+
         if (correctedStaticEval - rfpMargin >= beta && correctedStaticEval < VALUE_MATE_IN_MAX_PLY) {
             return correctedStaticEval;
         }
@@ -509,9 +583,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     bool hasNonPawnMaterial = board.pieces(board.side_to_move()) !=
                               board.pieces(board.side_to_move(), PAWN, KING);
 
-    // Get previous stack entry for double null move check
-    // Guard against array overflow
-    SearchStack* ss = (ply + 2 < MAX_PLY + 4) ? &stack[ply + 2] : &stack[MAX_PLY + 3];
     bool doubleNullMove = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].nullMovePruned);
 
     // Null move pruning
@@ -523,6 +594,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         // Dynamic reduction based on depth and corrected eval
         int R = 3 + depth / 4 + std::min(3, (correctedStaticEval - beta) / 200);
+
+        // Reduce more if not improving (likely to fail low anyway)
+        if (!improving) R++;
 
         // Make null move
         StateInfo si;
@@ -671,6 +745,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         // Probe TT again
         tte = TT.probe(board.key(), ttHit);
         ttMove = ttHit ? tte->move() : MOVE_NONE;
+
+        // [PERBAIKAN] Validasi ttMove setelah IID untuk mencegah illegal move
+        if (ttMove != MOVE_NONE && (!MoveGen::is_pseudo_legal(board, ttMove) || !MoveGen::is_legal(board, ttMove))) {
+            ttMove = MOVE_NONE;
+        }
     }
 
     // Move loop
@@ -697,7 +776,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     // For root node with MultiPV, we iterate through rootMoves directly
     // For non-root nodes, we use MovePicker
     MovePicker mp(board, ttMove, ply, killers, counterMoves, history, previousMove,
-                  contHist1ply, contHist2ply);
+                  contHist1ply, contHist2ply, captureHistory);
 
     // Root move index for iterating through rootMoves (only used at root)
     size_t rootMoveIdx = 0;
@@ -1005,6 +1084,23 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                 }
                             }
                         }
+                    } else {
+                        // Update capture history
+                        Piece captured = board.piece_on(m.to()); // This is wrong because move is already undone? No, wait.
+                        // board.undo_move(m) was called at line 1002.
+                        // So board.piece_on(m.to()) will return the piece that WAS there?
+                        // No, undo_move(m) restores the board. So m.to() has the captured piece again if we captured something?
+                        // Wait, undo_move restores the captured piece.
+                        // So board.piece_on(m.to()) is correct if it was a capture.
+                        if (captured != NO_PIECE) {
+                             PieceType capturedPt = type_of(captured);
+                             int bonus = depth * depth;
+                             captureHistory[movedPiece][m.to()][capturedPt] += bonus;
+                             // We should probably clamp or decay, but simple addition is a start.
+                             // To fit with other history, maybe limit it.
+                             if (captureHistory[movedPiece][m.to()][capturedPt] > 20000)
+                                 captureHistory[movedPiece][m.to()][capturedPt] = 20000;
+                        }
                     }
 
                     break;  // Fail high
@@ -1075,6 +1171,11 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
     if (ply >= MAX_PLY) {
         return evaluate(board); // atau return alpha/beta
     }
+
+    // [PERBAIKAN] Clear PV line for this ply to prevent stale data from leaking
+    // to parent nodes, which could cause illegal move output
+    pvLines[ply].clear();
+
     bool inCheck = board.in_check();
 
     // Stand pat

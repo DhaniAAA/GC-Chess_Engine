@@ -9,6 +9,8 @@
 
 namespace Eval {
 
+PawnTable pawnTable;
+
 // ============================================================================
 // Helper Functions Implementation
 // ============================================================================
@@ -406,8 +408,20 @@ int evaluate(const Board& board) {
     score -= eval_material_pst(board, BLACK);
 
     // Pawn structure
-    score += eval_pawn_structure(board, WHITE);
-    score -= eval_pawn_structure(board, BLACK);
+    Key pawnKey = board.pawn_key();
+    PawnEntry* pawnEntry = pawnTable.probe(pawnKey);
+    EvalScore pawnScore;
+
+    if (pawnEntry->match(pawnKey)) {
+        pawnScore = pawnEntry->score;
+    } else {
+        pawnScore += eval_pawn_structure(board, WHITE);
+        pawnScore -= eval_pawn_structure(board, BLACK);
+
+        pawnEntry->key = pawnKey;
+        pawnEntry->score = pawnScore;
+    }
+    score += pawnScore;
 
     // Piece activity
     score += eval_pieces(board, WHITE);

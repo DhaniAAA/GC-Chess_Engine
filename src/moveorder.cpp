@@ -167,9 +167,11 @@ MovePicker::MovePicker(const Board& b, Move tt, int p,
                        const KillerTable& kt, const CounterMoveTable& cm,
                        const HistoryTable& ht, Move prevMove,
                        const ContinuationHistoryEntry* contHist1,
-                       const ContinuationHistoryEntry* contHist2)
+                       const ContinuationHistoryEntry* contHist2,
+                       const int (*ch)[64][8])
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
       contHist1ply(contHist1), contHist2ply(contHist2),
+      captureHistory(ch),
       ttMove(tt), currentIdx(0), ply(p), stage(STAGE_TT_MOVE) {
 
     killer1 = kt.get(p, 0);
@@ -185,7 +187,7 @@ MovePicker::MovePicker(const Board& b, Move tt, int p,
 
 MovePicker::MovePicker(const Board& b, Move tt, const HistoryTable& ht)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr),
+      contHist1ply(nullptr), contHist2ply(nullptr), captureHistory(nullptr),
       ttMove(tt), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), currentIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {}
@@ -198,8 +200,20 @@ void MovePicker::score_captures() {
         int see_value = SEE::evaluate(board, m);
 
         if (see_value >= 0) {
-            // Good capture: MVV-LVA + SEE bonus
+            // Good capture: MVV-LVA + SEE bonus + Capture History
             sm.score = SCORE_WINNING_CAP + mvv_lva(board, m);
+
+            // Add Capture History bonus
+            if (captureHistory) {
+                Piece pc = board.piece_on(m.from());
+                PieceType pt = type_of(pc);
+                Piece captured = board.piece_on(m.to());
+                if (captured != NO_PIECE) {
+                    PieceType capturedPt = type_of(captured);
+                    // Divide by integer to keep scale reasonable
+                    sm.score += captureHistory[pc][m.to()][capturedPt] / 100;
+                }
+            }
         } else {
             // Bad capture: lose material
             sm.score = SCORE_LOSING_CAP + see_value;

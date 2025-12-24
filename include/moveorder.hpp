@@ -338,7 +338,8 @@ public:
                const KillerTable& kt, const CounterMoveTable& cm,
                const HistoryTable& ht, Move prevMove,
                const ContinuationHistoryEntry* contHist1 = nullptr,
-               const ContinuationHistoryEntry* contHist2 = nullptr);
+               const ContinuationHistoryEntry* contHist2 = nullptr,
+               const int (*captureHistory)[64][8] = nullptr);
 
     // Constructor for quiescence search
     MovePicker(const Board& b, Move ttMove, const HistoryTable& ht);
@@ -353,6 +354,7 @@ private:
     const CounterMoveTable* counterMoves;
     const ContinuationHistoryEntry* contHist1ply;  // 1-ply ago continuation history
     const ContinuationHistoryEntry* contHist2ply;  // 2-ply ago continuation history
+    const int (*captureHistory)[64][8];            // Capture history pointer
 
     Move ttMove;
     Move killer1, killer2;

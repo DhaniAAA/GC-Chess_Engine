@@ -216,6 +216,40 @@ EvalScore eval_pawn_structure(const Board& board, Color c);
 EvalScore eval_pieces(const Board& board, Color c);
 EvalScore eval_king_safety(const Board& board, Color c);
 
+// ============================================================================
+// Pawn Hash Table
+// ============================================================================
+
+struct PawnEntry {
+    Key key;
+    EvalScore score;
+
+    // Check if the entry matches the key
+    bool match(Key k) const { return key == k; }
+};
+
+class PawnTable {
+public:
+    static constexpr int SIZE = 16384;  // 16K entries, adjustable
+    static constexpr int MASK = SIZE - 1;
+
+    void clear() {
+        for (int i = 0; i < SIZE; ++i) {
+            table[i].key = 0;
+            table[i].score = S(0, 0);
+        }
+    }
+
+    PawnEntry* probe(Key key) {
+        return &table[key & MASK];
+    }
+
+private:
+    PawnEntry table[SIZE];
+};
+
+extern PawnTable pawnTable;
+
 // Main Evaluation Function
 int evaluate(const Board& board);
 

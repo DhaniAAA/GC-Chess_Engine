@@ -4,15 +4,26 @@
 #
 
 # define the Cpp compiler to use
-CXX = g++
+# Untuk g++ 64-bit
+CXX = x86_64-w64-mingw32-g++
+
+# Mode Release (Default)
+# CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG
+# LFLAGS =
 
 # define any compile-time flags
-# Mode Release (Default)
-CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG
-# define library paths in addition to /usr/lib
-#   if I wanted to include libraries not in /usr/lib I'd specify
-#   their path using -Lpath, something like:
-LFLAGS =
+# Mode Release (Optimized for Speed - Bullet Chess)
+# -O3: Maximum optimization
+# -march=native: Use all CPU features available
+# -flto: Link-Time Optimization for whole-program optimization
+# -fno-exceptions: Disable exceptions for faster code (if not used)
+# -funroll-loops: Unroll loops for speed
+# -fomit-frame-pointer: Free up a register for faster code
+CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG \
+            -flto -funroll-loops -fomit-frame-pointer
+
+# Link-time optimization flags (must match CXXFLAGS)
+LFLAGS = -flto
 
 # define output directory
 OUTPUT	:= output

@@ -6,6 +6,7 @@
 #include "move.hpp"
 #include <cstring>
 #include <memory>
+#include <xmmintrin.h>
 
 // ============================================================================
 // Transposition Table Entry
@@ -89,6 +90,15 @@ public:
 
     // Clear the entire table
     void clear();
+
+    // Prefetch TT entry into cache
+    void prefetch(Key key) {
+        #if defined(_MM_HINT_T0)
+        _mm_prefetch((const char*)first_entry(key), _MM_HINT_T0);
+        #elif defined(__GNUC__)
+        __builtin_prefetch(first_entry(key));
+        #endif
+    }
 
     // Increment the generation (call at start of each search)
     void new_search() { generation8 += 4; }  // Shift by 4 to keep bound bits clear

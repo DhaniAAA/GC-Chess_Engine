@@ -280,6 +280,7 @@ private:
     HistoryTable history;
     ContinuationHistory contHistory;  // Continuation history (1-ply and 2-ply ago tracking)
     CorrectionHistory corrHistory;    // Correction history for static eval bias correction
+    int captureHistory[16][64][8];    // Capture history [Piece][To][CapturedPieceType]
 
     // Search state
     std::atomic<bool> stopped;
@@ -290,6 +291,8 @@ private:
     // Root info
     Move rootBestMove;
     Move rootPonderMove;
+    Move previousRootBestMove; // Best move from previous iteration
+    int previousRootScore;     // Best score from previous iteration
     int rootDepth;
     int rootPly;  // Starting ply for relative ply calculation
 

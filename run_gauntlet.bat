@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM ============================================================================
 REM Gauntlet Testing Script for GC-Engine
 REM Tests against multiple opponent engines to estimate ELO
@@ -13,7 +14,7 @@ REM Configuration
 set ENGINE_TEST=output\main.exe
 set HASH=64
 set THREADS=1
-set GAMES_PER_OPPONENT=20
+set GAMES_PER_OPPONENT=100
 set TC=5+0.05
 set CUTECHESS=cutechess\cutechess-cli.exe
 
@@ -80,6 +81,10 @@ echo ============================================
 echo.
 
 REM Run gauntlet against each opponent
+set TOTAL_WINS=0
+set TOTAL_LOSSES=0
+set TOTAL_DRAWS=0
+
 for %%O in (%OPPONENT_DIR%\*.exe) do (
     echo.
     echo ============================================
@@ -88,12 +93,23 @@ for %%O in (%OPPONENT_DIR%\*.exe) do (
     echo ============================================
     echo.
 
-    "%CUTECHESS%" -engine name="GC-Engine" cmd="%ENGINE_TEST%" option.Hash=%HASH% -engine name="%%~nO" cmd="%%O" option.Hash=%HASH% -each proto=uci tc=%TC% -games %GAMES_PER_OPPONENT% -repeat -recover -draw movenumber=50 movecount=8 score=10 -resign movecount=3 score=1000 -pgnout "results_vs_%%~nO.pgn" -ratinginterval 10
+    REM Run cutechess and capture output to temp file
+    "%CUTECHESS%" -engine name="GC-Engine" cmd="%ENGINE_TEST%" option.Hash=%HASH% -engine name="%%~nO" cmd="%%O" option.Hash=%HASH% -each proto=uci tc=%TC% -games %GAMES_PER_OPPONENT% -repeat -recover -draw movenumber=50 movecount=8 score=10 -resign movecount=3 score=1000 -pgnout "results_vs_%%~nO.pgn" -ratinginterval 10 > temp_results.txt 2>&1
+    type temp_results.txt
+
+    REM Parse results from temp file
+    for /f "tokens=7,9,11 delims= " %%a in ('findstr /C:"Score of GC-Engine" temp_results.txt ^| findstr /V "playing"') do (
+        set WINS=%%a
+        set LOSSES=%%b
+        set DRAWS=%%c
+    )
 
     echo.
     echo ----------------------------------------
     echo Finished testing against %%~nxO
     echo Results saved to: results_vs_%%~nO.pgn
+    echo.
+    echo Match Result: W-L-D = !WINS!-!LOSSES!-!DRAWS!
     echo.
 )
 
@@ -104,8 +120,21 @@ echo ============================================
 echo.
 echo Results saved to results_vs_*.pgn files
 echo.
-echo To calculate ELO, use the formula:
-echo   Performance ELO = OpponentELO + 400 * log10(Score / (1 - Score))
+
+REM Clean up temp file
+if exist temp_results.txt del temp_results.txt
+
+REM Run ELO calculator if Python is available
+echo Calculating ELO...
+echo.
+python calculate_elo.py 2>nul
+if errorlevel 1 (
+    echo.
+    echo Python not found or script error. To calculate ELO manually:
+    echo   Performance ELO = OpponentELO + 400 * log10(Score / (1 - Score))
+    echo.
+    echo Or install Python and run: python calculate_elo.py
+)
 echo.
 goto :end
 
