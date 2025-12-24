@@ -92,13 +92,24 @@ void MoveGen::generate_pawn_moves(const Board& board, MoveList& moves, Bitboard 
     }
 
     // En passant
+    // For evasions, the captured pawn must be on the target (blocking/capturing checker)
     Square ep = board.en_passant_square();
     if (ep != SQ_NONE) {
-        Bitboard ep_pawns = pawn_attacks_bb(Them, ep) & pawns;
+        // Captured pawn is on the square behind ep from the perspective of Them (the captured side)
+        // If Us = WHITE moving, ep is rank 6, captured pawn is rank 5 (ep - 8)
+        // If Us = BLACK moving, ep is rank 3, captured pawn is rank 4 (ep + 8)
+        Square captured_pawn_sq = (Us == WHITE) ? Square(ep - 8) : Square(ep + 8);
 
-        while (ep_pawns) {
-            Square from = pop_lsb(ep_pawns);
-            moves.add(Move::make_enpassant(from, ep));
+        // Only generate en passant if either:
+        // 1. The ep square itself is in target (for normal generation with FULL_BB), OR
+        // 2. The captured pawn square is in target (for evasions, to capture the checking pawn)
+        if ((target & ep) || (target & captured_pawn_sq)) {
+            Bitboard ep_pawns = pawn_attacks_bb(Them, ep) & pawns;
+
+            while (ep_pawns) {
+                Square from = pop_lsb(ep_pawns);
+                moves.add(Move::make_enpassant(from, ep));
+            }
         }
     }
 }

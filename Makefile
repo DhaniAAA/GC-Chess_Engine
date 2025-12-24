@@ -22,7 +22,7 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG \
             -flto -funroll-loops -fomit-frame-pointer
 
 # Link-time optimization flags (must match CXXFLAGS)
-LFLAGS = -flto
+LFLAGS =
 
 # define output directory
 OUTPUT	:= output

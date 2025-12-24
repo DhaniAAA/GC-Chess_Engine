@@ -14,7 +14,7 @@ REM Configuration
 set ENGINE_TEST=output\main.exe
 set HASH=64
 set THREADS=1
-set GAMES_PER_OPPONENT=100
+set GAMES_PER_OPPONENT=10
 set TC=5+0.05
 set CUTECHESS=cutechess\cutechess-cli.exe
 
