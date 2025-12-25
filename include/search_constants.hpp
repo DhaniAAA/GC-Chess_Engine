@@ -47,6 +47,16 @@ constexpr int SEE_QUIET_THRESHOLD_PER_DEPTH = -50;
 constexpr int HISTORY_LEAF_PRUNING_DEPTH = 4;    // Max depth for history pruning
 constexpr int HISTORY_LEAF_PRUNING_MARGIN = 8000; // Base margin per depth
 
+// Countermove History Pruning
+// Prune quiet moves with very poor countermove history scores
+constexpr int COUNTER_HIST_PRUNING_DEPTH = 3;    // Max depth for countermove history pruning
+constexpr int COUNTER_HIST_PRUNING_MARGIN = 4000; // Threshold for pruning (negative history)
+
+// Follow-up History Pruning
+// Prune moves based on 4-ply continuation history pattern
+constexpr int FOLLOWUP_HIST_PRUNING_DEPTH = 3;   // Max depth for follow-up history pruning
+constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 5000; // Threshold for pruning
+
 // ============================================================================
 // Extension Parameters
 // ============================================================================

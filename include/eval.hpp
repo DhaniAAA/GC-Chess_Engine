@@ -134,6 +134,16 @@ using Tuning::BackwardPawnPenalty;
 using Tuning::ConnectedPawnBonus;
 using Tuning::PhalanxBonus;
 
+// Candidate Passed Pawn - pawn that can become passed with a single pawn move/exchange
+// Bonus scaled by rank (closer to promotion = more valuable)
+constexpr EvalScore CandidatePassedBonus[8] = {
+    S(  0,   0), S(  3,   5), S(  5,  10), S( 10,  20),
+    S( 20,  40), S( 35,  60), S( 50,  90), S(  0,   0)
+};
+
+// Rule of the Square bonus (endgame only): bonus for passed pawn that king can't catch
+constexpr int RuleOfSquareBonus = 150;  // Significant endgame bonus
+
 // King safety - semi-open file near enemy king
 constexpr EvalScore KingSemiOpenFilePenalty = S( 15, 0);
 constexpr EvalScore KingOpenFilePenalty     = S( 25, 0);

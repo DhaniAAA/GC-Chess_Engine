@@ -217,7 +217,91 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                     score.eg -= 20;  // More significant in endgame
                 }
             }
+
+            // =================================================================
+            // RULE OF THE SQUARE (Endgame Only)
+            // A passed pawn that the enemy king cannot catch is virtually unstoppable
+            // The "square" is the area the enemy king must be in to catch the pawn
+            // =================================================================
+            {
+                // Calculate promotion square
+                Rank promoRank = c == WHITE ? RANK_8 : RANK_1;
+                int squaresToPromo = std::abs(promoRank - rank_of(sq));
+
+                // For the pawn to move, we need to check if it's the pawn's turn
+                int effectiveSquares = squaresToPromo;
+                if (board.side_to_move() != c) {
+                    // If it's enemy's turn, pawn effectively has one less square
+                    effectiveSquares++;
+                }
+
+                // Enemy king distance to the promotion square
+                int kingToPromo = std::max(
+                    std::abs(file_of(enemyKingSq) - f),
+                    std::abs(rank_of(enemyKingSq) - promoRank)
+                );
+
+                // Check if enemy king is outside the "square"
+                // King is outside if its Chebyshev distance to promo square > effective squares
+                if (kingToPromo > effectiveSquares) {
+                    // Check if path is clear (no enemy pieces blocking)
+                    bool pathClear = true;
+                    Bitboard enemyPieces = board.pieces(enemy) ^ board.pieces(enemy, KING);
+                    Bitboard pawnPath = c == WHITE ?
+                        (file_bb(f) & ~(square_bb(sq) | (square_bb(sq) - 1))) :  // Above pawn for white
+                        (file_bb(f) & (square_bb(sq) - 1));  // Below pawn for black
+
+                    if (pawnPath & enemyPieces) {
+                        pathClear = false;
+                    }
+
+                    if (pathClear) {
+                        // Enemy king cannot catch the pawn!
+                        score.eg += RuleOfSquareBonus;
+                    }
+                }
+            }
         }
+        // =================================================================
+        // CANDIDATE PASSED PAWN
+        // A pawn that could become passed if we advance it and exchange
+        // or if enemy pawn blocking it leaves. Has potential but needs work.
+        // =================================================================
+        else {
+            // Check if pawn could become a candidate passed pawn
+            // Candidate: only ONE enemy pawn can stop it, and we have a helper pawn
+            Bitboard stoppers = passed_pawn_mask(c, sq) & theirPawns;
+            int stopperCount = popcount(stoppers);
+
+            if (stopperCount == 1) {
+                // Only one enemy pawn blocking - this is a candidate
+                // (stopperSq not needed - we just need to know there's exactly one stopper)
+
+                // Check if we have a helper pawn that can support the exchange
+                Bitboard helperMask = adjacent_files_bb(f) & ourPawns;
+                bool hasHelper = false;
+
+                if (c == WHITE) {
+                    // Helper pawns must be behind or equal rank to attack the stopper
+                    Bitboard behindOrEqual = ~0ULL >> (8 * (8 - rank_of(sq)));
+                    if (helperMask & behindOrEqual) hasHelper = true;
+                } else {
+                    Bitboard behindOrEqual = ~0ULL << (8 * (rank_of(sq) + 1));
+                    if (helperMask & behindOrEqual) hasHelper = true;
+                }
+
+                // Also consider if our pawn can simply capture the stopper
+                Bitboard pawnAttacks = pawn_attacks_bb(c, sq);
+                if (pawnAttacks & stoppers) {
+                    hasHelper = true;  // Can directly capture
+                }
+
+                if (hasHelper) {
+                    score += CandidatePassedBonus[r];
+                }
+            }
+        }
+
 
         // Isolated pawn check
         if (isIsolated) {

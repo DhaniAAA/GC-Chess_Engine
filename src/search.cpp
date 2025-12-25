@@ -250,7 +250,27 @@ void Search::check_time() {
             if (previousRootScore != VALUE_NONE) {
                 // If the score of the primary candidate move has changed drastically
                 int currentPvScore = rootMoves[0].score;
-                if (std::abs(currentPvScore - previousRootScore) > 40) { // 40cp threshold
+
+                // [PERBAIKAN] Saat mate score, jangan anggap fluktuasi sebagai instability
+                // Karena mate distance bisa berubah saat kita menemukan variasi yang berbeda
+                bool currentIsMate = std::abs(currentPvScore) >= VALUE_MATE_IN_MAX_PLY;
+                bool previousIsMate = std::abs(previousRootScore) >= VALUE_MATE_IN_MAX_PLY;
+
+                if (currentIsMate && previousIsMate) {
+                    // Kedua score adalah mate - cek apakah masih dalam arah yang sama
+                    // (keduanya winning mate atau keduanya losing mate)
+                    bool sameDirection = (currentPvScore > 0) == (previousRootScore > 0);
+                    if (!sameDirection) {
+                        unstable = true;  // Berubah dari winning ke losing atau sebaliknya
+                    }
+                    // Jika arah sama, tidak dianggap unstable (mate distance mungkin berubah)
+                } else if (!currentIsMate && !previousIsMate) {
+                    // Normal score comparison
+                    if (std::abs(currentPvScore - previousRootScore) > 40) { // 40cp threshold
+                        unstable = true;
+                    }
+                } else {
+                    // Transisi antara mate dan non-mate score - selalu unstable
                     unstable = true;
                 }
             }
@@ -519,19 +539,34 @@ void Search::iterative_deepening(Board& board) {
 
                     // Early stop conditions
                     if (multiPV == 1) {
-                        // Very stable best move with enough depth - can stop early
-                        if (bestMoveStability >= 5 && elapsed > effectiveOptimum * 0.4) {
-                            break;
-                        }
+                        // [PERBAIKAN] Jangan stop early saat mate score
+                        // Saat menemukan mate, tetap lanjutkan analisis untuk:
+                        // 1. Memastikan mate distance akurat
+                        // 2. Mencari mate lebih pendek jika ada
+                        bool isMateScore = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
-                        // Normal stability check
-                        if (!failingLow && elapsed > effectiveOptimum * 0.6) {
-                            break;
-                        }
+                        if (!isMateScore) {
+                            // Very stable best move with enough depth - can stop early
+                            if (bestMoveStability >= 5 && elapsed > effectiveOptimum * 0.4) {
+                                break;
+                            }
 
-                        // Failing low but past soft limit
-                        if (failingLow && elapsed > optimumTime * 0.9) {
-                            break;
+                            // Normal stability check
+                            if (!failingLow && elapsed > effectiveOptimum * 0.6) {
+                                break;
+                            }
+
+                            // Failing low but past soft limit
+                            if (failingLow && elapsed > optimumTime * 0.9) {
+                                break;
+                            }
+                        } else {
+                            // Untuk mate score, hanya stop jika sudah mate in 1-2
+                            // dan stable, untuk memastikan tidak ada miss
+                            int mateIn = std::abs(VALUE_MATE - std::abs(score));
+                            if (mateIn <= 4 && bestMoveStability >= 3 && elapsed > optimumTime * 0.8) {
+                                break;  // Mate in 1-2 moves is definitive
+                            }
                         }
                     }
                 }
@@ -1122,6 +1157,43 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             int histScore = history.get(board.side_to_move(), m);
             if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
                 continue;  // Skip moves with very bad history
+            }
+        }
+
+        // =====================================================================
+        // COUNTERMOVE HISTORY PRUNING
+        // Prune quiet moves with poor countermove history scores.
+        // This uses the 1-ply continuation history to identify moves that are
+        // historically bad responses to the opponent's previous move.
+        // =====================================================================
+        if (!pvNode && !inCheck && depth <= COUNTER_HIST_PRUNING_DEPTH &&
+            !isCapture && !isPromotion && !givesCheck && !createsThreat && !escapesAttack &&
+            bestScore > VALUE_MATED_IN_MAX_PLY && contHist1ply) {
+
+            PieceType pt = type_of(movedPiece);
+            int cmHistScore = contHist1ply->get(pt, m.to());
+
+            if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
+                continue;  // Skip moves with very poor countermove history
+            }
+        }
+
+        // =====================================================================
+        // FOLLOW-UP HISTORY PRUNING
+        // Prune quiet moves based on 4-ply continuation history pattern.
+        // This captures longer-term move sequence patterns, pruning moves
+        // that have historically been poor follow-ups to our move 2-ply ago.
+        // =====================================================================
+        if (!pvNode && !inCheck && depth <= FOLLOWUP_HIST_PRUNING_DEPTH &&
+            !isCapture && !isPromotion && !givesCheck && !createsThreat && !escapesAttack &&
+            bestScore > VALUE_MATED_IN_MAX_PLY && ply >= 4 && stack[ply - 2].contHistory) {
+
+            const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+            PieceType pt = type_of(movedPiece);
+            int followupScore = contHist4ply->get(pt, m.to());
+
+            if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
+                continue;  // Skip moves with very poor follow-up history
             }
         }
 
