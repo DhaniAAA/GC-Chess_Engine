@@ -274,6 +274,12 @@ extern PawnTable pawnTable;
 int evaluate(const Board& board, int alpha, int beta);
 int evaluate(const Board& board);  // Compatibility version (no lazy eval)
 
+// Thread-safe version without pawn hash table (for Texel Tuner multi-threading)
+int evaluate_no_cache(const Board& board);
+
+// Material balance for contempt (positive = white ahead, negative = black ahead)
+int material_balance(const Board& board);
+
 } // namespace Eval
 
 #endif // EVAL_HPP

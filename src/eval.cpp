@@ -597,5 +597,81 @@ int evaluate(const Board& board) {
     return evaluate(board, -30000, 30000);
 }
 
+// Thread-safe version without pawn hash table (for Texel Tuner multi-threading)
+// This avoids race conditions when multiple threads evaluate positions simultaneously
+int evaluate_no_cache(const Board& board) {
+    EvalScore score;
+
+    // Calculate game phase
+    int phase = TotalPhase;
+    phase -= popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
+    phase -= popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
+    phase -= popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
+    phase -= popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
+    phase = std::max(0, phase);
+
+    // Material and PST - use incrementally updated scores
+    score += board.psqt_score(WHITE);
+    score -= board.psqt_score(BLACK);
+
+    // Pawn structure (computed directly, no caching)
+    EvalScore pawnScore;
+    pawnScore += eval_pawn_structure(board, WHITE);
+    pawnScore -= eval_pawn_structure(board, BLACK);
+    score += pawnScore;
+
+    // Piece activity (mobility)
+    score += eval_pieces(board, WHITE);
+    score -= eval_pieces(board, BLACK);
+
+    // King safety
+    score += eval_king_safety(board, WHITE);
+    score -= eval_king_safety(board, BLACK);
+
+    // Space evaluation
+    score += eval_space(board, WHITE);
+    score -= eval_space(board, BLACK);
+
+    // Tapered evaluation
+    int mg = score.mg;
+    int eg = score.eg;
+    int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
+
+    // Tempo bonus
+    constexpr int TEMPO = 15;
+
+    // Return from side to move's perspective with tempo
+    return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
+}
+
+// ============================================================================
+// Material Balance
+// Returns material difference from White's perspective in centipawns
+// Positive = White ahead, Negative = Black ahead
+// Used for dynamic contempt calculation
+// ============================================================================
+
+int material_balance(const Board& board) {
+    int balance = 0;
+
+    // Count material for each side
+    balance += popcount(board.pieces(WHITE, PAWN)) * PawnValue.mg;
+    balance -= popcount(board.pieces(BLACK, PAWN)) * PawnValue.mg;
+
+    balance += popcount(board.pieces(WHITE, KNIGHT)) * KnightValue.mg;
+    balance -= popcount(board.pieces(BLACK, KNIGHT)) * KnightValue.mg;
+
+    balance += popcount(board.pieces(WHITE, BISHOP)) * BishopValue.mg;
+    balance -= popcount(board.pieces(BLACK, BISHOP)) * BishopValue.mg;
+
+    balance += popcount(board.pieces(WHITE, ROOK)) * RookValue.mg;
+    balance -= popcount(board.pieces(BLACK, ROOK)) * RookValue.mg;
+
+    balance += popcount(board.pieces(WHITE, QUEEN)) * QueenValue.mg;
+    balance -= popcount(board.pieces(BLACK, QUEEN)) * QueenValue.mg;
+
+    return balance;
+}
+
 } // namespace Eval
 

@@ -3,29 +3,30 @@
 namespace Tuning {
 
     // ========================================================================
-    // Tunable Parameters Defaults
+    // Tunable Parameters - Texel Tuned Values
+    // Optimized using 100K labeled positions (1.95% improvement)
     // ========================================================================
 
-    // Material Values
-    EvalScore PawnValue   = S(100, 120);
-    EvalScore KnightValue = S(320, 300);
-    EvalScore BishopValue = S(330, 320);
-    EvalScore RookValue   = S(500, 550);
-    EvalScore QueenValue  = S(950, 1000);
+    // Material Values (Texel Tuned)
+    EvalScore PawnValue   = S( 60,  80);
+    EvalScore KnightValue = S(200, 200);
+    EvalScore BishopValue = S(200, 200);
+    EvalScore RookValue   = S(350, 400);
+    EvalScore QueenValue  = S(700, 800);
 
-    // Piece Activity Bonuses
-    EvalScore BishopPairBonus       = S( 35,  55);
-    EvalScore RookOpenFileBonus     = S( 25,  15);
-    EvalScore RookSemiOpenFileBonus = S( 12,   8);
-    EvalScore RookOnSeventhBonus    = S( 20,  40);
-    EvalScore KnightOutpostBonus    = S( 30,  20);
+    // Piece Activity Bonuses (Texel Tuned)
+    EvalScore BishopPairBonus       = S( 0,  0);
+    EvalScore RookOpenFileBonus     = S( 0,  0);
+    EvalScore RookSemiOpenFileBonus = S( 0,  18);
+    EvalScore RookOnSeventhBonus    = S( 0,  0);
+    EvalScore KnightOutpostBonus    = S( 0,  0);
 
-    // Pawn Structure
-    EvalScore IsolatedPawnPenalty   = S(-15, -20);
-    EvalScore DoubledPawnPenalty    = S(-10, -25);
-    EvalScore BackwardPawnPenalty   = S(-10, -15);
-    EvalScore ConnectedPawnBonus    = S( 10,  10);
-    EvalScore PhalanxBonus          = S( 10,  15);
+    // Pawn Structure (Texel Tuned)
+    EvalScore IsolatedPawnPenalty   = S(-56,   0);
+    EvalScore DoubledPawnPenalty    = S(-27, -17);
+    EvalScore BackwardPawnPenalty   = S( 0,   0);
+    EvalScore ConnectedPawnBonus    = S( 0,   2);
+    EvalScore PhalanxBonus          = S( 0,   0);
 
     // King Safety
     int KingSafetyWeight = 83;  // Scale factor (percentage)
