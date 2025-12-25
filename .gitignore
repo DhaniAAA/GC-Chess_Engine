@@ -16,7 +16,11 @@
 # Linker files
 *.ilk
 *.txt
-*.md
+
+# Project Plan
+build-project.md
+roadmap.md
+
 # Debugger Files
 *.pdb
 
