@@ -21,7 +21,8 @@ CXX = g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG
 
 # Link-time optimization flags (must match CXXFLAGS)
-LFLAGS =
+# -static: Static linking to avoid DLL dependencies (libgcc, libstdc++, etc)
+LFLAGS = -static
 
 # define output directory
 OUTPUT	:= output
@@ -117,3 +118,77 @@ clean:
 run: all
 	./$(OUTPUTMAIN)
 	@echo Executing 'run: all' complete!
+
+# ============================================================================
+# Performance Optimized Builds
+# ============================================================================
+
+# Build with PEXT/PDEP support for BMI2 CPUs (Intel Haswell+, AMD Zen 3+)
+# This provides faster sliding piece attack lookups
+pext: CXXFLAGS += -mbmi2 -DUSE_PEXT
+pext: clean all
+	@echo Built with PEXT/BMI2 support!
+
+# Profile-Guided Optimization (PGO) - Step 1: Instrument
+# Build with profiling enabled, then run benchmarks
+pgo-generate: CXXFLAGS += -fprofile-generate
+pgo-generate: LFLAGS += -fprofile-generate
+pgo-generate: clean all
+	@echo PGO instrumented build complete! Run benchmarks now.
+
+# Profile-Guided Optimization (PGO) - Step 2: Use profile
+# Build using collected profile data for optimized code
+pgo-use: CXXFLAGS += -fprofile-use -fprofile-correction
+pgo-use: LFLAGS += -fprofile-use
+pgo-use: clean all
+	@echo PGO optimized build complete!
+
+# Build with both PEXT and PGO for maximum performance
+pext-pgo-generate: CXXFLAGS += -mbmi2 -DUSE_PEXT -fprofile-generate
+pext-pgo-generate: LFLAGS += -fprofile-generate
+pext-pgo-generate: clean all
+	@echo Built with PEXT + PGO profiling! Run benchmarks now.
+
+pext-pgo-use: CXXFLAGS += -mbmi2 -DUSE_PEXT -fprofile-use -fprofile-correction
+pext-pgo-use: LFLAGS += -fprofile-use
+pext-pgo-use: clean all
+	@echo Built with PEXT + PGO optimization complete!
+
+# Debug build for development
+debug: CXXFLAGS := -std=c++17 -Wall -Wextra -g -O0 -DDEBUG
+debug: clean all
+	@echo Debug build complete!
+
+# ============================================================================
+# Texel Tuner Build
+# ============================================================================
+
+# Source files needed for tuner (excluding main.cpp)
+TUNER_SOURCES := tuner/texel_tuner.cpp \
+                 src/board.cpp \
+                 src/magic.cpp \
+                 src/zobrist.cpp \
+                 src/bitboard.cpp \
+                 src/eval.cpp \
+                 src/tuning.cpp \
+                 src/movegen.cpp
+
+TUNER_OBJECTS := $(TUNER_SOURCES:.cpp=.o)
+
+ifeq ($(OS),Windows_NT)
+TUNER_MAIN := tuner.exe
+else
+TUNER_MAIN := tuner
+endif
+
+TUNER_OUTPUT := $(call FIXPATH,$(OUTPUT)/$(TUNER_MAIN))
+
+tuner: $(OUTPUT) $(TUNER_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $(TUNER_OUTPUT) $(TUNER_OBJECTS) $(LFLAGS) $(LIBS)
+	@echo Texel Tuner build complete!
+	@echo Usage: $(TUNER_OUTPUT) [epd_file] [max_positions] [iterations]
+
+tuner-clean:
+	$(RM) $(TUNER_OUTPUT)
+	$(RM) $(call FIXPATH,$(TUNER_OBJECTS))
+	@echo Tuner cleanup complete!
