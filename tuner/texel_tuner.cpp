@@ -1,12 +1,13 @@
 // ============================================================================
-// Texel Tuning Implementation - Ultra-Fast Version
+// Texel Tuning Implementation - Ultra-Fast Version (v6)
 // ============================================================================
-// Usage: texel_tuner.exe quiet-labeled.epd [max_positions] [iterations]
+// Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]
 //
 // OPTIMIZED APPROACH:
 // 1. Pre-compute base scores for all positions ONCE
 // 2. When testing a parameter change, only recalculate error (not re-evaluate)
 // 3. Use multi-threading to test multiple parameters simultaneously
+// 4. K value minimum clamped to 0.5 to prevent flat sigmoid
 // ============================================================================
 
 #include <iostream>
@@ -274,25 +275,33 @@ void reevaluate_all_scores() {
 // Find Optimal K
 // ============================================================================
 
-double find_optimal_k() {
+double find_optimal_k(double manual_k = 0.0) {
+    // If manual K is provided, use it
+    if (manual_k > 0.0) {
+        std::cout << "Using manual K = " << std::fixed << std::setprecision(4) << manual_k << "\n";
+        return manual_k;
+    }
+
     std::cout << "Finding optimal K value...\n";
 
-    double best_k = 1.0;
+    double best_k = 1.13;  // Start with typical value
     double best_error = calculate_error_fast(best_k);
 
-    // Coarse search
-    for (double k = 0.2; k <= 2.0; k += 0.1) {
+    // Coarse search - start from 0.5 (K < 0.5 is usually too flat)
+    for (double k = 0.5; k <= 2.5; k += 0.1) {
         double error = calculate_error_fast(k);
         std::cout << "  K = " << std::fixed << std::setprecision(2) << k
-                  << ", error = " << std::setprecision(6) << error << "\r" << std::flush;
+                  << ", error = " << std::setprecision(6) << error << "\n";
         if (error < best_error) {
             best_error = error;
             best_k = k;
         }
     }
 
-    // Fine search
-    for (double k = best_k - 0.1; k <= best_k + 0.1; k += 0.01) {
+    // Fine search around best K
+    double search_start = std::max(0.5, best_k - 0.1);
+    double search_end = best_k + 0.1;
+    for (double k = search_start; k <= search_end; k += 0.01) {
         double error = calculate_error_fast(k);
         if (error < best_error) {
             best_error = error;
@@ -300,7 +309,13 @@ double find_optimal_k() {
         }
     }
 
-    std::cout << "\nOptimal K = " << std::fixed << std::setprecision(4) << best_k
+    // Sanity check: K should be between 0.5 and 2.5
+    if (best_k < 0.5) {
+        std::cout << "Warning: Optimal K (" << best_k << ") is too low, clamping to 0.5\n";
+        best_k = 0.5;
+    }
+
+    std::cout << "Optimal K = " << std::fixed << std::setprecision(4) << best_k
               << " (error = " << best_error << ")\n";
 
     return best_k;
@@ -400,8 +415,8 @@ void tune_parameters(int iterations = 100) {
             std::cout << "\n";
         }
 
-        if (step == 1 && no_improvement_count >= 3) {
-            std::cout << "Converged!\n";
+        if (step == 1 && no_improvement_count >= 5) {
+            std::cout << "Converged after " << iter << " iterations!\n";
             break;
         }
     }
@@ -443,9 +458,14 @@ void tune_parameters(int iterations = 100) {
 
 int main(int argc, char* argv[]) {
     std::cout << "=================================\n";
-    std::cout << "  GC-Engine Texel Tuner v5\n";
+    std::cout << "  GC-Engine Texel Tuner v6\n";
     std::cout << "  (Ultra-Fast Version)\n";
     std::cout << "=================================\n\n";
+    std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]\n";
+    std::cout << "  epd_file      : Path to labeled EPD file\n";
+    std::cout << "  max_positions : Maximum positions to load (0 = all)\n";
+    std::cout << "  iterations    : Number of tuning iterations (default: 100)\n";
+    std::cout << "  manual_K      : Optional manual K value (default: auto-find)\n\n";
 
     if (NUM_THREADS == 0) NUM_THREADS = 1;
     std::cout << "Using " << NUM_THREADS << " threads\n\n";
@@ -469,8 +489,10 @@ int main(int argc, char* argv[]) {
     // Pre-compute initial scores
     precompute_all_scores();
 
-    // Find optimal K
-    K = find_optimal_k();
+    // Find optimal K (or use manual K if provided)
+    double manual_k = 0.0;
+    if (argc > 4) manual_k = std::stod(argv[4]);
+    K = find_optimal_k(manual_k);
 
     // Run tuning
     int iterations = 100;
