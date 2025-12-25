@@ -152,14 +152,18 @@ void init_between_line() {
             BetweenBB[s1][s2] = between;
 
             // Build line bitboard (entire line through s1 and s2)
-            // Use sliding attacks to get full lines
-            Bitboard attacks_s1 = sliding_attack(ROOK, s1, EMPTY_BB) |
-                                  sliding_attack(BISHOP, s1, EMPTY_BB);
+            // IMPORTANT: Use only the appropriate slider type!
+            // If same file or same rank: use ROOK attacks only
+            // If same diagonal: use BISHOP attacks only
 
-            if (attacks_s1 & s2) {
-                LineBB[s1][s2] = (attacks_s1 & sliding_attack(ROOK, s2, EMPTY_BB)) |
-                                 (attacks_s1 & sliding_attack(BISHOP, s2, EMPTY_BB)) |
-                                 s1 | s2;
+            if (f1 == f2 || r1 == r2) {
+                // Same file or rank - use ROOK attacks
+                LineBB[s1][s2] = (sliding_attack(ROOK, s1, EMPTY_BB) &
+                                 sliding_attack(ROOK, s2, EMPTY_BB)) | s1 | s2;
+            } else if (df == dr || df == -dr) {
+                // Same diagonal - use BISHOP attacks
+                LineBB[s1][s2] = (sliding_attack(BISHOP, s1, EMPTY_BB) &
+                                 sliding_attack(BISHOP, s2, EMPTY_BB)) | s1 | s2;
             }
         }
     }
