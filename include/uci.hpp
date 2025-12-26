@@ -35,7 +35,7 @@ struct EngineOptions {
     int hash = 256;             // Hash size in MB
     int threads = 2;            // Number of threads
     int multiPV = 1;            // Number of principal variations
-    bool ponder = false;        // Pondering enabled
+    bool ponder = true;        // Pondering enabled by default
     std::string bookPath = "";  // Opening book path
     std::string syzygyPath = ""; // Syzygy tablebase path
     int moveOverhead = 10;      // Time overhead per move (ms)

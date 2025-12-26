@@ -4,9 +4,52 @@
 #include "board.hpp"
 #include "magic.hpp"
 #include <algorithm>
+#include <cstring>
 #include "tuning.hpp"
 
 namespace Eval {
+
+// ============================================================================
+// EvalContext (CPW Attack and Defend Maps)
+// Caches attack information to avoid redundant calculations during evaluation.
+// ============================================================================
+
+constexpr int ATTACK_PIECE_TYPES = PIECE_TYPE_NB + 1;
+constexpr int ALL_PIECES = PIECE_TYPE_NB;
+
+struct EvalContext {
+    Bitboard attackedBy[COLOR_NB][ATTACK_PIECE_TYPES];
+    Bitboard attackedBy2[COLOR_NB];  // Double attacks
+    Bitboard kingRing[COLOR_NB];
+    Square kingSquare[COLOR_NB];
+    int kingAttackersCount[COLOR_NB];
+    int kingAttackersWeight[COLOR_NB];
+    Bitboard mobilityArea[COLOR_NB];
+    bool initialized;
+
+    EvalContext() : initialized(false) { clear(); }
+
+    void clear() {
+        for (int c = 0; c < COLOR_NB; ++c) {
+            for (int pt = 0; pt < ATTACK_PIECE_TYPES; ++pt) {
+                attackedBy[c][pt] = 0;
+            }
+            attackedBy2[c] = 0;
+            kingRing[c] = 0;
+            kingSquare[c] = SQ_NONE;
+            kingAttackersCount[c] = 0;
+            kingAttackersWeight[c] = 0;
+            mobilityArea[c] = 0;
+        }
+        initialized = false;
+    }
+};
+
+void init_eval_context(EvalContext& ctx, const Board& board);
+EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx);
+EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext& ctx);
+EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ctx);
+
 
 // ============================================================================
 // Material Values (from Tuning)

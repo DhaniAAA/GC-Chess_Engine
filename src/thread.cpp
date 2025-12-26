@@ -502,6 +502,12 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     beta = std::min(beta, VALUE_MATE - ply - 1);
     if (alpha >= beta) return alpha;
 
+    // Draw detection - CRITICAL: was missing in thread pool!
+    // Check repetition, 50-move rule, and insufficient material
+    if (ply > 0 && board.is_draw(ply)) {
+        return 0;  // Draw score
+    }
+
     // Also clear child's PV to prevent stale moves from previous searches
     if (ply + 1 < MAX_PLY) {
         thread->pvLines[ply + 1].clear();

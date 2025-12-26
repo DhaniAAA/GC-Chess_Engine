@@ -196,6 +196,14 @@ private:
     int pieceCount[PIECE_NB];         // Count of each piece type
     Square kingSquare[COLOR_NB];      // King positions
 
+    // ========================================================================
+    // Piece-Lists (CPW Board Representation feature)
+    // Enables O(1) iteration over specific piece types
+    // ========================================================================
+    static constexpr int MAX_PIECES_PER_TYPE = 10;  // Max pieces per type (for promotions)
+    Square pieceList[PIECE_NB][MAX_PIECES_PER_TYPE]; // List of squares for each piece type
+    int pieceIndex[SQUARE_NB];  // Index of piece in pieceList for O(1) removal
+
     // Game state
     Color sideToMove;
     int gamePly;

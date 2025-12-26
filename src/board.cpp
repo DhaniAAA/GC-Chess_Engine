@@ -51,6 +51,14 @@ void Board::clear() {
     for (Square s = SQ_A1; s <= SQ_H8; ++s) {
         board[s] = NO_PIECE;
         castlingRightsMask[s] = ALL_CASTLING;
+        pieceIndex[s] = 0;
+    }
+
+    // Initialize piece lists to SQ_NONE
+    for (int pc = 0; pc < PIECE_NB; ++pc) {
+        for (int i = 0; i < MAX_PIECES_PER_TYPE; ++i) {
+            pieceList[pc][i] = SQ_NONE;
+        }
     }
 
     st = &startState;
@@ -63,12 +71,16 @@ void Board::clear() {
 
 void Board::put_piece(Piece pc, Square s) {
     board[s] = pc;
-    Bitboard bb = square_bb(s);  // CRITICAL: Convert square index to bitboard!
-    byTypeBB[0] |= bb;           // All pieces
+    Bitboard bb = square_bb(s);
+    byTypeBB[0] |= bb;
     byTypeBB[type_of(pc)] |= bb;
     byColorBB[color_of(pc)] |= bb;
+
+    // Piece-list update: add piece to list
+    pieceIndex[s] = pieceCount[pc];
+    pieceList[pc][pieceCount[pc]] = s;
     pieceCount[pc]++;
-    pieceCount[make_piece(color_of(pc), NO_PIECE_TYPE)]++;  // Total for color
+    pieceCount[make_piece(color_of(pc), NO_PIECE_TYPE)]++;
 
     if (type_of(pc) == KING) {
         kingSquare[color_of(pc)] = s;
@@ -77,12 +89,20 @@ void Board::put_piece(Piece pc, Square s) {
 
 void Board::remove_piece(Square s) {
     Piece pc = board[s];
-    Bitboard bb = square_bb(s);  // CRITICAL: Convert square index to bitboard!
+    Bitboard bb = square_bb(s);
     byTypeBB[0] ^= bb;
     byTypeBB[type_of(pc)] ^= bb;
     byColorBB[color_of(pc)] ^= bb;
     board[s] = NO_PIECE;
+
+    // Piece-list update: O(1) removal by swapping with last element
+    int idx = pieceIndex[s];
     pieceCount[pc]--;
+    Square lastSq = pieceList[pc][pieceCount[pc]];
+    pieceList[pc][idx] = lastSq;
+    pieceIndex[lastSq] = idx;
+    pieceList[pc][pieceCount[pc]] = SQ_NONE;
+
     pieceCount[make_piece(color_of(pc), NO_PIECE_TYPE)]--;
 }
 
@@ -96,6 +116,11 @@ void Board::move_piece(Square from, Square to) {
 
     board[from] = NO_PIECE;
     board[to] = pc;
+
+    // Piece-list update: update square in the list
+    int idx = pieceIndex[from];
+    pieceList[pc][idx] = to;
+    pieceIndex[to] = idx;
 
     if (type_of(pc) == KING) {
         kingSquare[color_of(pc)] = to;

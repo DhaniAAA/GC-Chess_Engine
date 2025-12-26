@@ -166,10 +166,13 @@ int TranspositionTable::hashfull() const {
 
     if (!table || clusterCount == 0) return 0;
 
-    for (int i = 0; i < samples; ++i) {
-        const TTEntry* entry = &table[i % clusterCount].entries[0]; // Safety check added above, and modulus added just in case
+    // Sample first 1000 clusters and count ALL non-empty entries
+    // This gives actual TT utilization, not just current-generation entries
+    for (int i = 0; i < samples && i < static_cast<int>(clusterCount); ++i) {
+        const TTEntry* entry = &table[i].entries[0];
         for (int j = 0; j < TTCluster::ENTRIES_PER_CLUSTER; ++j) {
-            if (entry[j].depth8 != 0 && entry[j].generation() == generation8) {
+            // Count any entry that has data (key16 != 0 means it's been written)
+            if (entry[j].key16 != 0) {
                 ++count;
             }
         }

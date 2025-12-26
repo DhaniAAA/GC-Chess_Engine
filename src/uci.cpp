@@ -104,7 +104,7 @@ void UCIHandler::cmd_uci() {
     std::cout << "option name Table Memory type spin default 64 min 1 max 1024" << std::endl;
     std::cout << "option name Threads type spin default 1 min 1 max 128" << std::endl;
     std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
-    std::cout << "option name Ponder type check default false" << std::endl;
+    std::cout << "option name Ponder type check default true" << std::endl;
     std::cout << "option name Move Overhead type spin default 10 min 0 max 5000" << std::endl;
     std::cout << "option name OwnBook type check default true" << std::endl;
     std::cout << "option name Book File type string default book.bin" << std::endl;
