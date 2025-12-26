@@ -135,10 +135,10 @@ inline Move string_to_move(const std::string& str) {
 
 struct ScoredMove {
     Move move;
-    int64_t score;
+    int32_t score;
 
     constexpr ScoredMove() : move(MOVE_NONE), score(0) {}
-    constexpr ScoredMove(Move m, int64_t s) : move(m), score(s) {}
+    constexpr ScoredMove(Move m, int32_t s) : move(m), score(s) {}
 
     constexpr bool operator<(const ScoredMove& other) const {
         return score > other.score;  // Higher score = better move
@@ -161,7 +161,7 @@ public:
         }
     }
 
-    void add(Move m, int64_t score) {
+    void add(Move m, int32_t score) {
         if (count < MAX_MOVES) {
             moves[count++] = ScoredMove(m, score);
         }

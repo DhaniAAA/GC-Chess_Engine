@@ -1,5 +1,0 @@
-uci
-isready
-position fen r1b4k/3pR2p/p7/8/2p5/2Q5/PPP2PPP/2KR4 b - - 1 27
-go depth 5
-quit

@@ -6,23 +6,23 @@
 #include "tt.hpp"
 
 // ============================================================================
-// Move Ordering Scores (using int64_t for large range safety)
+// Move Ordering Scores (using int32_t for efficient range)
 // Higher scores = searched first
 // ============================================================================
 
 // BASE OFFSET untuk memastikan kategori tidak tumpang tindih
-constexpr int64_t SCORE_TT_MOVE        = 4000000000LL;   // Harus SELALU tertinggi
-constexpr int64_t SCORE_QUEEN_PROMO    = 3000000000LL;   // Promosi Ratu sangat krusial
-constexpr int64_t SCORE_KNIGHT_PROMO   = 2900000000LL;   // Promosi Kuda (taktis)
-constexpr int64_t SCORE_ROOK_PROMO     = 2800000000LL;   // Promosi Benteng
-constexpr int64_t SCORE_BISHOP_PROMO   = 2700000000LL;   // Promosi Gajah
-constexpr int64_t SCORE_WINNING_CAP    = 2000000000LL;   // Winning capture (Base value + MVV/LVA nanti)
-constexpr int64_t SCORE_EQUAL_CAP      = 1900000000LL;   // Equal capture
-constexpr int64_t SCORE_KILLER_1       = 100000000LL;    // Killer move 1
-constexpr int64_t SCORE_KILLER_2       = 90000000LL;     // Killer move 2
-constexpr int64_t SCORE_COUNTER        = 80000000LL;     // Counter move
-constexpr int64_t SCORE_HISTORY_MAX    = 70000000LL;     // Batas atas History Heuristic (biasanya dinamis)
-constexpr int64_t SCORE_LOSING_CAP     = -100000000LL;   // Losing capture (dicari terakhir)
+constexpr int32_t SCORE_TT_MOVE        = 400000000;   // Harus SELALU tertinggi
+constexpr int32_t SCORE_QUEEN_PROMO    = 300000000;   // Promosi Ratu sangat krusial
+constexpr int32_t SCORE_KNIGHT_PROMO   = 290000000;   // Promosi Kuda (taktis)
+constexpr int32_t SCORE_ROOK_PROMO     = 280000000;   // Promosi Benteng
+constexpr int32_t SCORE_BISHOP_PROMO   = 270000000;   // Promosi Gajah
+constexpr int32_t SCORE_WINNING_CAP    = 200000000;   // Winning capture (Base value + MVV/LVA nanti)
+constexpr int32_t SCORE_EQUAL_CAP      = 190000000;   // Equal capture
+constexpr int32_t SCORE_KILLER_1       = 10000000;    // Killer move 1
+constexpr int32_t SCORE_KILLER_2       = 9000000;     // Killer move 2
+constexpr int32_t SCORE_COUNTER        = 8000000;     // Counter move
+constexpr int32_t SCORE_HISTORY_MAX    = 7000000;     // Batas atas History Heuristic (biasanya dinamis)
+constexpr int32_t SCORE_LOSING_CAP     = -10000000;   // Losing capture (dicari terakhir)
 
 // ============================================================================
 // Piece Values for MVV-LVA and SEE
