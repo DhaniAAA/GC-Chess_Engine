@@ -273,7 +273,9 @@ private:
 
     // Quiescence search
     // qsDepth: 0 = normal qsearch, > 0 = also search quiet checks
-    int qsearch(Board& board, int alpha, int beta, int qsDepth = 0);
+    // recaptureSquare: square of previous capture (SQ_NONE if none)
+    // Recaptures on the same square do NOT reduce qsDepth to complete exchanges
+    int qsearch(Board& board, int alpha, int beta, int qsDepth = 0, Square recaptureSquare = SQ_NONE);
 
 
     // Time management

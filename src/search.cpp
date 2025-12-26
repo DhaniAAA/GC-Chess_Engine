@@ -662,7 +662,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     }
 
     // Transposition table probe
-    // Transposition table probe
     bool ttHit = false;
     TTEntry* tte = TT.probe(board.key(), ttHit);
 
@@ -1206,10 +1205,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         int doubleExtensions = (ply >= 1) ? stack[ply + 1].doubleExtensions : 0;
 
         // Check extension (limited to MAX_EXTENSIONS total in path)
+        // [PERBAIKAN] Safe checks (SEE >= 0) SELALU dipanjangkan untuk menemukan mat paksa
         if (givesCheck && currentExtensions < MAX_EXTENSIONS) {
-            // Extend more if the check is discovered or with SEE >= 0
+            // Safe check = skak yang tidak langsung kalah material
             if (SEE::see_ge(board, m, 0)) {
-                extension = 1;
+                extension = 1;  // WAJIB extend untuk safe checks
             }
         }
 
@@ -1335,7 +1335,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
 
         int reduction = 0;
-        if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion) {
+        // [PERBAIKAN] Langkah yang memberikan skak atau membuat ancaman TIDAK BOLEH
+        // direduksi sama sekali, bukan hanya dikurangi nilai reduksinya.
+        // Ini mencegah blunder taktis fatal dari reduksi langkah tajam.
+        if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck && !createsThreat) {
             reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
 
 
@@ -1359,13 +1362,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 reduction -= 1;
             }
 
-            if (givesCheck) {
-                reduction -= 2;
-            }
-
-            if (createsThreat) {
-                reduction -= 2;
-            }
+            // [DIHAPUS] givesCheck dan createsThreat sudah dikecualikan di kondisi awal
+            // Tidak perlu mengurangi reduksi di sini lagi
 
             if (createsFork) {
                 reduction -= 1;
@@ -1594,7 +1592,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 }
 
 // Quiescence Search
-int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
+// recaptureSquare: square of previous capture (for recapture detection)
+// Recaptures on the same square do NOT reduce qsDepth to ensure exchanges complete
+int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recaptureSquare) {
     ++searchStats.nodes;
 
     // Check for time limits
@@ -1714,18 +1714,36 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
         }
 
         // SEE pruning (hanya saat TIDAK dalam skak)
+        // [PERBAIKAN] JANGAN PERNAH prune capture Queen - pengorbanan ratu sering kunci taktik
         bool seeWinning = (captureValue >= PieceValue[PAWN]);
         int seeThreshold = seeWinning ? -200 : -100;
 
-        if (!inCheck && !seeWinning && !SEE::see_ge(board, m, seeThreshold)) {
-            continue;  // Losing capture - but only if not capturing real material
+        // Skip SEE pruning untuk:
+        // 1. Saat dalam skak (semua evasion harus dicek)
+        // 2. Capture yang menguntungkan (seeWinning)
+        // 3. Capture Queen (pengorbanan ratu sering kunci taktik)
+        if (!inCheck && !seeWinning && capturedPt != QUEEN && !SEE::see_ge(board, m, seeThreshold)) {
+            continue;  // Losing capture - but only if not capturing real material or queen
         }
 
         // Make move
         StateInfo si;
         board.do_move(m, si);
 
-        int score = -qsearch(board, -beta, -alpha, qsDepth - 1);
+        // Determine if this is a recapture (capture on the same square as previous)
+        // Recaptures should NOT reduce qsDepth to ensure exchange sequences complete
+        bool isRecapture = (recaptureSquare != SQ_NONE && m.to() == recaptureSquare);
+        bool isCapture = (capturedPt != NO_PIECE_TYPE) || m.is_enpassant();
+
+        // Calculate new qsDepth:
+        // - Recaptures: don't reduce (continue exchange sequence)
+        // - Other captures: reduce by 1
+        int newQsDepth = isRecapture ? qsDepth : qsDepth - 1;
+
+        // Pass the capture target square for recapture detection in child
+        Square newRecaptureSquare = isCapture ? m.to() : SQ_NONE;
+
+        int score = -qsearch(board, -beta, -alpha, newQsDepth, newRecaptureSquare);
 
         board.undo_move(m);
 
@@ -1762,7 +1780,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth) {
             board.do_move(m, si);
 
             // Search with reduced qsDepth since this is a quiet check
-            int score = -qsearch(board, -beta, -alpha, qsDepth - 1);
+            // Quiet checks don't capture, so no recapture square
+            int score = -qsearch(board, -beta, -alpha, qsDepth - 1, SQ_NONE);
 
             board.undo_move(m);
 

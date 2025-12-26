@@ -640,8 +640,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         // [GUARD] Safe stack access with bounds checking
         int currentExt = (ply >= 2 && ply + 1 < MAX_PLY + 4) ? thread->stack[ply + 1].extensions : 0;
 
-        if (givesCheck && currentExt < MAX_EXTENSIONS) {
-            extension = 1;
+        // [PERBAIKAN] Safe checks (SEE >= 0) SELALU dipanjangkan untuk menemukan mat paksa
+        if (givesCheck && currentExt < MAX_EXTENSIONS && SEE::see_ge(board, m, 0)) {
+            extension = 1;  // WAJIB extend untuk safe checks
         }
 
         int newDepth = depth - 1 + extension;
@@ -651,13 +652,13 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         }
 
         // LMR
+        // [PERBAIKAN] Langkah yang memberikan skak TIDAK BOLEH direduksi sama sekali
         int reduction = 0;
-        if (depth >= 3 && moveCount > 1 && !isCapture && !isPromotion) {
+        if (depth >= 3 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
             reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
             if (pvNode) reduction -= 1;
             if (cutNode) reduction += 1;
             if (inCheck) reduction -= 1;
-            if (givesCheck) reduction -= 1;
             reduction = std::clamp(reduction, 0, newDepth - 1);
         }
 
@@ -783,7 +784,9 @@ int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply) {
         }
 
         // SEE pruning
-        if (!inCheck && !SEE::see_ge(board, m, 0)) continue;
+        // [PERBAIKAN] JANGAN prune capture Queen - pengorbanan ratu sering kunci taktik
+        PieceType capturedPt = type_of(board.piece_on(m.to()));
+        if (!inCheck && capturedPt != QUEEN && !SEE::see_ge(board, m, 0)) continue;
 
         StateInfo si;
         board.do_move(m, si);
