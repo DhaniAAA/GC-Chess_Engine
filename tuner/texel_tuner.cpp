@@ -78,43 +78,43 @@ void init_params() {
     params.clear();
 
     // Material Values
-    params.push_back(TunableParam("PawnValue_MG",           &Tuning::PawnValue.mg,            60,  150, true));
-    params.push_back(TunableParam("PawnValue_EG",           &Tuning::PawnValue.eg,            80,  180, false));
-    params.push_back(TunableParam("KnightValue_MG",         &Tuning::KnightValue.mg,         200,  400, true));
-    params.push_back(TunableParam("KnightValue_EG",         &Tuning::KnightValue.eg,         200,  380, false));
-    params.push_back(TunableParam("BishopValue_MG",         &Tuning::BishopValue.mg,         200,  400, true));
-    params.push_back(TunableParam("BishopValue_EG",         &Tuning::BishopValue.eg,         200,  400, false));
-    params.push_back(TunableParam("RookValue_MG",           &Tuning::RookValue.mg,           350,  600, true));
-    params.push_back(TunableParam("RookValue_EG",           &Tuning::RookValue.eg,           400,  700, false));
-    params.push_back(TunableParam("QueenValue_MG",          &Tuning::QueenValue.mg,          700, 1200, true));
-    params.push_back(TunableParam("QueenValue_EG",          &Tuning::QueenValue.eg,          800, 1300, false));
+    params.push_back(TunableParam("PawnValue_MG",           &Tuning::PawnValue.mg,            70,  130, true));
+    params.push_back(TunableParam("PawnValue_EG",           &Tuning::PawnValue.eg,           100,  160, false));
+    params.push_back(TunableParam("KnightValue_MG",         &Tuning::KnightValue.mg,         320,  360, true));
+    params.push_back(TunableParam("KnightValue_EG",         &Tuning::KnightValue.eg,         340,  380, false));
+    params.push_back(TunableParam("BishopValue_MG",         &Tuning::BishopValue.mg,         330,  370, true));
+    params.push_back(TunableParam("BishopValue_EG",         &Tuning::BishopValue.eg,         350,  390, false));
+    params.push_back(TunableParam("RookValue_MG",           &Tuning::RookValue.mg,           500,  550, true));
+    params.push_back(TunableParam("RookValue_EG",           &Tuning::RookValue.eg,           550,  600, false));
+    params.push_back(TunableParam("QueenValue_MG",          &Tuning::QueenValue.mg,          950, 1050, true));
+    params.push_back(TunableParam("QueenValue_EG",          &Tuning::QueenValue.eg,          900, 1100, false));
 
     // Piece Activity Bonuses
-    params.push_back(TunableParam("BishopPairBonus_MG",     &Tuning::BishopPairBonus.mg,       0,  100, true));
-    params.push_back(TunableParam("BishopPairBonus_EG",     &Tuning::BishopPairBonus.eg,       0,  120, false));
-    params.push_back(TunableParam("RookOpenFileBonus_MG",   &Tuning::RookOpenFileBonus.mg,     0,   60, true));
+    params.push_back(TunableParam("BishopPairBonus_MG",     &Tuning::BishopPairBonus.mg,       0,  60, true));
+    params.push_back(TunableParam("BishopPairBonus_EG",     &Tuning::BishopPairBonus.eg,       0,  80, false));
+    params.push_back(TunableParam("RookOpenFileBonus_MG",   &Tuning::RookOpenFileBonus.mg,     0,   40, true));
     params.push_back(TunableParam("RookOpenFileBonus_EG",   &Tuning::RookOpenFileBonus.eg,     0,   50, false));
-    params.push_back(TunableParam("RookSemiOpenFileBonus_MG", &Tuning::RookSemiOpenFileBonus.mg, 0,   50, true));
+    params.push_back(TunableParam("RookSemiOpenFileBonus_MG", &Tuning::RookSemiOpenFileBonus.mg, 0,   30, true));
     params.push_back(TunableParam("RookSemiOpenFileBonus_EG", &Tuning::RookSemiOpenFileBonus.eg, 0,   40, false));
-    params.push_back(TunableParam("RookOnSeventhBonus_MG",  &Tuning::RookOnSeventhBonus.mg,    0,   60, true));
-    params.push_back(TunableParam("RookOnSeventhBonus_EG",  &Tuning::RookOnSeventhBonus.eg,    0,   80, false));
-    params.push_back(TunableParam("KnightOutpostBonus_MG",  &Tuning::KnightOutpostBonus.mg,    0,   60, true));
-    params.push_back(TunableParam("KnightOutpostBonus_EG",  &Tuning::KnightOutpostBonus.eg,    0,   50, false));
+    params.push_back(TunableParam("RookOnSeventhBonus_MG",  &Tuning::RookOnSeventhBonus.mg,    0,   50, true));
+    params.push_back(TunableParam("RookOnSeventhBonus_EG",  &Tuning::RookOnSeventhBonus.eg,    0,   60, false));
+    params.push_back(TunableParam("KnightOutpostBonus_MG",  &Tuning::KnightOutpostBonus.mg,    0,   50, true));
+    params.push_back(TunableParam("KnightOutpostBonus_EG",  &Tuning::KnightOutpostBonus.eg,    0,   40, false));
 
     // Pawn Structure
-    params.push_back(TunableParam("IsolatedPawnPenalty_MG", &Tuning::IsolatedPawnPenalty.mg, -60,    0, true));
-    params.push_back(TunableParam("IsolatedPawnPenalty_EG", &Tuning::IsolatedPawnPenalty.eg, -60,    0, false));
-    params.push_back(TunableParam("DoubledPawnPenalty_MG",  &Tuning::DoubledPawnPenalty.mg,  -60,    0, true));
-    params.push_back(TunableParam("DoubledPawnPenalty_EG",  &Tuning::DoubledPawnPenalty.eg,  -60,    0, false));
-    params.push_back(TunableParam("BackwardPawnPenalty_MG", &Tuning::BackwardPawnPenalty.mg, -50,    0, true));
-    params.push_back(TunableParam("BackwardPawnPenalty_EG", &Tuning::BackwardPawnPenalty.eg, -50,    0, false));
-    params.push_back(TunableParam("ConnectedPawnBonus_MG",  &Tuning::ConnectedPawnBonus.mg,    0,   50, true));
-    params.push_back(TunableParam("ConnectedPawnBonus_EG",  &Tuning::ConnectedPawnBonus.eg,    0,   50, false));
-    params.push_back(TunableParam("PhalanxBonus_MG",        &Tuning::PhalanxBonus.mg,          0,   50, true));
-    params.push_back(TunableParam("PhalanxBonus_EG",        &Tuning::PhalanxBonus.eg,          0,   50, false));
+    params.push_back(TunableParam("IsolatedPawnPenalty_MG", &Tuning::IsolatedPawnPenalty.mg, -70,    0, true));
+    params.push_back(TunableParam("IsolatedPawnPenalty_EG", &Tuning::IsolatedPawnPenalty.eg, -50,    0, false));
+    params.push_back(TunableParam("DoubledPawnPenalty_MG",  &Tuning::DoubledPawnPenalty.mg,  -40,    0, true));
+    params.push_back(TunableParam("DoubledPawnPenalty_EG",  &Tuning::DoubledPawnPenalty.eg,  -50,    0, false));
+    params.push_back(TunableParam("BackwardPawnPenalty_MG", &Tuning::BackwardPawnPenalty.mg, -30,    0, true));
+    params.push_back(TunableParam("BackwardPawnPenalty_EG", &Tuning::BackwardPawnPenalty.eg, -35,    0, false));
+    params.push_back(TunableParam("ConnectedPawnBonus_MG",  &Tuning::ConnectedPawnBonus.mg,    0,   20, true));
+    params.push_back(TunableParam("ConnectedPawnBonus_EG",  &Tuning::ConnectedPawnBonus.eg,    0,   15, false));
+    params.push_back(TunableParam("PhalanxBonus_MG",        &Tuning::PhalanxBonus.mg,          0,   25, true));
+    params.push_back(TunableParam("PhalanxBonus_EG",        &Tuning::PhalanxBonus.eg,          0,   20, false));
 
     // King Safety
-    params.push_back(TunableParam("KingSafetyWeight",       &Tuning::KingSafetyWeight,        30,  150, true));
+    params.push_back(TunableParam("KingSafetyWeight",       &Tuning::KingSafetyWeight,        50,  150, true));
 
     std::cout << "Initialized " << params.size() << " tunable parameters\n";
 }
