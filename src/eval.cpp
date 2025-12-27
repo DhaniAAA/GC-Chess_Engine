@@ -91,6 +91,22 @@ bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns)
 // EvalContext Initialization (CPW Attack and Defend Maps)
 // ============================================================================
 
+// Helper to compute outer king ring (squares 2 steps from king)
+static Bitboard compute_outer_ring(Square kingSq) {
+    Bitboard inner = king_attacks_bb(kingSq) | square_bb(kingSq);
+    Bitboard outer = 0ULL;
+
+    // Expand inner ring by one in each direction
+    Bitboard temp = inner;
+    while (temp) {
+        Square sq = pop_lsb(temp);
+        outer |= king_attacks_bb(sq);
+    }
+
+    // Outer ring is expanded area minus inner ring
+    return outer & ~inner;
+}
+
 void init_eval_context(EvalContext& ctx, const Board& board) {
     ctx.clear();
     Bitboard occupied = board.pieces();
@@ -104,9 +120,13 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
         ctx.attackedBy[c][PAWN] = pawn_attacks_bb(c, ourPawns);
         ctx.attackedBy[c][ALL_PIECES] = ctx.attackedBy[c][PAWN];
 
-        // King ring
+        // King rings - inner (immediately adjacent) and outer (2 squares away)
         Square kingSq = ctx.kingSquare[c];
-        ctx.kingRing[c] = king_attacks_bb(kingSq) | square_bb(kingSq);
+        ctx.innerKingRing[c] = king_attacks_bb(kingSq) | square_bb(kingSq);
+        ctx.outerKingRing[c] = compute_outer_ring(kingSq);
+
+        // Combined king ring for compatibility (inner + forward extension)
+        ctx.kingRing[c] = ctx.innerKingRing[c];
         if (c == WHITE) {
             ctx.kingRing[c] |= (ctx.kingRing[c] << 8) & ~RANK_8_BB;
         } else {
@@ -123,7 +143,7 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
         ctx.mobilityArea[c] = ~(board.pieces(c) | enemyPawnAttacks);
     }
 
-    // Piece attacks
+    // Piece attacks with separate inner/outer ring tracking
     for (Color c : {WHITE, BLACK}) {
         Color enemy = ~c;
 
@@ -136,9 +156,16 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
             knightAttacks |= attacks;
             ctx.attackedBy2[c] |= ctx.attackedBy[c][ALL_PIECES] & attacks;
             ctx.attackedBy[c][ALL_PIECES] |= attacks;
-            if (attacks & ctx.kingRing[enemy]) {
+
+            // Track attacks on inner vs outer ring
+            if (attacks & ctx.innerKingRing[enemy]) {
                 ctx.kingAttackersCount[c]++;
-                ctx.kingAttackersWeight[c] += KnightAttackWeight;
+                ctx.kingAttackersWeight[c] += KnightAttackWeight * InnerRingAttackWeight;
+                ctx.innerRingAttacks[c] += popcount(attacks & ctx.innerKingRing[enemy]);
+            }
+            if (attacks & ctx.outerKingRing[enemy]) {
+                ctx.kingAttackersWeight[c] += KnightAttackWeight * OuterRingAttackWeight;
+                ctx.outerRingAttacks[c] += popcount(attacks & ctx.outerKingRing[enemy]);
             }
         }
         ctx.attackedBy[c][KNIGHT] = knightAttacks;
@@ -152,9 +179,15 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
             bishopAttacks |= attacks;
             ctx.attackedBy2[c] |= ctx.attackedBy[c][ALL_PIECES] & attacks;
             ctx.attackedBy[c][ALL_PIECES] |= attacks;
-            if (attacks & ctx.kingRing[enemy]) {
+
+            if (attacks & ctx.innerKingRing[enemy]) {
                 ctx.kingAttackersCount[c]++;
-                ctx.kingAttackersWeight[c] += BishopAttackWeight;
+                ctx.kingAttackersWeight[c] += BishopAttackWeight * InnerRingAttackWeight;
+                ctx.innerRingAttacks[c] += popcount(attacks & ctx.innerKingRing[enemy]);
+            }
+            if (attacks & ctx.outerKingRing[enemy]) {
+                ctx.kingAttackersWeight[c] += BishopAttackWeight * OuterRingAttackWeight;
+                ctx.outerRingAttacks[c] += popcount(attacks & ctx.outerKingRing[enemy]);
             }
         }
         ctx.attackedBy[c][BISHOP] = bishopAttacks;
@@ -168,9 +201,15 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
             rookAttacks |= attacks;
             ctx.attackedBy2[c] |= ctx.attackedBy[c][ALL_PIECES] & attacks;
             ctx.attackedBy[c][ALL_PIECES] |= attacks;
-            if (attacks & ctx.kingRing[enemy]) {
+
+            if (attacks & ctx.innerKingRing[enemy]) {
                 ctx.kingAttackersCount[c]++;
-                ctx.kingAttackersWeight[c] += RookAttackWeight;
+                ctx.kingAttackersWeight[c] += RookAttackWeight * InnerRingAttackWeight;
+                ctx.innerRingAttacks[c] += popcount(attacks & ctx.innerKingRing[enemy]);
+            }
+            if (attacks & ctx.outerKingRing[enemy]) {
+                ctx.kingAttackersWeight[c] += RookAttackWeight * OuterRingAttackWeight;
+                ctx.outerRingAttacks[c] += popcount(attacks & ctx.outerKingRing[enemy]);
             }
         }
         ctx.attackedBy[c][ROOK] = rookAttacks;
@@ -184,9 +223,15 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
             queenAttacks |= attacks;
             ctx.attackedBy2[c] |= ctx.attackedBy[c][ALL_PIECES] & attacks;
             ctx.attackedBy[c][ALL_PIECES] |= attacks;
-            if (attacks & ctx.kingRing[enemy]) {
+
+            if (attacks & ctx.innerKingRing[enemy]) {
                 ctx.kingAttackersCount[c]++;
-                ctx.kingAttackersWeight[c] += QueenAttackWeight;
+                ctx.kingAttackersWeight[c] += QueenAttackWeight * InnerRingAttackWeight;
+                ctx.innerRingAttacks[c] += popcount(attacks & ctx.innerKingRing[enemy]);
+            }
+            if (attacks & ctx.outerKingRing[enemy]) {
+                ctx.kingAttackersWeight[c] += QueenAttackWeight * OuterRingAttackWeight;
+                ctx.outerRingAttacks[c] += popcount(attacks & ctx.outerKingRing[enemy]);
             }
         }
         ctx.attackedBy[c][QUEEN] = queenAttacks;
@@ -251,6 +296,56 @@ EvalScore eval_material_pst(const Board& board, Color c) {
     return score;
 }
 
+// Helper function to count pawn islands
+// Pawn islands are groups of pawns on adjacent files
+static int count_pawn_islands(Bitboard pawns) {
+    if (!pawns) return 0;
+
+    int islands = 0;
+    bool inIsland = false;
+
+    for (File f = FILE_A; f <= FILE_H; ++f) {
+        bool hasFileOccupancy = (pawns & file_bb(f)) != 0;
+        if (hasFileOccupancy && !inIsland) {
+            islands++;
+            inIsland = true;
+        } else if (!hasFileOccupancy) {
+            inIsland = false;
+        }
+    }
+
+    return islands;
+}
+
+// Helper function to check if a square is a hole (cannot be defended by pawns)
+static bool is_outpost_hole(Color c, Square sq, Bitboard ourPawns) {
+    File f = file_of(sq);
+    Rank r = rank_of(sq);
+
+    // For white, check if any of our pawns on adjacent files can advance to defend this square
+    // For black, the logic is mirrored
+    Bitboard adjacentPawns = adjacent_files_bb(f) & ourPawns;
+    if (!adjacentPawns) return true;  // No pawns to defend
+
+    // Check if any pawn is behind this square and can defend it
+    if (c == WHITE) {
+        // Our pawns need to be on ranks below sq to defend it
+        Bitboard behindMask = 0ULL;
+        for (int rr = RANK_1; rr < r; ++rr) {
+            behindMask |= rank_bb_eval(Rank(rr));
+        }
+        if (adjacentPawns & behindMask) return false;  // Can be defended
+    } else {
+        Bitboard behindMask = 0ULL;
+        for (int rr = r + 1; rr <= RANK_8; ++rr) {
+            behindMask |= rank_bb_eval(Rank(rr));
+        }
+        if (adjacentPawns & behindMask) return false;
+    }
+
+    return true;  // Is a hole
+}
+
 EvalScore eval_pawn_structure(const Board& board, Color c) {
     EvalScore score;
     Color enemy = ~c;
@@ -259,6 +354,26 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
     Bitboard ourRooks = board.pieces(c, ROOK);
     Square ourKingSq = board.king_square(c);
     Square enemyKingSq = board.king_square(enemy);
+
+    // =========================================================================
+    // Pawn Islands Evaluation
+    // More islands = weaker structure (harder to defend)
+    // =========================================================================
+    int islands = count_pawn_islands(ourPawns);
+    if (islands > 1) {
+        score.mg += PawnIslandPenalty.mg * (islands - 1);
+        score.eg += PawnIslandPenalty.eg * (islands - 1);
+    }
+
+    // =========================================================================
+    // Central Pawn Bonus
+    // Pawns on d4/e4 (for white) or d5/e5 (for black) are strong
+    // =========================================================================
+    constexpr Bitboard WhiteCentralSquares = (1ULL << SQ_D4) | (1ULL << SQ_E4);
+    constexpr Bitboard BlackCentralSquares = (1ULL << SQ_D5) | (1ULL << SQ_E5);
+    Bitboard centralSquares = c == WHITE ? WhiteCentralSquares : BlackCentralSquares;
+    int centralPawns = popcount(ourPawns & centralSquares);
+    score += CentralPawnBonus * centralPawns;
 
 
     // First pass: identify all passed pawns for connected passed pawn detection
@@ -293,6 +408,19 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 if (adjacentPassers & supportRange) {
                     score += ConnectedPassedBonus[r];
                 }
+            }
+
+            // =================================================================
+            // PROTECTED PASSED PAWN
+            // A passed pawn defended by another pawn is extremely dangerous
+            // It's harder to blockade and can often advance safely
+            // =================================================================
+            Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
+            if (square_bb(sq) & pawnDefenders) {
+                // Use ProtectedPassedBonus instead of regular PassedPawnBonus
+                // We already added PassedPawnBonus, so add the difference
+                score += ProtectedPassedBonus[r];
+                score -= PassedPawnBonus[r];  // Remove base to avoid double counting
             }
 
             // King proximity to passed pawn (important in endgame)
@@ -423,6 +551,12 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
         // Backward pawn check (only if not isolated - isolated already penalized)
         if (!isIsolated && !isPassed && is_backward_pawn(c, sq, ourPawns, theirPawns)) {
             score += BackwardPawnPenalty;
+
+            // Extra penalty if backward pawn is on a half-open file
+            Bitboard fileMask = file_bb(f);
+            if (!(fileMask & theirPawns)) {
+                score += BackwardOnHalfOpen;
+            }
         }
 
         // Connected pawn check
@@ -431,8 +565,91 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
             // Check for phalanx (pawns on same rank)
             if (adjacentPawns & rank_bb_eval(rank_of(sq))) {
                 score += PhalanxBonus;
+
+                // Pawn duo bonus - side by side pawns
+                score += PawnDuoBonus;
             } else {
                 score += ConnectedPawnBonus;
+            }
+
+            // =================================================================
+            // PAWN CHAIN DETECTION
+            // A pawn is part of a chain if it's defended by another pawn
+            // =================================================================
+            Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
+            if (square_bb(sq) & pawnDefenders) {
+                score += PawnChainBonus;
+
+                // Check if this pawn is the base of a chain (defends another pawn)
+                Bitboard thisDefends = pawn_attacks_bb(c, sq);
+                if (thisDefends & ourPawns) {
+                    score += PawnChainBaseBonus;
+                }
+            }
+        }
+
+        // =================================================================
+        // HANGING PAWNS DETECTION
+        // Two pawns on adjacent semi-open files, no pawn support on either side
+        // =================================================================
+        if (!isIsolated && !isPassed) {
+            // Check if this is part of a hanging pawn pair
+            Bitboard leftFile = (f > FILE_A) ? file_bb(File(f - 1)) : 0;
+            Bitboard rightFile = (f < FILE_H) ? file_bb(File(f + 1)) : 0;
+
+            bool hasLeftNeighbor = (leftFile & ourPawns) != 0;
+            bool hasRightNeighbor = (rightFile & ourPawns) != 0;
+
+            // Check if exactly one neighbor and no wider support
+            if (hasLeftNeighbor != hasRightNeighbor) {
+                File neighborFile = hasLeftNeighbor ? File(f - 1) : File(f + 1);
+
+                // Check if both files are semi-open (no enemy pawns)
+                bool ourFileSemiOpen = !(file_bb(f) & theirPawns);
+                bool neighborFileSemiOpen = !(file_bb(neighborFile) & theirPawns);
+
+                if (ourFileSemiOpen && neighborFileSemiOpen) {
+                    // Check for wider support
+                    File outerFile = hasLeftNeighbor ? File(f - 2) : File(f + 2);
+                    bool hasWiderSupport = false;
+                    if (outerFile >= FILE_A && outerFile <= FILE_H) {
+                        hasWiderSupport = (file_bb(outerFile) & ourPawns) != 0;
+                    }
+
+                    if (!hasWiderSupport) {
+                        score += HangingPawnPenalty;
+
+                        // Bonus if they can advance and create threats
+                        Square advSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
+                        if (advSq >= SQ_A1 && advSq <= SQ_H8) {
+                            if (board.piece_on(advSq) == NO_PIECE) {
+                                score += HangingPawnWithThreat;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // OUTPOST HOLES EVALUATION
+    // Check for weak squares on ranks 4-6 that enemy pieces can occupy
+    // =========================================================================
+    constexpr Bitboard OutpostZoneWhite = 0x00FFFFFF00000000ULL;  // Ranks 5-7 for white
+    constexpr Bitboard OutpostZoneBlack = 0x00000000FFFFFF00ULL;  // Ranks 2-4 for black
+    Bitboard outpostZone = c == WHITE ? OutpostZoneWhite : OutpostZoneBlack;
+
+    // Check central files (c-f) for holes
+    for (File f = FILE_C; f <= FILE_F; ++f) {
+        Bitboard fileZone = file_bb(f) & outpostZone;
+        Bitboard temp = fileZone;
+        while (temp) {
+            Square sq = pop_lsb(temp);
+            if (is_outpost_hole(c, sq, ourPawns)) {
+                // Only penalize if the square is a real threat
+                // (enemy can occupy it)
+                score += OutpostHolePenalty;
             }
         }
     }
@@ -894,6 +1111,19 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
         score.mg -= penalty;
     }
 
+    // Weak squares near king (undefended squares in king's vicinity)
+    // Inner ring weak squares are more dangerous
+    Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
+    Bitboard innerWeak = ctx.innerKingRing[c] & ~ourDefended & ~board.pieces();
+    Bitboard outerWeak = ctx.outerKingRing[c] & ~ourDefended & ~board.pieces();
+
+    // Penalize weak squares, especially if enemy attacks them
+    int innerWeakCount = popcount(innerWeak & ctx.attackedBy[enemy][ALL_PIECES]);
+    int outerWeakCount = popcount(outerWeak & ctx.attackedBy[enemy][ALL_PIECES]);
+
+    score.mg -= innerWeakCount * InnerRingWeakSquarePenalty;
+    score.mg -= outerWeakCount * OuterRingWeakSquarePenalty;
+
     // Pawn shield
     Rank kingRank = c == WHITE ? rank_of(kingSq) : Rank(RANK_8 - rank_of(kingSq));
     if (kingRank <= RANK_2) {
@@ -938,6 +1168,219 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
             }
         }
         score.mg += stormBonus;
+    }
+
+    return score;
+}
+
+// ============================================================================
+// Material Imbalance Evaluation
+// Evaluates bonuses/penalties for specific piece combinations
+// ============================================================================
+
+EvalScore eval_material_imbalance(const Board& board, Color c) {
+    EvalScore score;
+    Color enemy = ~c;
+
+    int ourKnights = popcount(board.pieces(c, KNIGHT));
+    int ourBishops = popcount(board.pieces(c, BISHOP));
+    int ourRooks = popcount(board.pieces(c, ROOK));
+    int ourQueens = popcount(board.pieces(c, QUEEN));
+
+    int theirKnights = popcount(board.pieces(enemy, KNIGHT));
+    int theirBishops = popcount(board.pieces(enemy, BISHOP));
+    int theirRooks = popcount(board.pieces(enemy, ROOK));
+    int theirQueens = popcount(board.pieces(enemy, QUEEN));
+
+    // Rook pair bonus - two rooks work well together
+    if (ourRooks >= 2) {
+        score += RookPairBonus;
+    }
+
+    // Knight pair penalty - two knights are less synergistic
+    if (ourKnights >= 2) {
+        score += KnightPairPenalty;
+    }
+
+    // Bishop + Knight combo vs opponent's rook pair
+    // Bishop and Knight complement each other well
+    if (ourBishops >= 1 && ourKnights >= 1) {
+        score += BishopKnightCombo;
+    }
+
+    // Rooks without queens are stronger (endgame power)
+    if (ourRooks >= 1 && ourQueens == 0 && theirQueens == 0) {
+        score += RooksWithoutQueens;
+    }
+
+    // Queen without rooks is weaker (less support)
+    if (ourQueens >= 1 && ourRooks == 0) {
+        score += QueenWithoutRooks;
+    }
+
+    // Minor for exchange compensation
+    // If we have fewer rooks but more minors, partial compensation
+    int ourMinors = ourKnights + ourBishops;
+    int theirMinors = theirKnights + theirBishops;
+    if (ourRooks < theirRooks && ourMinors > theirMinors) {
+        int minorAdvantage = ourMinors - theirMinors;
+        int rookDeficit = theirRooks - ourRooks;
+        if (minorAdvantage >= rookDeficit) {
+            score.eg += MinorForExchange.eg * std::min(minorAdvantage, 2);
+        }
+    }
+
+    return score;
+}
+
+// ============================================================================
+// Pawn Lever Evaluation
+// Detects pawns that can attack enemy pawns to open files near enemy king
+// ============================================================================
+
+EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx) {
+    EvalScore score;
+    Color enemy = ~c;
+
+    Bitboard ourPawns = board.pieces(c, PAWN);
+    Bitboard theirPawns = board.pieces(enemy, PAWN);
+    Square enemyKingSq = ctx.kingSquare[enemy];
+    File enemyKingFile = file_of(enemyKingSq);
+
+    // Only evaluate levers if enemy king is somewhat castled
+    Rank enemyKingRank = enemy == WHITE ? rank_of(enemyKingSq) : Rank(RANK_8 - rank_of(enemyKingSq));
+    if (enemyKingRank > RANK_2) return score;  // King not on back ranks
+
+    // Check for pawn levers near enemy king
+    Bitboard bb = ourPawns;
+    while (bb) {
+        Square sq = pop_lsb(bb);
+        File pawnFile = file_of(sq);
+
+        // Is this pawn near the enemy king's file?
+        int fileDistance = std::abs(pawnFile - enemyKingFile);
+        if (fileDistance > 2) continue;  // Too far from king
+
+        // Can this pawn attack an enemy pawn (lever potential)?
+        Bitboard pawnAttacks = pawn_attacks_bb(c, sq);
+        if (pawnAttacks & theirPawns) {
+            // This pawn can capture an enemy pawn - lever exists
+            if (fileDistance <= 1) {
+                score += PawnLeverOnKingFile;
+            } else {
+                score += PawnLeverBonus;
+            }
+        }
+
+        // Also check if advancing this pawn creates a lever
+        Square advanceSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
+        if (advanceSq >= SQ_A1 && advanceSq <= SQ_H8) {
+            if (board.piece_on(advanceSq) == NO_PIECE) {
+                Bitboard advancedAttacks = pawn_attacks_bb(c, advanceSq);
+                if (advancedAttacks & theirPawns) {
+                    // Potential lever after advance
+                    if (fileDistance <= 1) {
+                        score.mg += PawnLeverOnKingFile.mg / 2;
+                    } else {
+                        score.mg += PawnLeverBonus.mg / 2;
+                    }
+                }
+            }
+        }
+    }
+
+    return score;
+}
+
+// ============================================================================
+// Minor Piece Coordination Evaluation
+// Evaluates synergy between minor pieces and with major pieces
+// ============================================================================
+
+EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx) {
+    EvalScore score;
+    [[maybe_unused]] Color enemy = ~c;
+
+    Bitboard knights = board.pieces(c, KNIGHT);
+    Bitboard bishops = board.pieces(c, BISHOP);
+    Bitboard queens = board.pieces(c, QUEEN);
+
+    int knightCount = popcount(knights);
+    int bishopCount = popcount(bishops);
+    int queenCount = popcount(queens);
+
+    // Queen + Knight synergy (fork potential, queen mobility + knight jumps)
+    if (queenCount >= 1 && knightCount >= 1) {
+        score += QueenKnightSynergy;
+    }
+
+    // Bishop + Knight coordination
+    // Check if they control similar areas (complementary coverage)
+    if (bishopCount >= 1 && knightCount >= 1) {
+        Bitboard bishopBB = bishops;
+        while (bishopBB) {
+            Square bSq = pop_lsb(bishopBB);
+            bool isLightBishop = ((file_of(bSq) + rank_of(bSq)) % 2) == 1;
+
+            // Check if knight attacks squares of bishop's color
+            Bitboard knightBB = knights;
+            while (knightBB) {
+                Square nSq = pop_lsb(knightBB);
+                Bitboard knightMoves = knight_attacks_bb(nSq);
+
+                // Count knight attacks on same color complex as bishop
+                Bitboard sameColor = isLightBishop ?
+                    0x55AA55AA55AA55AAULL : 0xAA55AA55AA55AA55ULL;
+                int coordSquares = popcount(knightMoves & sameColor);
+
+                if (coordSquares >= 2) {
+                    score += BishopKnightCoordination;
+                    break;  // Only count once per bishop
+                }
+            }
+        }
+    }
+
+    // Knight proximity bonus - knights close together support each other
+    if (knightCount >= 2) {
+        Square knightSquares[2];
+        int idx = 0;
+        Bitboard tempBB = knights;
+        while (tempBB && idx < 2) {
+            knightSquares[idx++] = pop_lsb(tempBB);
+        }
+
+        if (idx >= 2) {
+            int distance = std::max(
+                std::abs(file_of(knightSquares[0]) - file_of(knightSquares[1])),
+                std::abs(rank_of(knightSquares[0]) - rank_of(knightSquares[1]))
+            );
+
+            // Bonus for knights within 3 squares of each other
+            if (distance <= 3) {
+                score += KnightProximityBonus;
+            }
+        }
+    }
+
+    // Bishop color complex - two bishops cover all colors
+    if (bishopCount >= 2) {
+        bool hasLight = false;
+        bool hasDark = false;
+        Bitboard tempBB = bishops;
+        while (tempBB) {
+            Square bSq = pop_lsb(tempBB);
+            if (((file_of(bSq) + rank_of(bSq)) % 2) == 1) {
+                hasLight = true;
+            } else {
+                hasDark = true;
+            }
+        }
+
+        // Opposite-colored bishops work together better
+        if (hasLight && hasDark) {
+            score += BishopColorComplex;
+        }
     }
 
     return score;
@@ -1017,6 +1460,18 @@ int evaluate(const Board& board, int alpha, int beta) {
     score += eval_space(board, WHITE);
     score -= eval_space(board, BLACK);
 
+    // Material imbalance (piece combination bonuses/penalties)
+    score += eval_material_imbalance(board, WHITE);
+    score -= eval_material_imbalance(board, BLACK);
+
+    // Pawn lever detection (pawn storm threats)
+    score += eval_pawn_levers(board, WHITE, ctx);
+    score -= eval_pawn_levers(board, BLACK, ctx);
+
+    // Minor piece coordination (synergy bonuses)
+    score += eval_minor_coordination(board, WHITE, ctx);
+    score -= eval_minor_coordination(board, BLACK, ctx);
+
     // Tapered evaluation
     int mg = score.mg;
     int eg = score.eg;
@@ -1076,6 +1531,18 @@ int evaluate_no_cache(const Board& board) {
     // Space evaluation
     score += eval_space(board, WHITE);
     score -= eval_space(board, BLACK);
+
+    // Material imbalance (piece combination bonuses/penalties)
+    score += eval_material_imbalance(board, WHITE);
+    score -= eval_material_imbalance(board, BLACK);
+
+    // Pawn lever detection (pawn storm threats)
+    score += eval_pawn_levers(board, WHITE, ctx);
+    score -= eval_pawn_levers(board, BLACK, ctx);
+
+    // Minor piece coordination (synergy bonuses)
+    score += eval_minor_coordination(board, WHITE, ctx);
+    score -= eval_minor_coordination(board, BLACK, ctx);
 
     // Tapered evaluation
     int mg = score.mg;
