@@ -1,0 +1,107 @@
+name: Perft Test
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "Makefile"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "Makefile"
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: "Maximum perft depth to test (5-6 recommended)"
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+
+      position:
+        description: "Position to test (leave empty for all)"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+      divide:
+        description: "Run divide command (for debugging)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  perft:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install GCC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make
+
+      - name: Compile Engine
+        run: |
+          make clean || true
+          make -j$(nproc)
+          ls -la output/
+
+      - name: Verify Engine Works
+        run: |
+          echo -e "uci\nquit" | ./output/main
+
+      # Default behavior: run all positions at depth 5
+      - name: Run Perft Tests (All Positions)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: |
+          python tests/perft_test.py --depth 5 --all-positions
+
+      # Manual trigger with custom parameters
+      - name: Run Perft Tests (Custom)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          DEPTH="${{ github.event.inputs.depth }}"
+          POSITION="${{ github.event.inputs.position }}"
+          DIVIDE="${{ github.event.inputs.divide }}"
+
+          if [ -n "$POSITION" ]; then
+            if [ "$DIVIDE" = "true" ]; then
+              python tests/perft_test.py --depth $DEPTH --position $POSITION --divide
+            else
+              python tests/perft_test.py --depth $DEPTH --position $POSITION
+            fi
+          else
+            python tests/perft_test.py --depth $DEPTH --all-positions
+          fi
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perft-results-${{ github.run_number }}
+          path: |
+            tests/perft_test.py
+          retention-days: 30
