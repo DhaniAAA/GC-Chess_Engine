@@ -69,39 +69,44 @@ jobs:
           echo -e "uci\nisready\nquit" | ./output/main
 
       - name: Install cutechess-cli (if needed)
-        if: ${{ inputs.use_cutechess }}
+        if: ${{ github.event.inputs.use_cutechess == 'true' }}
         run: |
-          sudo apt-get install -y qt5-default || sudo apt-get install -y qtbase5-dev
-          wget https://github.com/cutechess/cutechess/releases/download/v1.3.1/cutechess-cli-1.3.1-linux64.tar.gz
-          tar -xzf cutechess-cli-1.3.1-linux64.tar.gz
-          chmod +x cutechess-cli
-          mv cutechess-cli /usr/local/bin/
+          sudo apt-get update
+          sudo apt-get install -y qt5-default || sudo apt-get install -y qtbase5-dev || true
+          wget https://github.com/cutechess/cutechess/releases/download/v1.3.1/cutechess-cli-1.3.1-linux64.tar.gz || exit 0
+          tar -xzf cutechess-cli-1.3.1-linux64.tar.gz || exit 0
+          chmod +x cutechess-cli || exit 0
+          sudo mv cutechess-cli /usr/local/bin/ || exit 0
 
-      - name: Run SPSA Tuner (Simple Mode)
-        if: ${{ !inputs.use_cutechess }}
+      - name: Run SPSA Tuner
         run: |
-          python tuner/spsa_tuner.py \
-            --engine ./output/main \
-            --iterations ${{ inputs.iterations }} \
-            --fen-count ${{ inputs.fen_count }} \
-            --positions-per-iter ${{ inputs.positions_per_iter }} \
-            --search-depth ${{ inputs.search_depth }} \
-            --simple \
-            --output spsa_results.json
+          chmod +x ./output/main
 
-      - name: Run SPSA Tuner (Full Mode with cutechess)
-        if: ${{ inputs.use_cutechess }}
-        run: |
-          python tuner/spsa_tuner.py \
-            --engine ./output/main \
-            --iterations ${{ inputs.iterations }} \
-            --fen-count ${{ inputs.fen_count }} \
-            --positions-per-iter ${{ inputs.positions_per_iter }} \
-            --search-depth ${{ inputs.search_depth }} \
-            --games-per-iter ${{ inputs.games_per_iter }} \
-            --time-control "${{ inputs.time_control }}" \
-            --cutechess cutechess-cli \
-            --output spsa_results.json
+          USE_CUTECHESS="${{ github.event.inputs.use_cutechess }}"
+
+          if [ "$USE_CUTECHESS" = "true" ]; then
+            echo "=== Running SPSA in Full Mode (with cutechess-cli) ==="
+            python tuner/spsa_tuner.py \
+              --engine ./output/main \
+              --iterations ${{ inputs.iterations || '50' }} \
+              --fen-count ${{ inputs.fen_count || '500' }} \
+              --positions-per-iter ${{ inputs.positions_per_iter || '20' }} \
+              --search-depth ${{ inputs.search_depth || '4' }} \
+              --games-per-iter ${{ inputs.games_per_iter || '50' }} \
+              --time-control "${{ inputs.time_control || '1+0.1' }}" \
+              --cutechess /usr/local/bin/cutechess-cli \
+              --output spsa_results.json
+          else
+            echo "=== Running SPSA in Simple Mode (eval comparison) ==="
+            python tuner/spsa_tuner.py \
+              --engine ./output/main \
+              --iterations ${{ inputs.iterations || '50' }} \
+              --fen-count ${{ inputs.fen_count || '500' }} \
+              --positions-per-iter ${{ inputs.positions_per_iter || '20' }} \
+              --search-depth ${{ inputs.search_depth || '4' }} \
+              --simple \
+              --output spsa_results.json
+          fi
 
       - name: Display results
         run: |
