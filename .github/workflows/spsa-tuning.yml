@@ -69,88 +69,39 @@ jobs:
           echo -e "uci\nisready\nquit" | ./output/main
 
       - name: Install cutechess-cli (if needed)
-        if: ${{ github.event.inputs.use_cutechess == 'true' }}
+        if: ${{ inputs.use_cutechess }}
         run: |
-          echo "=== Installing cutechess-cli ==="
+          sudo apt-get install -y qt5-default || sudo apt-get install -y qtbase5-dev
+          wget https://github.com/cutechess/cutechess/releases/download/v1.3.1/cutechess-cli-1.3.1-linux64.tar.gz
+          tar -xzf cutechess-cli-1.3.1-linux64.tar.gz
+          chmod +x cutechess-cli
+          mv cutechess-cli /usr/local/bin/
 
-          # Try v1.0.0 which has standalone linux64 binary
-          echo "Downloading cutechess-cli v1.0.0..."
-          wget -q https://github.com/cutechess/cutechess/releases/download/v1.0.0/cutechess-cli-1.0.0-linux64.tar.gz \
-            -O cutechess-cli.tar.gz || true
-
-          CUTECHESS_BIN=""
-
-          if [ -f cutechess-cli.tar.gz ]; then
-            echo "Extracting..."
-            tar -xzf cutechess-cli.tar.gz
-            ls -la
-
-            # The binary should be directly in the extracted folder
-            if [ -f cutechess-cli ]; then
-              CUTECHESS_BIN="./cutechess-cli"
-            else
-              CUTECHESS_BIN=$(find . -name "cutechess-cli" -type f 2>/dev/null | head -n1)
-            fi
-          fi
-
-          # Fallback: Build from source
-          if [ -z "$CUTECHESS_BIN" ] || [ ! -f "$CUTECHESS_BIN" ]; then
-            echo "Building cutechess-cli from source..."
-            sudo apt-get update
-            sudo apt-get install -y qtbase5-dev cmake g++ || true
-            git clone --depth 1 https://github.com/cutechess/cutechess.git
-            cd cutechess
-            mkdir build && cd build
-            cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_TESTS=OFF
-            make -j$(nproc) cutechess-cli
-            CUTECHESS_BIN="./cutechess-cli"
-            cd ../..
-            cp cutechess/build/cutechess-cli ./cutechess-cli
-            CUTECHESS_BIN="./cutechess-cli"
-          fi
-
-          echo "Found cutechess-cli at: $CUTECHESS_BIN"
-
-          # Make executable and copy to PATH
-          chmod +x "$CUTECHESS_BIN"
-          sudo cp "$CUTECHESS_BIN" /usr/local/bin/cutechess-cli
-          sudo chmod +x /usr/local/bin/cutechess-cli
-
-          # Verify installation
-          echo "Verifying cutechess-cli..."
-          /usr/local/bin/cutechess-cli --version || /usr/local/bin/cutechess-cli --help || echo "Version check done"
-
-          echo "=== cutechess-cli installation complete ==="
-
-      - name: Run SPSA Tuner
+      - name: Run SPSA Tuner (Simple Mode)
+        if: ${{ !inputs.use_cutechess }}
         run: |
-          chmod +x ./output/main
+          python tuner/spsa_tuner.py \
+            --engine ./output/main \
+            --iterations ${{ inputs.iterations }} \
+            --fen-count ${{ inputs.fen_count }} \
+            --positions-per-iter ${{ inputs.positions_per_iter }} \
+            --search-depth ${{ inputs.search_depth }} \
+            --simple \
+            --output spsa_results.json
 
-          USE_CUTECHESS="${{ github.event.inputs.use_cutechess }}"
-
-          if [ "$USE_CUTECHESS" = "true" ]; then
-            echo "=== Running SPSA in Full Mode (with cutechess-cli) ==="
-            python tuner/spsa_tuner.py \
-              --engine ./output/main \
-              --iterations ${{ inputs.iterations || '50' }} \
-              --fen-count ${{ inputs.fen_count || '500' }} \
-              --positions-per-iter ${{ inputs.positions_per_iter || '20' }} \
-              --search-depth ${{ inputs.search_depth || '4' }} \
-              --games-per-iter ${{ inputs.games_per_iter || '50' }} \
-              --time-control "${{ inputs.time_control || '1+0.1' }}" \
-              --cutechess /usr/local/bin/cutechess-cli \
-              --output spsa_results.json
-          else
-            echo "=== Running SPSA in Simple Mode (eval comparison) ==="
-            python tuner/spsa_tuner.py \
-              --engine ./output/main \
-              --iterations ${{ inputs.iterations || '50' }} \
-              --fen-count ${{ inputs.fen_count || '500' }} \
-              --positions-per-iter ${{ inputs.positions_per_iter || '20' }} \
-              --search-depth ${{ inputs.search_depth || '4' }} \
-              --simple \
-              --output spsa_results.json
-          fi
+      - name: Run SPSA Tuner (Full Mode with cutechess)
+        if: ${{ inputs.use_cutechess }}
+        run: |
+          python tuner/spsa_tuner.py \
+            --engine ./output/main \
+            --iterations ${{ inputs.iterations }} \
+            --fen-count ${{ inputs.fen_count }} \
+            --positions-per-iter ${{ inputs.positions_per_iter }} \
+            --search-depth ${{ inputs.search_depth }} \
+            --games-per-iter ${{ inputs.games_per_iter }} \
+            --time-control "${{ inputs.time_control }}" \
+            --cutechess cutechess-cli \
+            --output spsa_results.json
 
       - name: Display results
         run: |
