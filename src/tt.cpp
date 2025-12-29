@@ -13,8 +13,8 @@ TranspositionTable TT;
 // ============================================================================
 
 TranspositionTable::TranspositionTable()
-    : table(nullptr), clusterCount(0), generation8(0) {
-    resize(16);  // Default 16 MB
+    : table(nullptr), clusterCount(0), clusterMask(0), generation8(0) {
+    resize(16);  // Default 16 MB (UCI option can increase if needed)
 }
 
 TranspositionTable::~TranspositionTable() {
@@ -53,6 +53,9 @@ void TranspositionTable::resize(size_t mb) {
     while (clusterCount * 2 <= targetCount) {
         clusterCount *= 2;
     }
+
+    // Pre-compute mask for fast bitwise AND lookup (replaces expensive modulo)
+    clusterMask = clusterCount - 1;
 
     // Allocate aligned memory for cache efficiency
 #ifdef _WIN32

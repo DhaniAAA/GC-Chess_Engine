@@ -162,7 +162,8 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
       contHist1ply(contHist1), contHist2ply(contHist2),
       captureHist(ch),
-      ttMoveCount(count), ttMoveIdx(0), currentIdx(0), ply(p), stage(STAGE_TT_MOVE) {
+      ttMoveCount(count), ttMoveIdx(0), currentIdx(0), equalCaptureIdx(0),
+      ply(p), stage(STAGE_TT_MOVE) {
 
     for (int i = 0; i < 3; ++i) {
         ttMoves[i] = (i < count) ? tm[i] : MOVE_NONE;
@@ -255,19 +256,44 @@ void MovePicker::score_captures() {
         // Use SEE for good/bad capture separation
         int see_value = SEE::evaluate(board, m);
 
-        if (see_value >= 0) {
-            // Good capture: MVV-LVA + SEE bonus + Capture History
-            sm.score = SCORE_WINNING_CAP + mvv_lva(board, m);
+        // [FIX] Captures that give check should be prioritized even with bad SEE
+        // These can be tactical sacrifices (like Qxh7+) leading to mate
+        bool givesCheck = MoveGen::gives_check(board, m);
+
+        if (see_value >= 0 || givesCheck) {
+            // Good capture OR check-giving sacrifice: MVV-LVA + SEE bonus + Capture History
+            Piece captured = board.piece_on(m.to());
+            PieceType capturedPt = (captured != NO_PIECE) ? type_of(captured) : PAWN;  // PAWN for en passant
+
+            // Check if this is an equal capture (same piece type trading, see_value close to 0)
+            Piece attacker = board.piece_on(m.from());
+            PieceType attackerPt = type_of(attacker);
+
+            if (givesCheck) {
+                // [FIX] Check-giving captures are ALWAYS high priority
+                // Queen sacrifices that give check can be mating attacks
+                sm.score = SCORE_WINNING_CAP + 10000 + mvv_lva(board, m);
+            } else if (std::abs(see_value) <= 50 && capturedPt == attackerPt) {
+                // Equal captures: separate scoring by piece type traded
+                sm.score = SCORE_EQUAL_CAP + mvv_lva(board, m);
+
+                // Add bonus based on piece type being traded
+                switch (capturedPt) {
+                    case QUEEN:  sm.score += EQUAL_CAP_QUEEN_BONUS;  break;
+                    case ROOK:   sm.score += EQUAL_CAP_ROOK_BONUS;   break;
+                    case BISHOP: sm.score += EQUAL_CAP_BISHOP_BONUS; break;
+                    case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
+                    default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
+                }
+            } else {
+                // Winning capture
+                sm.score = SCORE_WINNING_CAP + mvv_lva(board, m);
+            }
 
             // Add Capture History bonus (using CaptureHistory class)
-            if (captureHist) {
-                Piece pc = board.piece_on(m.from());
-                Piece captured = board.piece_on(m.to());
-                if (captured != NO_PIECE) {
-                    PieceType capturedPt = type_of(captured);
-                    // Use CaptureHistory::get() method, divide by 100 to keep scale reasonable
-                    sm.score += captureHist->get(pc, m.to(), capturedPt) / 100;
-                }
+            if (captureHist && captured != NO_PIECE) {
+                // Use CaptureHistory::get() method, divide by 100 to keep scale reasonable
+                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
             }
         } else {
             // Bad capture: lose material
@@ -315,6 +341,21 @@ void MovePicker::score_quiets() {
             sm.score = histScore + 2 * contHist1Score + contHist2Score;
         }
 
+        // [TACTICAL BLINDNESS FIX] King Zone Attack Bonus
+        // Give bonus to Queen/Rook moves that attack squares around enemy king
+        // This helps prioritize potential mate threats (e.g., Qg6 threatening Qg7#)
+        if (pt == QUEEN || pt == ROOK) {
+            Square enemyKingSq = board.king_square(~us);
+            Bitboard kingZone = king_attacks_bb(enemyKingSq);
+            Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
+            Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
+
+            // Bonus if attacking king zone or king square directly
+            if (attacksAfter & (kingZone | square_bb(enemyKingSq))) {
+                sm.score += 5000;  // Significant bonus for king attacks
+            }
+        }
+
         // Handle promotions with piece-specific scoring
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
@@ -345,6 +386,7 @@ Move MovePicker::next_move() {
 
     switch (stage) {
         case STAGE_TT_MOVE:
+            // Stage 1: Return TT moves first (highest priority)
             while (ttMoveIdx < ttMoveCount) {
                 m = ttMoves[ttMoveIdx++];
                 if (m && MoveGen::is_pseudo_legal(board, m)) {
@@ -355,18 +397,24 @@ Move MovePicker::next_move() {
             [[fallthrough]];
 
         case STAGE_GENERATE_CAPTURES:
+            // Stage 2: Generate and score all captures
             MoveGen::generate_captures(board, moves);
             score_captures();
             currentIdx = 0;
             ++stage;
             [[fallthrough]];
 
-        case STAGE_GOOD_CAPTURES:
+        case STAGE_WINNING_CAPTURES:
+            // Stage 3: Return only WINNING captures (SEE > 0)
+            // Equal captures will be deferred until after killers
             while (currentIdx < moves.size()) {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
-                if (moves[currentIdx - 1].score < SCORE_EQUAL_CAP) {
-                    // Switch to killers, save bad captures for later
+
+                // Only return winning captures (score > SCORE_EQUAL_CAP)
+                // Equal captures (score == SCORE_EQUAL_CAP range) are deferred
+                if (moves[currentIdx - 1].score <= SCORE_EQUAL_CAP + EQUAL_CAP_QUEEN_BONUS) {
+                    // Not a winning capture - break and try killers
                     break;
                 }
                 return m;
@@ -375,6 +423,7 @@ Move MovePicker::next_move() {
             [[fallthrough]];
 
         case STAGE_KILLER_1:
+            // Stage 4: Killer 1 - tried BEFORE equal captures for faster cutoff
             ++stage;
             if (killer1 && !is_tt_move(killer1) &&
                 MoveGen::is_pseudo_legal(board, killer1) &&
@@ -384,6 +433,7 @@ Move MovePicker::next_move() {
             [[fallthrough]];
 
         case STAGE_KILLER_2:
+            // Stage 5: Killer 2
             ++stage;
             if (killer2 && !is_tt_move(killer2) &&
                 MoveGen::is_pseudo_legal(board, killer2) &&
@@ -393,6 +443,7 @@ Move MovePicker::next_move() {
             [[fallthrough]];
 
         case STAGE_COUNTER_MOVE:
+            // Stage 6: Counter move
             ++stage;
             if (counterMove && !is_tt_move(counterMove) &&
                 counterMove != killer1 && counterMove != killer2 &&
@@ -403,14 +454,40 @@ Move MovePicker::next_move() {
             [[fallthrough]];
 
         case STAGE_GENERATE_QUIETS:
+            // Stage 7: Generate and score quiet moves
+            // First save equal captures to member variable
+            equalCaptures.clear();
+            for (size_t i = currentIdx; i < moves.size(); ++i) {
+                if (moves[i].score >= SCORE_EQUAL_CAP &&
+                    moves[i].score < SCORE_WINNING_CAP &&
+                    !is_tt_move(moves[i].move)) {
+                    equalCaptures.add(moves[i].move, moves[i].score);
+                }
+            }
+
             moves.clear();
             MoveGen::generate_quiets(board, moves);
             score_quiets();
             currentIdx = 0;
+            equalCaptureIdx = 0;
+            ++stage;
+            [[fallthrough]];
+
+        // [FIX] Moved equal captures BEFORE quiet moves
+        // Equal captures (RxR, NxN, etc.) often have tactical consequences
+        // and should be tried before random quiet moves
+        case STAGE_EQUAL_CAPTURES:
+            // Stage 8: Equal captures (saved from earlier, after winning captures)
+            while (equalCaptureIdx < equalCaptures.size()) {
+                m = equalCaptures[equalCaptureIdx++].move;
+                if (is_tt_move(m)) continue;
+                return m;
+            }
             ++stage;
             [[fallthrough]];
 
         case STAGE_QUIETS:
+            // Stage 9: Quiet moves sorted by history
             while (currentIdx < moves.size()) {
                 m = pick_best();
                 if (is_tt_move(m) || m == killer1 || m == killer2 || m == counterMove) {
@@ -418,11 +495,11 @@ Move MovePicker::next_move() {
                 }
                 return m;
             }
-            currentIdx = 0;
             ++stage;
             [[fallthrough]];
 
         case STAGE_BAD_CAPTURES:
+            // Stage 10: Bad captures (losing SEE) - last resort
             while (currentIdx < badCaptures.size()) {
                 m = badCaptures[currentIdx++].move;
                 if (is_tt_move(m)) continue;

@@ -297,6 +297,7 @@ private:
 
     // Move ordering tables
     KillerTable killers;
+    MateKillerTable mateKillers;  // Mate killers (higher priority than regular killers)
     CounterMoveTable counterMoves;
     HistoryTable history;
     ContinuationHistory contHistory;  // Continuation history (1-ply and 2-ply ago tracking)
@@ -334,6 +335,13 @@ private:
     int lastFailLowScore;     // Score at last fail-low
     bool emergencyMode;       // Ultra-low time mode (< 500ms remaining)
     int positionComplexity;   // Estimated position complexity (0-100)
+
+    // Stockfish-style PV and Score Stability Tracking
+    Move previousPV[4];       // Last 4 moves of previous PV for stability check
+    int scoreHistory[6];      // Score from last 6 iterations for fluctuation detection
+    int scoreHistoryIdx;      // Current index in scoreHistory ring buffer
+    int pvStability;          // Consecutive iterations with same PV[0..3]
+    int lastBigScoreChange;   // Depth of last big score change (anti-blunder)
 
     // Search stack and PV storage
     SearchStack stack[MAX_PLY + 4];

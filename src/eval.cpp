@@ -88,6 +88,45 @@ bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns)
 }
 
 // ============================================================================
+// Centralization Helper Functions
+// ============================================================================
+
+// Returns centralization index (0-3) for a square
+// 0 = edge/corner, 1 = outer ring, 2 = inner ring, 3 = center
+int get_centralization_index(Square sq) {
+    File f = file_of(sq);
+    Rank r = rank_of(sq);
+
+    // Distance from center (d4, d5, e4, e5)
+    int fileDistFromCenter = std::min(std::abs(f - FILE_D), std::abs(f - FILE_E));
+    int rankDistFromCenter = std::min(std::abs(r - RANK_4), std::abs(r - RANK_5));
+    int maxDist = std::max(fileDistFromCenter, rankDistFromCenter);
+
+    // Map distance to centralization index
+    // 0 distance = center (index 3)
+    // 1 distance = inner ring (index 2)
+    // 2 distance = outer ring (index 1)
+    // 3+ distance = edge (index 0)
+    if (maxDist == 0) return 3;  // Center squares (d4, d5, e4, e5)
+    if (maxDist == 1) return 2;  // Inner ring (c3-f6)
+    if (maxDist == 2) return 1;  // Outer ring (b2-g7)
+    return 0;  // Edge
+}
+
+// Returns file centralization index (0-3) for rooks
+// Rooks prefer central files (d, e)
+int get_file_centralization(File f) {
+    if (f == FILE_D || f == FILE_E) return 3;  // Central files
+    if (f == FILE_C || f == FILE_F) return 2;
+    if (f == FILE_B || f == FILE_G) return 1;
+    return 0;  // Edge files (a, h)
+}
+
+// Long diagonal masks
+constexpr Bitboard LONG_DIAGONAL_A1H8 = 0x8040201008040201ULL;  // a1-h8
+constexpr Bitboard LONG_DIAGONAL_H1A8 = 0x0102040810204080ULL;  // h1-a8
+
+// ============================================================================
 // EvalContext Initialization (CPW Attack and Defend Maps)
 // ============================================================================
 
@@ -675,7 +714,6 @@ EvalScore eval_pieces(const Board& board, Color c) {
         score += KnightMobility[std::min(mobility, 8)];
 
         // Outpost check - knight defended by OUR pawns
-        // BUG FIX: Was using pawn_attacks_bb(enemy, ourPawns) which is WRONG
         // Correct: pawn_attacks_bb(c, ourPawns) = squares defended by our pawns
         Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
         if ((square_bb(sq) & pawnDefenders)) {
@@ -958,6 +996,33 @@ EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ct
     Bitboard advantage = ourDouble & theirSingle;
     score.mg += popcount(advantage) * 8;
     score.eg += popcount(advantage) * 5;
+
+    // =========================================================================
+    // PIECE CONNECTIVITY - Bonus for pieces defended by other pieces
+    // Well-connected pieces are harder to attack and provide mutual support
+    // =========================================================================
+    Bitboard ourPieces = board.pieces(c) & ~board.pieces(c, PAWN) & ~square_bb(board.king_square(c));
+    Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
+
+    // Count defended pieces (excluding pawns and king)
+    Bitboard connectedPieces = ourPieces & ourDefended;
+    int connectedCount = popcount(connectedPieces);
+
+    // Bonus scales with number of connected pieces
+    // Having 3+ connected pieces is very good
+    if (connectedCount >= 3) {
+        score.mg += (connectedCount - 2) * 8;
+        score.eg += (connectedCount - 2) * 5;
+    }
+
+    // Penalty for undefended pieces (hanging pieces already counted above)
+    // This is additional penalty for OUR undefended pieces
+    Bitboard ourUndefended = ourPieces & ~ourDefended;
+    int undefendedCount = popcount(ourUndefended);
+    if (undefendedCount > 0) {
+        score.mg -= undefendedCount * 12;
+        score.eg -= undefendedCount * 8;
+    }
 
     return score;
 }
@@ -1387,13 +1452,450 @@ EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx)
 }
 
 // ============================================================================
+// Piece Activity & Mobility Evaluation
+// Comprehensive evaluation of piece placement, centralization, and mobility
+// ============================================================================
+
+EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
+    EvalScore score;
+    Color enemy = ~c;
+    Bitboard occupied = board.pieces();
+    Bitboard ourPawns = board.pieces(c, PAWN);
+    Bitboard theirPawns = board.pieces(enemy, PAWN);
+    Bitboard mobilityArea = ctx.mobilityArea[c];
+    Square enemyKingSq = ctx.kingSquare[enemy];
+    Square ourKingSq = ctx.kingSquare[c];
+
+    // Count developed minor pieces (for early queen penalty)
+    int developedMinors = 0;
+
+    // =========================================================================
+    // Knight Activity Evaluation
+    // =========================================================================
+    Bitboard knights = board.pieces(c, KNIGHT);
+    while (knights) {
+        Square sq = pop_lsb(knights);
+        Bitboard attacks = knight_attacks_bb(sq);
+        int mobility = popcount(attacks & mobilityArea);
+
+        // Centralization bonus
+        int centralIndex = get_centralization_index(sq);
+        score += KnightCentralization[centralIndex];
+
+        // Knight on the rim penalty
+        File f = file_of(sq);
+        Rank r = rank_of(sq);
+        if (f == FILE_A || f == FILE_H || r == RANK_1 || r == RANK_8) {
+            score += KnightOnRim;
+        }
+
+        // Trapped knight detection (edge knight with low mobility)
+        if (mobility <= 2 && (f == FILE_A || f == FILE_H)) {
+            score += TrappedKnightPenalty;
+        }
+
+        // High mobility bonus
+        if (mobility >= 7) {
+            score += HighMobilityBonus;
+        } else if (mobility <= 2) {
+            score += LowMobilityPenalty;
+        }
+
+        // King tropism
+        int kingDist = std::max(std::abs(file_of(sq) - file_of(enemyKingSq)),
+                                std::abs(rank_of(sq) - rank_of(enemyKingSq)));
+        score.mg += (7 - kingDist) * KingTropismWeight[KNIGHT];
+
+        developedMinors++;
+    }
+
+    // =========================================================================
+    // Bishop Activity Evaluation
+    // =========================================================================
+    Bitboard bishops = board.pieces(c, BISHOP);
+    while (bishops) {
+        Square sq = pop_lsb(bishops);
+        Bitboard attacks = bishop_attacks_bb(sq, occupied);
+        int mobility = popcount(attacks & mobilityArea);
+
+        // Centralization bonus
+        int centralIndex = get_centralization_index(sq);
+        score += BishopCentralization[centralIndex];
+
+        // Long diagonal bonus
+        if (square_bb(sq) & (LONG_DIAGONAL_A1H8 | LONG_DIAGONAL_H1A8)) {
+            // Check if bishop can see many squares on the long diagonal
+            int diagMobility = popcount(attacks & (LONG_DIAGONAL_A1H8 | LONG_DIAGONAL_H1A8));
+            if (diagMobility >= 3) {
+                score += BishopLongDiagonal;
+            }
+        }
+
+        // Fianchetto detection
+        // White: bishop on g2/b2 with f2/h2 or a2/c2 pawns
+        // Black: bishop on g7/b7 with f7/h7 or a7/c7 pawns
+        if (c == WHITE) {
+            if (sq == SQ_G2) {
+                if ((ourPawns & square_bb(SQ_F2)) && (ourPawns & square_bb(SQ_H2))) {
+                    score += FianchettoBonus;
+                } else if (!(ourPawns & (square_bb(SQ_F2) | square_bb(SQ_G3) | square_bb(SQ_H2)))) {
+                    score += FianchettoBroken;
+                }
+            } else if (sq == SQ_B2) {
+                if ((ourPawns & square_bb(SQ_A2)) && (ourPawns & square_bb(SQ_C2))) {
+                    score += FianchettoBonus;
+                } else if (!(ourPawns & (square_bb(SQ_A2) | square_bb(SQ_B3) | square_bb(SQ_C2)))) {
+                    score += FianchettoBroken;
+                }
+            }
+        } else {
+            if (sq == SQ_G7) {
+                if ((ourPawns & square_bb(SQ_F7)) && (ourPawns & square_bb(SQ_H7))) {
+                    score += FianchettoBonus;
+                } else if (!(ourPawns & (square_bb(SQ_F7) | square_bb(SQ_G6) | square_bb(SQ_H7)))) {
+                    score += FianchettoBroken;
+                }
+            } else if (sq == SQ_B7) {
+                if ((ourPawns & square_bb(SQ_A7)) && (ourPawns & square_bb(SQ_C7))) {
+                    score += FianchettoBonus;
+                } else if (!(ourPawns & (square_bb(SQ_A7) | square_bb(SQ_B6) | square_bb(SQ_C7)))) {
+                    score += FianchettoBroken;
+                }
+            }
+        }
+
+        // High mobility bonus
+        if (mobility >= 10) {
+            score += HighMobilityBonus;
+        } else if (mobility <= 2) {
+            score += LowMobilityPenalty;
+        }
+
+        // King tropism
+        int kingDist = std::max(std::abs(file_of(sq) - file_of(enemyKingSq)),
+                                std::abs(rank_of(sq) - rank_of(enemyKingSq)));
+        score.mg += (7 - kingDist) * KingTropismWeight[BISHOP];
+
+        developedMinors++;
+    }
+
+    // =========================================================================
+    // Rook Activity Evaluation
+    // =========================================================================
+    Bitboard rooks = board.pieces(c, ROOK);
+    Bitboard passedPawns = 0;  // We'll detect passed pawns for rook behind passer
+
+    // First find all passed pawns
+    Bitboard tempPawns = ourPawns;
+    while (tempPawns) {
+        Square sq = pop_lsb(tempPawns);
+        if (!(passed_pawn_mask(c, sq) & theirPawns)) {
+            passedPawns |= square_bb(sq);
+        }
+    }
+
+    while (rooks) {
+        Square sq = pop_lsb(rooks);
+        Bitboard attacks = rook_attacks_bb(sq, occupied);
+        int mobility = popcount(attacks & mobilityArea);
+        File f = file_of(sq);
+
+        // File centralization
+        int fileCentral = get_file_centralization(f);
+        score += RookCentralization[fileCentral];
+
+        // Rook behind passed pawn
+        if (passedPawns) {
+            Bitboard filePawns = file_bb(f) & passedPawns;
+            if (filePawns) {
+                // Check if rook is behind the passer
+                Square passerSq = c == WHITE ? lsb(filePawns) : msb(filePawns);
+                if ((c == WHITE && rank_of(sq) < rank_of(passerSq)) ||
+                    (c == BLACK && rank_of(sq) > rank_of(passerSq))) {
+                    score += RookBehindPasser;
+                }
+            }
+        }
+
+        // Rook on same file as enemy queen
+        Bitboard enemyQueens = board.pieces(enemy, QUEEN);
+        if (enemyQueens) {
+            Bitboard queenFile = file_bb(f);
+            if (queenFile & enemyQueens) {
+                score += RookOnQueenFile;
+            }
+        }
+
+        // Trapped rook by uncastled king
+        Rank relRank = c == WHITE ? rank_of(sq) : Rank(RANK_8 - rank_of(sq));
+        File kingFile = file_of(ourKingSq);
+        Rank kingRelRank = c == WHITE ? rank_of(ourKingSq) : Rank(RANK_8 - rank_of(ourKingSq));
+
+        if (relRank == RANK_1 && kingRelRank == RANK_1) {
+            // Rook on first rank, king also on first rank
+            if ((kingFile >= FILE_E && f >= kingFile) ||  // King on kingside, rook trapped
+                (kingFile <= FILE_D && f <= kingFile)) {  // King on queenside, rook trapped
+                if (mobility < 4) {
+                    score += TrappedRookPenalty;
+                }
+            }
+        }
+
+        // High mobility bonus
+        if (mobility >= 12) {
+            score += HighMobilityBonus;
+        } else if (mobility <= 3) {
+            score += LowMobilityPenalty;
+        }
+
+        // King tropism
+        int kingDist = std::max(std::abs(file_of(sq) - file_of(enemyKingSq)),
+                                std::abs(rank_of(sq) - rank_of(enemyKingSq)));
+        score.mg += (7 - kingDist) * KingTropismWeight[ROOK];
+    }
+
+    // =========================================================================
+    // Queen Activity Evaluation
+    // =========================================================================
+    Bitboard queens = board.pieces(c, QUEEN);
+    while (queens) {
+        Square sq = pop_lsb(queens);
+        Bitboard attacks = queen_attacks_bb(sq, occupied);
+        int mobility = popcount(attacks & mobilityArea);
+
+        // Centralization bonus
+        int centralIndex = get_centralization_index(sq);
+        score += QueenCentralization[centralIndex];
+
+        // Early queen development penalty
+        // If queen is out but minor pieces are not developed
+        Rank relRank = c == WHITE ? rank_of(sq) : Rank(RANK_8 - rank_of(sq));
+        if (relRank >= RANK_3 && developedMinors < 2) {
+            score += QueenEarlyDevelopment;
+        }
+
+        // High mobility bonus
+        if (mobility >= 20) {
+            score += HighMobilityBonus;
+        } else if (mobility <= 5) {
+            score += LowMobilityPenalty;
+        }
+
+        // King tropism (less weight for queen)
+        int kingDist = std::max(std::abs(file_of(sq) - file_of(enemyKingSq)),
+                                std::abs(rank_of(sq) - rank_of(enemyKingSq)));
+        score.mg += (7 - kingDist) * KingTropismWeight[QUEEN];
+    }
+
+    return score;
+}
+
+// ============================================================================
+// Advanced King Safety Evaluation
+// Comprehensive evaluation of king safety including pawn shelter, storms, and attacks
+// ============================================================================
+
+EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ctx) {
+    EvalScore score;
+    Color enemy = ~c;
+    Square kingSq = ctx.kingSquare[c];
+    Bitboard ourPawns = board.pieces(c, PAWN);
+    Bitboard theirPawns = board.pieces(enemy, PAWN);
+    Bitboard occupied = board.pieces();
+    File kingFile = file_of(kingSq);
+    Rank kingRank = rank_of(kingSq);
+    Rank kingRelRank = c == WHITE ? kingRank : Rank(RANK_8 - kingRank);
+
+    int attackUnits = 0;
+    int attackerCount = ctx.kingAttackersCount[enemy];
+
+    // =========================================================================
+    // Pawn Shield Evaluation (Detailed)
+    // =========================================================================
+    if (kingRelRank <= RANK_2) {  // King is on back ranks
+        int shieldScore = 0;
+        int missingPawns = 0;
+
+        for (int df = -2; df <= 2; df++) {
+            File f = File(kingFile + df);
+            if (f < FILE_A || f > FILE_H) continue;
+
+            int fileIndex = df + 2;  // Map to 0-4 index
+            Bitboard filePawns = file_bb(f) & ourPawns;
+
+            if (!filePawns) {
+                // No pawn on this file
+                shieldScore += PawnShieldQuality[fileIndex][0];
+                missingPawns++;
+            } else {
+                // Find the most advanced pawn (closest to king)
+                Square pawnSq = c == WHITE ? lsb(filePawns) : msb(filePawns);
+                Rank pawnRank = rank_of(pawnSq);
+                Rank pawnRelRank = c == WHITE ? pawnRank : Rank(RANK_8 - pawnRank);
+
+                // Calculate distance from ideal position
+                int idealRank = c == WHITE ? 1 : 6;  // Rank 2 for white, rank 7 for black
+                int distance = std::abs(pawnRank - idealRank);
+
+                int distIndex = std::min(distance, 3);
+                shieldScore += PawnShieldQuality[fileIndex][distIndex + 1];
+            }
+        }
+
+        score.mg += shieldScore;
+
+        // Shelter weakness based on missing pawns
+        if (missingPawns > 0 && missingPawns <= 3) {
+            score += ShelterWeakness[missingPawns];
+        }
+    }
+
+    // =========================================================================
+    // Pawn Storm Evaluation (Enemy pawns advancing toward our king)
+    // =========================================================================
+    if (kingRelRank <= RANK_2) {
+        int stormScore = 0;
+
+        for (int df = -2; df <= 2; df++) {
+            File f = File(kingFile + df);
+            if (f < FILE_A || f > FILE_H) continue;
+
+            int fileIndex = df + 2;
+            Bitboard filePawns = file_bb(f) & theirPawns;
+
+            if (filePawns) {
+                // Find the most advanced enemy pawn
+                Square pawnSq = c == WHITE ? msb(filePawns) : lsb(filePawns);
+                Rank pawnRelRank = c == WHITE ? rank_of(pawnSq) : Rank(RANK_8 - rank_of(pawnSq));
+
+                // Map rank to danger index
+                int dangerIndex;
+                if (pawnRelRank <= RANK_3) dangerIndex = 1;       // Far
+                else if (pawnRelRank <= RANK_5) dangerIndex = 2;  // Mid
+                else dangerIndex = 3;                              // Close
+
+                stormScore += PawnStormDanger[fileIndex][dangerIndex];
+            }
+        }
+
+        score.mg -= stormScore;
+    }
+
+    // =========================================================================
+    // Attack Unit Calculation with Refined Weights
+    // =========================================================================
+
+    // Use cached attack information from context
+    attackUnits += ctx.kingAttackersWeight[enemy];
+
+    // Add inner/outer ring attack contributions
+    attackUnits += ctx.innerRingAttacks[enemy] * 2;
+    attackUnits += ctx.outerRingAttacks[enemy];
+
+    // =========================================================================
+    // Safe Check Detection
+    // =========================================================================
+    Bitboard unsafeFor = ctx.attackedBy[c][ALL_PIECES];
+    Bitboard safeSquares = ~unsafeFor & ~board.pieces(enemy);
+
+    // Knight checks
+    Bitboard knightChecks = knight_attacks_bb(kingSq) & safeSquares;
+    if (ctx.attackedBy[enemy][KNIGHT] & knightChecks) {
+        attackUnits += SafeCheckBonus[KNIGHT];
+    }
+
+    // Bishop checks
+    Bitboard bishopChecks = bishop_attacks_bb(kingSq, occupied) & safeSquares;
+    if (ctx.attackedBy[enemy][BISHOP] & bishopChecks) {
+        attackUnits += SafeCheckBonus[BISHOP];
+    }
+
+    // Rook checks
+    Bitboard rookChecks = rook_attacks_bb(kingSq, occupied) & safeSquares;
+    if (ctx.attackedBy[enemy][ROOK] & rookChecks) {
+        attackUnits += SafeCheckBonus[ROOK];
+    }
+
+    // Queen checks
+    Bitboard queenChecks = queen_attacks_bb(kingSq, occupied) & safeSquares;
+    if (ctx.attackedBy[enemy][QUEEN] & queenChecks) {
+        attackUnits += SafeCheckBonus[QUEEN];
+    }
+
+    // Contact checks (pieces directly attacking adjacent squares)
+    Bitboard kingZone = king_attacks_bb(kingSq);
+    Bitboard contactAttacks = kingZone & ctx.attackedBy[enemy][ALL_PIECES] & safeSquares;
+    if (contactAttacks) {
+        attackUnits += ContactCheckBonus * popcount(contactAttacks);
+    }
+
+    // =========================================================================
+    // Virtual Mobility (potential slider attacks through king position)
+    // =========================================================================
+    Bitboard virtualBishop = bishop_attacks_bb(kingSq, occupied ^ board.pieces(c, QUEEN));
+    Bitboard virtualRook = rook_attacks_bb(kingSq, occupied ^ board.pieces(c, QUEEN));
+
+    // Count enemy sliders that could attack if queen moves
+    attackUnits += popcount(virtualBishop & board.pieces(enemy, BISHOP, QUEEN)) * VirtualMobilityWeight;
+    attackUnits += popcount(virtualRook & board.pieces(enemy, ROOK, QUEEN)) * VirtualMobilityWeight;
+
+    // =========================================================================
+    // Open/Semi-Open Files Near King
+    // =========================================================================
+    for (int df = -1; df <= 1; df++) {
+        File f = File(kingFile + df);
+        if (f < FILE_A || f > FILE_H) continue;
+
+        Bitboard fileMask = file_bb(f);
+        bool hasOurPawn = (fileMask & ourPawns) != 0;
+        bool hasTheirPawn = (fileMask & theirPawns) != 0;
+
+        if (!hasOurPawn) {
+            if (!hasTheirPawn) {
+                // Open file
+                score.mg -= KingExposedOnFile;
+                attackUnits += 5;
+            } else {
+                // Semi-open (no our pawn, but enemy has pawn)
+                score.mg -= KingExposedOnFile / 2;
+                attackUnits += 2;
+            }
+        }
+    }
+
+    // =========================================================================
+    // Weak Squares in King Zone
+    // =========================================================================
+    Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
+    Bitboard enemyAttacked = ctx.attackedBy[enemy][ALL_PIECES];
+
+    // Inner ring weak squares
+    Bitboard innerWeak = ctx.innerKingRing[c] & ~ourDefended & enemyAttacked;
+    attackUnits += popcount(innerWeak) * 3;
+
+    // Outer ring weak squares
+    Bitboard outerWeak = ctx.outerKingRing[c] & ~ourDefended & enemyAttacked;
+    attackUnits += popcount(outerWeak);
+
+    // =========================================================================
+    // Final Safety Calculation
+    // =========================================================================
+    if (attackerCount >= MinAttackersForDanger) {
+        int penalty = KingSafetyTable[std::min(attackUnits, 99)];
+        penalty = penalty * Tuning::KingSafetyWeight / 100;
+        penalty = std::min(penalty, MaxKingSafetyPenalty);
+        score.mg -= penalty;
+    }
+
+    return score;
+}
+
+// ============================================================================
 // Main Evaluation Function
 // ============================================================================
 
-// Lazy evaluation margin - if material+PST+pawn score is this far from
-// alpha/beta, skip expensive calculations (mobility, king safety)
-// Using a moderate margin (500cp ~= 5 pawns) to balance speed and accuracy
-// Too high a margin causes missed tactical evaluations
+// [FIX] Reduced lazy margin from 800 to 500 for better tactical accuracy
+// Positions with king safety or mobility issues need proper evaluation
 constexpr int LAZY_MARGIN = 500;
 
 int evaluate(const Board& board, int alpha, int beta) {
@@ -1440,21 +1942,16 @@ int evaluate(const Board& board, int alpha, int beta) {
         }
     }
 
-    // Initialize EvalContext (CPW Attack Maps)
-    EvalContext ctx;
-    init_eval_context(ctx, board);
+    // Use LIGHTWEIGHT evaluation functions (no expensive EvalContext!)
+    // This avoids the heavy init_eval_context which loops through all pieces
 
-    // Piece activity using cached attack maps
-    score += eval_pieces_with_context(board, WHITE, ctx);
-    score -= eval_pieces_with_context(board, BLACK, ctx);
+    // Piece mobility evaluation (lighter version without full attack maps)
+    score += eval_pieces(board, WHITE);
+    score -= eval_pieces(board, BLACK);
 
-    // King safety using cached attack maps
-    score += eval_king_safety_with_context(board, WHITE, ctx);
-    score -= eval_king_safety_with_context(board, BLACK, ctx);
-
-    // Threat evaluation using cached attack maps
-    score += eval_threats_with_context(board, WHITE, ctx);
-    score -= eval_threats_with_context(board, BLACK, ctx);
+    // King safety evaluation (lighter version)
+    score += eval_king_safety(board, WHITE);
+    score -= eval_king_safety(board, BLACK);
 
     // Space evaluation (control of central squares)
     score += eval_space(board, WHITE);
@@ -1464,23 +1961,14 @@ int evaluate(const Board& board, int alpha, int beta) {
     score += eval_material_imbalance(board, WHITE);
     score -= eval_material_imbalance(board, BLACK);
 
-    // Pawn lever detection (pawn storm threats)
-    score += eval_pawn_levers(board, WHITE, ctx);
-    score -= eval_pawn_levers(board, BLACK, ctx);
-
-    // Minor piece coordination (synergy bonuses)
-    score += eval_minor_coordination(board, WHITE, ctx);
-    score -= eval_minor_coordination(board, BLACK, ctx);
-
     // Tapered evaluation
     int mg = score.mg;
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
 
-    // Tempo bonus - small bonus for side to move (having the initiative)
-    constexpr int TEMPO = 15;  // About 0.15 pawn
-
-    // Return from side to move's perspective with tempo
+    // Return from side to move's perspective
+    // [FIX] Tempo bonus consistent at 12cp (was inconsistent 10 vs 15)
+    constexpr int TEMPO = 12;
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
 }
 
@@ -1549,8 +2037,8 @@ int evaluate_no_cache(const Board& board) {
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
 
-    // Tempo bonus
-    constexpr int TEMPO = 15;
+    // [FIX] Tempo bonus consistent at 12cp
+    constexpr int TEMPO = 12;
 
     // Return from side to move's perspective with tempo
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;

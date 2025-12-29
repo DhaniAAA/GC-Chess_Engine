@@ -14,10 +14,7 @@ CXX = g++
 # Mode Release (Optimized for Speed - Bullet Chess)
 # -O3: Maximum optimization
 # -march=native: Use all CPU features available
-# -flto: Link-Time Optimization for whole-program optimization
-# -fno-exceptions: Disable exceptions for faster code (if not used)
 # -funroll-loops: Unroll loops for speed
-# -fomit-frame-pointer: Free up a register for faster code
 CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG
 
 # Link-time optimization flags (must match CXXFLAGS)
@@ -159,6 +156,12 @@ pext-pgo-use: clean all
 debug: CXXFLAGS := -std=c++17 -Wall -Wextra -g -O0 -DDEBUG
 debug: clean all
 	@echo Debug build complete!
+
+# Profiling build for gprof analysis
+profile: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pg -g -march=native -DNDEBUG
+profile: LFLAGS += -pg
+profile: clean all
+	@echo Profiling build complete! Run the engine then use gprof.
 
 # ============================================================================
 # Texel Tuner Build

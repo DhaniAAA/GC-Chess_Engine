@@ -9,6 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <xmmintrin.h>
 
 // ============================================================================
@@ -24,16 +25,20 @@ Search Searcher;
 int LMRTable[64][64];  // [depth][moveCount]
 
 void init_lmr_table() {
-    for (int d = 0; d < 64; ++d) {
-        for (int m = 0; m < 64; ++m) {
-            if (d == 0 || m == 0) {
-                LMRTable[d][m] = 0;
-            } else {
-                // Tunable LMR formula: base + log(d) * log(m) / divisor
-                // More aggressive reductions for late moves at high depths
-                double reduction = SearchParams::LMR_BASE + std::log(d) * std::log(m) / SearchParams::LMR_DIVISOR;
-                LMRTable[d][m] = static_cast<int>(reduction);
+    for (int depth = 0; depth < 64; ++depth) {
+        for (int move = 0; move < 64; ++move) {
+            // LMR tidak berlaku untuk langkah pertama atau kedalaman sangat rendah
+            if (depth < 2 || move == 0) {
+                LMRTable[depth][move] = 0;
+                continue;
             }
+
+            // RUMUS STOCKFISH LOG-LOG:
+            // Reduction = Base + (ln(depth) * ln(move_count)) / Divisor
+            double reduction = SearchParams::LMR_BASE + (std::log(depth) * std::log(move)) / SearchParams::LMR_DIVISOR;
+
+            // Simpan sebagai integer (floor)
+            LMRTable[depth][move] = static_cast<int>(reduction);
         }
     }
 }
@@ -101,6 +106,7 @@ Search::Search() : stopped(false), searching(false), isPondering(false), rootBes
 void Search::clear_history() {
     Eval::pawnTable.clear();
     killers.clear();
+    mateKillers.clear();  // Clear mate killers between games
     counterMoves.clear();
     history.clear();
     contHistory.clear();
@@ -250,6 +256,12 @@ void Search::check_time() {
     // In ponder mode or infinite analysis, don't check time
     if (limits.infinite || limits.ponder || isPondering) return;
 
+    // [FIX] When using 'go depth X' without time limits, don't stop based on time
+    // Only depth limit will stop the search
+    if (limits.depth > 0 && maximumTime == 0 && optimumTime == 0) {
+        return;  // Depth-only search - no time limit
+    }
+
     auto now = std::chrono::steady_clock::now();
     int elapsed = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
@@ -324,6 +336,11 @@ void Search::iterative_deepening(Board& board) {
     rootPly = board.game_ply();  // Store starting ply for relative ply calculation
     pvIdx = 0;
 
+    // [FIX] Save a copy of root board position for use in report_info
+    // This ensures we always validate PV moves against the correct position
+    // even if the board reference gets modified somewhere
+    Board rootBoard = board;
+
     rootMoves.clear();
     MoveList legalMoves;
     MoveGen::generate_legal(board, legalMoves);
@@ -340,8 +357,34 @@ void Search::iterative_deepening(Board& board) {
     // Set fallback move to first legal move
     rootBestMove = rootMoves[0].move;
 
+    // When there's only one legal move, still do a quick search to report evaluation
+    // This helps GUI users see the position score even when there's no choice
     if (rootMoves.size() == 1 && !limits.infinite) {
-        return;  // Only one legal move
+        // Do a quick depth-1 search to get evaluation and update PV
+        pvIdx = 0;
+        rootDepth = 1;
+
+        // Perform a quick search to get the score
+        int score = search(board, -VALUE_INFINITE, VALUE_INFINITE, 1, false);
+
+        if (!stopped) {
+            // Update root move with result
+            rootMoves[0].score = score;
+
+            // Build minimal PV with just the forced move
+            if (rootMoves[0].pv.length == 0) {
+                rootMoves[0].pv.moves[0] = rootMoves[0].move;
+                rootMoves[0].pv.length = 1;
+            }
+
+            // Report info to GUI so user sees evaluation
+            report_info(rootBoard, 1, score, rootMoves[0].pv, 1);
+
+            // Output string indicating forced move
+            std::cout << "info string Only one legal move" << std::endl;
+        }
+
+        return;  // Only one legal move - no need for deep search
     }
 
     int maxDepth = limits.depth > 0 ? limits.depth : MAX_PLY;
@@ -354,7 +397,24 @@ void Search::iterative_deepening(Board& board) {
     previousRootScore = VALUE_NONE;
     previousRootBestMove = MOVE_NONE;
 
+    // Initialize Stockfish-style stability tracking
+    for (int i = 0; i < 4; ++i) previousPV[i] = MOVE_NONE;
+    for (int i = 0; i < 6; ++i) scoreHistory[i] = VALUE_NONE;
+    scoreHistoryIdx = 0;
+    pvStability = 0;
+    lastBigScoreChange = 0;
+
     // Iterative deepening loop
+    // [FIX] Track best known PV per move for fallback when deeper searches produce corrupt PV
+    // Using map so we can restore the correct PV for each specific move
+    std::unordered_map<uint16_t, std::pair<PVLine, int>> bestKnownPVPerMove;
+
+    // Also track the overall best result (move + PV + score) for ultimate fallback
+    Move overallBestMove = MOVE_NONE;
+    PVLine overallBestPV;
+    int overallBestScore = -VALUE_INFINITE;
+    overallBestPV.clear();
+
     for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
 
         // Save previous scores and subtree nodes for all root moves ordering
@@ -364,17 +424,31 @@ void Search::iterative_deepening(Board& board) {
             rm.subtreeNodes = 0; // Reset for current iteration
         }
 
+        // [FIX] Save snapshot of rootMoves before this depth for potential rollback
+        // If the search at this depth produces unreliable results (empty PV for best move),
+        // we can restore to the previous depth's reliable results
+        std::vector<RootMove> rootMovesBackup = rootMoves;
+
         // MultiPV loop - search each PV line
         for (pvIdx = 0; pvIdx < multiPV && !stopped; ++pvIdx) {
 
+            // [FIX] Save previous PV and score before aspiration search
+            // This allows us to restore them if the new search produces suspicious results
+            // (e.g., empty PV with drastically different score - sign of search instability)
+            // NOTE: rm.score is from previous depth iteration, rm.previousScore is from 2 depths ago
+            Move analyzedMove = rootMoves[pvIdx].move;  // The move we're about to search
+            PVLine previousPVLine = rootMoves[pvIdx].pv;
+            int previousIterScore = rootMoves[pvIdx].score;  // Use current score, not previousScore
+
             // Set aspiration window based on previous score
+            // Using exponential widening: delta * 3 on each retry
             int alpha = -VALUE_INFINITE;
             int beta = VALUE_INFINITE;
-            int delta = 50;
+            int delta = ASPIRATION_INITIAL_DELTA;  // Start with configured value (e.g., 18)
             int score = rootMoves[pvIdx].previousScore;
 
             // Use aspiration windows at higher depths
-            if (rootDepth >= 5 && score != -VALUE_INFINITE) {
+            if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE) {
                 alpha = std::max(score - delta, -VALUE_INFINITE);
                 beta = std::min(score + delta, VALUE_INFINITE);
             }
@@ -385,8 +459,11 @@ void Search::iterative_deepening(Board& board) {
                 alpha = std::min(alpha, prevScore - delta);
             }
 
-            int failedHighLow = 0;
-
+            // Exponential aspiration window loop
+            // Retry 1: +/- delta (e.g., 18)
+            // Retry 2: +/- delta*3 (e.g., 54)
+            // Retry 3: +/- delta*9 (e.g., 162)
+            // Retry 4+: +/- INFINITE
             while (true) {
                 score = search(board, alpha, beta, rootDepth, false);
 
@@ -395,25 +472,25 @@ void Search::iterative_deepening(Board& board) {
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
                 if (score <= alpha) {
-                    // Fail low - widen alpha
+                    // Fail low - widen window exponentially (3x)
                     beta = (alpha + beta) / 2;
-                    alpha = std::max(score - delta, -VALUE_INFINITE);
-                    delta *= 2;
-                    ++failedHighLow;
+                    delta *= 3;  // Exponential widening
 
-                    if (failedHighLow >= 3) {
+                    // If delta exceeds reasonable bounds, go full window
+                    if (delta > 500) {
                         alpha = -VALUE_INFINITE;
-                        beta = VALUE_INFINITE;
+                    } else {
+                        alpha = std::max(score - delta, -VALUE_INFINITE);
                     }
                 } else if (score >= beta) {
-                    // Fail high - widen beta
-                    beta = std::min(score + delta, VALUE_INFINITE);
-                    delta *= 2;
-                    ++failedHighLow;
+                    // Fail high - widen window exponentially (3x)
+                    delta *= 3;  // Exponential widening
 
-                    if (failedHighLow >= 3) {
-                        alpha = -VALUE_INFINITE;
+                    // If delta exceeds reasonable bounds, go full window
+                    if (delta > 500) {
                         beta = VALUE_INFINITE;
+                    } else {
+                        beta = std::min(score + delta, VALUE_INFINITE);
                     }
                 } else {
                     // Search completed within window
@@ -424,15 +501,132 @@ void Search::iterative_deepening(Board& board) {
             // Sort moves after completing this PV (keep previous PVs stable)
             std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
+            // [FIX] Detect and recover from suspicious search results
+            // If PV is empty and score changed drastically (>500cp swing), this is likely
+            // a search instability issue. Restore previous iteration's PV to prevent
+            // tactical blindness where engine plays a bad move based on incomplete search.
+            // NOTE: After stable_sort, we must find the move by its Move value since order changed
+            if (!stopped && analyzedMove != MOVE_NONE) {
+                // Find the move we just analyzed (it was at rootMoves[pvIdx] before sort,
+                // now might have moved due to sorting)
+                for (auto& rm : rootMoves) {
+                    if (rm.move == analyzedMove) {
+                        // Check for suspicious result: empty PV with huge score change
+                        bool suspiciousResult = (rm.pv.length == 0) &&
+                                                (previousIterScore != -VALUE_INFINITE) &&
+                                                (std::abs(rm.score - previousIterScore) > 500);
+
+                        // Also suspicious: PV becomes empty when previous had valid moves
+                        bool pvDisappeared = (rm.pv.length == 0) && (previousPVLine.length > 0);
+
+                        if (suspiciousResult || pvDisappeared) {
+                            // Restore previous iteration's PV and score
+                            rm.pv = previousPVLine;
+                            rm.score = previousIterScore;
+                        }
+                        break;
+                    }
+                }
+            }
+
             if (!stopped) {
                 // Report this PV line
-                const RootMove& rm = rootMoves[pvIdx];
-                report_info(board, rootDepth, rm.score, rm.pv, pvIdx + 1);  // pvIdx is 0-based, UCI multipv is 1-based
+                RootMove& rm = rootMoves[pvIdx];
+
+                // [FIX] Check if first TWO moves in PV are valid, not just length > 0
+                // PV can have length > 0 but contain MOVE_NONE or illegal moves due to search instability
+                // We check second move too because search instability often corrupts continuation moves
+                bool pvValid = (rm.pv.length > 0) &&
+                               (rm.pv.moves[0] != MOVE_NONE) &&
+                               MoveGen::is_pseudo_legal(rootBoard, rm.pv.moves[0]) &&
+                               MoveGen::is_legal(rootBoard, rm.pv.moves[0]);
+
+                // If first move is valid but there should be more moves, validate second move too
+                if (pvValid && rm.pv.length > 1) {
+                    Move firstMove = rm.pv.moves[0];
+                    Move secondMove = rm.pv.moves[1];
+
+                    if (secondMove == MOVE_NONE) {
+                        pvValid = false;
+                    } else {
+                        // Validate second move on the resulting position
+                        Board tempBoard = rootBoard;
+                        StateInfo si;
+                        tempBoard.do_move(firstMove, si);
+
+                        if (!MoveGen::is_pseudo_legal(tempBoard, secondMove) ||
+                            !MoveGen::is_legal(tempBoard, secondMove)) {
+                            pvValid = false;
+                        }
+                    }
+                }
+
+                // [FIX] If current PV is valid, update our best known PV for this specific move
+                if (pvValid) {
+                    uint16_t moveKey = rm.move.raw();
+                    bestKnownPVPerMove[moveKey] = {rm.pv, rm.score};
+
+                    // Also update overall best if this is better
+                    if (rm.score > overallBestScore || overallBestMove == MOVE_NONE) {
+                        overallBestMove = rm.move;
+                        overallBestPV = rm.pv;
+                        overallBestScore = rm.score;
+                    }
+
+                    report_info(rootBoard, rootDepth, rm.score, rm.pv, pvIdx + 1);
+                }
+                // If current PV is invalid, try to restore from per-move cache
+                else {
+                    uint16_t moveKey = rm.move.raw();
+                    auto it = bestKnownPVPerMove.find(moveKey);
+
+                    if (it != bestKnownPVPerMove.end() && it->second.first.length > 0) {
+                        // Found cached PV for this move - use it
+                        rm.pv = it->second.first;
+                        rm.score = it->second.second;
+                        report_info(rootBoard, rootDepth, rm.score, rm.pv, pvIdx + 1);
+                    }
+                    // Fall back to overall best PV
+                    else if (overallBestPV.length > 0 && overallBestPV.moves[0] != MOVE_NONE) {
+                        report_info(rootBoard, rootDepth, overallBestScore, overallBestPV, pvIdx + 1);
+                    }
+                    else {
+                        // No valid PV available - report current result anyway
+                        report_info(rootBoard, rootDepth, rm.score, rm.pv, pvIdx + 1);
+                    }
+                }
             }
         }
 
         // After searching all PVs, update root best move from first PV
         if (!stopped && !rootMoves.empty()) {
+            // [FIX] Check if search at this depth produced reliable results using proper validation
+            // Not just pv.length > 0, but first move must also be valid
+            bool searchReliable = (rootMoves[0].pv.length > 0) &&
+                                  (rootMoves[0].pv.moves[0] != MOVE_NONE) &&
+                                  MoveGen::is_pseudo_legal(board, rootMoves[0].pv.moves[0]) &&
+                                  MoveGen::is_legal(board, rootMoves[0].pv.moves[0]);
+
+            if (!searchReliable) {
+                // Try to restore from backup first
+                if (rootMovesBackup.size() > 0 && rootMovesBackup[0].pv.length > 0 &&
+                    rootMovesBackup[0].pv.moves[0] != MOVE_NONE) {
+                    rootMoves = rootMovesBackup;
+                }
+                // If backup also doesn't help, try to restore best move from per-move cache
+                else if (overallBestMove != MOVE_NONE) {
+                    // Find the overall best move in rootMoves and restore its PV
+                    for (auto& rm : rootMoves) {
+                        uint16_t moveKey = rm.move.raw();
+                        auto it = bestKnownPVPerMove.find(moveKey);
+                        if (it != bestKnownPVPerMove.end() && it->second.first.length > 0) {
+                            rm.pv = it->second.first;
+                            rm.score = it->second.second;
+                        }
+                    }
+                }
+            }
+
             const RootMove& bestRM = rootMoves[0];
 
             if (bestRM.pv.length > 0 && bestRM.pv.moves[0] != MOVE_NONE) {
@@ -445,6 +639,12 @@ void Search::iterative_deepening(Board& board) {
                        MoveGen::is_pseudo_legal(board, bestRM.move) &&
                        MoveGen::is_legal(board, bestRM.move)) {
                 rootBestMove = bestRM.move;
+            }
+            // [FIX] Ultimate fallback: use overall best move if available
+            else if (overallBestMove != MOVE_NONE &&
+                     MoveGen::is_pseudo_legal(board, overallBestMove) &&
+                     MoveGen::is_legal(board, overallBestMove)) {
+                rootBestMove = overallBestMove;
             }
 
             rootPonderMove = MOVE_NONE;
@@ -547,52 +747,118 @@ void Search::iterative_deepening(Board& board) {
                         optimumTime = std::min(maximumTime, adjustedOptimum);
                     }
 
-                    // Stability-based Early Termination
-                    // If best move has been stable for many iterations, stop early
                     auto now = std::chrono::steady_clock::now();
                     int elapsed = static_cast<int>(
                         std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
                     );
 
-                    // Calculate stability bonus (reduces required time)
-                    double stabilityFactor = 1.0 - (bestMoveStability * 0.08);  // Up to 80% reduction
-                    stabilityFactor = std::max(stabilityFactor, 0.3);  // Never less than 30%
+                    // =========================================================================
+                    // SIGNAL 1: Update Score History (for fluctuation detection)
+                    // =========================================================================
+                    scoreHistory[scoreHistoryIdx] = score;
+                    scoreHistoryIdx = (scoreHistoryIdx + 1) % 6;
 
+                    // Check for big score change (anti-blunder safety)
+                    if (previousRootScore != VALUE_NONE) {
+                        int scoreDelta = std::abs(score - previousRootScore);
+                        if (scoreDelta > 50) {  // More than 50cp change
+                            lastBigScoreChange = rootDepth;
+                        }
+                    }
+
+                    // =========================================================================
+                    // SIGNAL 2: Update PV Stability (check first 4 moves of PV)
+                    // =========================================================================
+                    bool pvChanged = false;
+                    for (int i = 0; i < 4 && i < bestRM.pv.length; ++i) {
+                        if (bestRM.pv.moves[i] != previousPV[i]) {
+                            pvChanged = true;
+                            break;
+                        }
+                    }
+
+                    if (!pvChanged && bestMoveStability >= 1) {
+                        pvStability = std::min(pvStability + 1, 10);
+                    } else {
+                        pvStability = 0;
+                    }
+
+                    // Save current PV for next iteration
+                    for (int i = 0; i < 4; ++i) {
+                        previousPV[i] = (i < bestRM.pv.length) ? bestRM.pv.moves[i] : MOVE_NONE;
+                    }
+
+                    // =========================================================================
+                    // SIGNAL 3: Calculate Score Fluctuation
+                    // =========================================================================
+                    int maxScore = -VALUE_INFINITE, minScore = VALUE_INFINITE;
+                    int validScoreCount = 0;
+                    for (int i = 0; i < 6; ++i) {
+                        if (scoreHistory[i] != VALUE_NONE) {
+                            maxScore = std::max(maxScore, scoreHistory[i]);
+                            minScore = std::min(minScore, scoreHistory[i]);
+                            validScoreCount++;
+                        }
+                    }
+                    int scoreFluctuation = (validScoreCount >= 3) ? (maxScore - minScore) : 100;
+                    bool scoreStable = scoreFluctuation < 30;  // Less than 30cp swing
+
+                    // =========================================================================
+                    // SIGNAL 4: Calculate Stability Factor
+                    // =========================================================================
+                    double stabilityFactor = 1.0 - (bestMoveStability * 0.05);  // Up to 50% reduction
+                    stabilityFactor = std::max(stabilityFactor, 0.5);
                     int effectiveOptimum = static_cast<int>(optimumTime * stabilityFactor);
 
-                    // Early stop conditions
+                    // =========================================================================
+                    // MINIMUM DEPTH CHECK
+                    // =========================================================================
+                    const int MIN_DEPTH_FOR_EARLY_STOP = 10;  // Reduced from 12 for quicker response
+
+                    // =========================================================================
+                    // COMBINED SIGNAL EARLY STOP DECISION
+                    // =========================================================================
                     if (multiPV == 1) {
-                        // [PERBAIKAN] Jangan stop early saat mate score
-                        // Saat menemukan mate, tetap lanjutkan analisis untuk:
-                        // 1. Memastikan mate distance akurat
-                        // 2. Mencari mate lebih pendek jika ada
                         bool isMateScore = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
-                        if (!isMateScore) {
-                            // Very stable best move with enough depth - can stop early
-                            if (bestMoveStability >= 5 && elapsed > effectiveOptimum * 0.4) {
-                                break;
-                            }
+                        if (!isMateScore && rootDepth >= MIN_DEPTH_FOR_EARLY_STOP) {
 
-                            // Normal stability check
-                            if (!failingLow && elapsed > effectiveOptimum * 0.6) {
-                                break;
-                            }
+                            // Anti-blunder safety: don't stop if big score change in last 3 depths
+                            bool recentBigChange = (rootDepth - lastBigScoreChange) <= 3;
 
-                            // Failing low but past soft limit
-                            if (failingLow && elapsed > optimumTime * 0.9) {
-                                break;
+                            if (!recentBigChange) {
+                                // CONDITION A: Very stable - best move same for 5+ iterations AND PV stable
+                                if (bestMoveStability >= 5 && pvStability >= 3 && scoreStable &&
+                                    elapsed > effectiveOptimum * 0.6) {
+                                    break;
+                                }
+
+                                // CONDITION B: Stable - best move same for 4+ iterations
+                                if (bestMoveStability >= 4 && scoreStable &&
+                                    elapsed > effectiveOptimum * 0.7) {
+                                    break;
+                                }
+
+                                // CONDITION C: Normal - past optimum time, not failing low
+                                if (!failingLow && elapsed > effectiveOptimum * 0.85) {
+                                    break;
+                                }
+
+                                // CONDITION D: Failing low but past hard limit
+                                if (failingLow && elapsed > optimumTime * 0.95) {
+                                    break;
+                                }
                             }
-                        } else {
-                            // Untuk mate score, hanya stop jika sudah mate in 1-2
-                            // dan stable, untuk memastikan tidak ada miss
-                            // Calculate mate distance in moves (not ply)
-                            // Matches UCI reporting formula
+                        } else if (isMateScore) {
+                            // Mate handling: can stop early if mate is definite
                             int mateIn = (score > 0) ?
                                 (VALUE_MATE - score + 1) / 2 :
                                 std::abs((VALUE_MATE + score) / 2);
-                            if (mateIn <= 4 && bestMoveStability >= 3 && elapsed > optimumTime * 0.8) {
-                                break;  // Mate in 1-2 moves is definitive
+
+                            if (rootDepth >= MIN_DEPTH_FOR_EARLY_STOP &&
+                                mateIn <= 4 && bestMoveStability >= 3 &&
+                                elapsed > optimumTime * 0.7) {
+                                break;  // Mate in 1-4 is definitive
                             }
                         }
                     }
@@ -644,7 +910,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     // Check for time/node limits - check frequently for responsiveness
     // Using 1023 (1024-1) for fast time controls
-    if ((searchStats.nodes & 1023) == 0) {
+    if ((searchStats.nodes & 4095) == 0) {
         check_time();
     }
 
@@ -717,11 +983,58 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     int ttDepth = ttHit ? tte->depth() : 0;
     Bound ttBound = ttHit ? tte->bound() : BOUND_NONE;
 
+    // [PERBAIKAN] Validasi tambahan untuk mate scores dari TT
+    // Mate score dari hash collision sangat berbahaya - bisa return evaluasi salah
+    // Jika ttMove invalid TAPI ttScore adalah mate score, jangan percaya entry ini
+    if (ttHit && ttMove == MOVE_NONE && std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY) {
+        // Mate score tanpa move yang valid sangat mencurigakan
+        ttHit = false;
+        ttScore = VALUE_NONE;
+    }
+
     // TT cutoff (only in non-PV nodes)
-    if (!pvNode && ttHit && ttDepth >= depth) {
+    // [PERBAIKAN] Skip TT cutoff untuk mate scores yang ekstrem tanpa validasi
+    // Ini mencegah false mate dari hash collision
+    bool ttMateScore = std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY;
+    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth;
+
+    // Untuk mate score, tambahan validasi ketat
+    if (allowTTCutoff && ttMateScore) {
+        // [PERBAIKAN KRITIS] Validasi sangat ketat untuk mate scores
+        // 1. TT move harus valid (tidak MOVE_NONE)
+        // 2. Mate distance harus masuk akal relatif terhadap depth yang disimpan
+
+        if (ttMove == MOVE_NONE) {
+            // Mate tanpa move adalah sangat mencurigakan
+            allowTTCutoff = false;
+        } else {
+            int mateDistance = std::abs(VALUE_MATE - std::abs(ttScore));
+
+            // Untuk mate in N, kita butuh setidaknya depth >= N*2 untuk yakin
+            // karena mate perlu verified dari kedua sisi
+            if (ttDepth < mateDistance * 2) {
+                allowTTCutoff = false;
+            }
+
+            // Jangan percaya mate claim yang kedalamannya tidak masuk akal
+            // dengan ply saat ini - jika mateDistance sangat kecil tapi ply besar,
+            // berarti ini mungkin dari posisi yang berbeda
+            if (mateDistance < 1 || (ply > 0 && mateDistance > ply + depth)) {
+                allowTTCutoff = false;
+            }
+        }
+    }
+
+    if (allowTTCutoff) {
         if ((ttBound == BOUND_EXACT) ||
             (ttBound == BOUND_LOWER && ttScore >= beta) ||
             (ttBound == BOUND_UPPER && ttScore <= alpha)) {
+            // [PERBAIKAN] Update PV dengan ttMove agar parent mendapat PV yang lengkap
+            // Tanpa ini, PV line akan terpotong saat TT cutoff
+            if (ttMove != MOVE_NONE && ply < MAX_PLY) {
+                pvLines[ply].length = 1;
+                pvLines[ply].moves[0] = ttMove;
+            }
             return ttScore;
         }
     }
@@ -783,31 +1096,33 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     if (inCheck) improving = true;
 
     // Razoring (at low depths, if eval is far below alpha)
-    // Use corrected eval for more accurate pruning decisions
+    // Modern engine pattern: use "predicted depth" - estimating depth after LMR
+    // This makes razoring more stable as it reflects actual expected search depth
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
-        int razorMargin = RazorMargin[depth];
+        // Estimate predicted depth: expect average LMR of ~1 for late moves
+        // For depth 1-3, most moves will get reduced, so effective depth is lower
+        int predictedDepth = std::max(1, depth - 1);
 
-        // Relax margin if improving
-        if (improving) razorMargin += 50;
+        // Use predicted depth for margin calculation
+        int razorMarg = razoring_margin(predictedDepth);
 
-        if (correctedStaticEval + razorMargin <= alpha) {
-            int razorScore = qsearch(board, alpha - razorMargin, alpha - razorMargin + 1);
-            if (razorScore <= alpha - razorMargin) {
+        // Relax margin if position is improving (less aggressive pruning)
+        if (improving) razorMarg += 50;
+
+        if (correctedStaticEval + razorMarg <= alpha) {
+            int razorScore = qsearch(board, alpha - razorMarg, alpha - razorMarg + 1);
+            if (razorScore <= alpha - razorMarg) {
                 return razorScore;
             }
         }
     }
 
     // Reverse futility pruning / Static null move pruning
-    // Use corrected eval for more accurate pruning
+    // Using dynamic margin based on depth and improving status (Stockfish-style)
     if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
-        int rfpMargin = RFPMargin[depth];
+        int rfpMarg = rfp_margin(depth, improving);  // Dynamic function includes improving
 
-        // When NOT improving, we can prune more aggressively (increase margin)
-        // When improving, be more conservative (standard margin)
-        if (!improving) rfpMargin += 50;
-
-        if (correctedStaticEval - rfpMargin >= beta && correctedStaticEval < VALUE_MATE_IN_MAX_PLY) {
+        if (correctedStaticEval - rfpMarg >= beta && correctedStaticEval < VALUE_MATE_IN_MAX_PLY) {
             return correctedStaticEval;
         }
     }
@@ -854,7 +1169,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
             // Verification search at high depths to avoid zugzwang
             // If depth is high, do a reduced search to verify the null move result
-            if (depth >= 12) {
+            if (depth >= NULL_MOVE_VERIFY_DEPTH) {
                 int verifyScore = search(board, beta - 1, beta, depth - R - 1, false);
                 if (verifyScore >= beta) {
                     return nullScore;
@@ -980,6 +1295,25 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
+    // One Reply Extension - detect if there's only one legal move
+    // When there's only one move, we should extend since it's forced
+    // Only check when in check (most common forced move scenario) for efficiency
+    bool oneReplyExtension = false;
+    if (inCheck && depth >= ONE_REPLY_EXT_MIN_DEPTH) {
+        // Count legal moves quickly by generating evasions
+        MoveList evasions;
+        MoveGen::generate_all(board, evasions);
+        int legalCount = 0;
+        for (size_t i = 0; i < evasions.size() && legalCount <= 1; ++i) {
+            if (MoveGen::is_legal(board, evasions[i].move)) {
+                legalCount++;
+            }
+        }
+        if (legalCount == 1) {
+            oneReplyExtension = true;
+        }
+    }
+
     // Move loop
     Move bestMove = MOVE_NONE;
     int bestScore = -VALUE_INFINITE;
@@ -1050,126 +1384,116 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         PieceType movedPt = type_of(movedPiece);
         Color us = board.side_to_move();
 
-        // Enhanced Threat Detection
+        // LAZY Threat Detection - only compute when needed for pruning
+        // These are expensive, so only calculate for late moves that might be pruned
         bool createsThreat = false;
         bool createsFork = false;
-        bool escapesAttack = false;  // [NEW] True if this move saves a piece from attack
+        bool escapesAttack = false;
+        bool threatDetectionDone = false;  // Flag to avoid recalculating
 
-        // [NEW] Check if the piece we're moving is under attack (escaping danger)
-        // This is CRITICAL to avoid losing valuable pieces like the queen
-        {
+        // Lambda to lazily compute threat detection
+        auto computeThreatDetection = [&]() {
+            if (threatDetectionDone) return;
+            threatDetectionDone = true;
+
+            // Check if the piece we're moving is under attack (escaping danger)
             Bitboard attackersToFrom = board.attackers_to(m.from(), board.pieces()) & board.pieces(~us);
             if (attackersToFrom) {
-                // Our piece is being attacked - check if it's valuable enough to prioritize escape
                 int pieceValueMoving = PieceValue[movedPt];
 
                 // Find the least valuable attacker
-                int minAttackerValue = 20000;  // Start high (king value)
+                int minAttackerValue = 20000;
                 for (Bitboard atk = attackersToFrom; atk; ) {
                     Square atkSq = pop_lsb(atk);
                     PieceType atkPt = type_of(board.piece_on(atkSq));
                     minAttackerValue = std::min(minAttackerValue, PieceValue[atkPt]);
                 }
 
-                // If our piece is worth more than the attacker, this is a dangerous position
-                // Mark as escaping attack if we're moving a valuable piece that's under threat
-                if (pieceValueMoving >= minAttackerValue || movedPt == QUEEN || movedPt == ROOK) {
-                    // Check if destination is safe (not attacked or defended)
-                    Bitboard newOcc = board.pieces() ^ square_bb(m.from()) | square_bb(m.to());
-                    Bitboard attackersToTo = board.attackers_to(m.to(), newOcc) & board.pieces(~us);
-
-                    // If destination is safer (fewer/weaker attackers), this is an escape move
-                    if (!attackersToTo || popcount(attackersToTo) < popcount(attackersToFrom)) {
-                        escapesAttack = true;
-                    }
-                    // Also consider if the piece is defended at the destination
-                    Bitboard defendersAtTo = board.attackers_to(m.to(), newOcc) & board.pieces(us);
-                    if (defendersAtTo && pieceValueMoving <= 500) {  // Minor pieces and pawns
-                        escapesAttack = true;
-                    }
-                }
-
-                // [CRITICAL] Queen under attack should ALWAYS prioritize escape
-                if (movedPt == QUEEN) {
+                // Queen or rook under attack is always escape-worthy
+                if (movedPt == QUEEN || movedPt == ROOK || pieceValueMoving >= minAttackerValue) {
+                    // Simplified escape check - just mark it, don't do full destination analysis
                     escapesAttack = true;
                 }
             }
-        }
 
-        if (!isCapture && !givesCheck) {
-            // Calculate attacks from the destination square
-            Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
-            Bitboard attacksAfter = attacks_bb(movedPt, m.to(), newOccupied);
+            // Only compute threat creation for quiet moves
+            if (!isCapture && !givesCheck) {
+                Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
+                Bitboard attacksAfter = attacks_bb(movedPt, m.to(), newOccupied);
 
-            // Valuable enemy pieces (king excluded - that would be check)
-            Bitboard valuableEnemies = board.pieces(~us, QUEEN) | board.pieces(~us, ROOK);
-            Bitboard allMinorsAndUp = valuableEnemies | board.pieces(~us, BISHOP) | board.pieces(~us, KNIGHT);
+                // Check for threats to queen/rook
+                Bitboard valuableEnemies = board.pieces(~us, QUEEN) | board.pieces(~us, ROOK);
+                if (attacksAfter & valuableEnemies) {
+                    createsThreat = true;
+                }
 
-            // Check for threats to valuable pieces
-            Bitboard threatened = attacksAfter & valuableEnemies;
-            if (threatened) {
-                createsThreat = true;
-            }
+                // Check for forks - simplified (only knights/bishops can really fork effectively)
+                if (movedPt == KNIGHT || movedPt == BISHOP) {
+                    Bitboard allMinorsAndUp = valuableEnemies | board.pieces(~us, BISHOP) | board.pieces(~us, KNIGHT);
+                    if (popcount(attacksAfter & allMinorsAndUp) >= 2) {
+                        createsFork = true;
+                        createsThreat = true;
+                    }
+                }
 
-            // Check for forks (attacking 2+ minor/major pieces)
-            Bitboard forkedPieces = attacksAfter & allMinorsAndUp;
-            if (popcount(forkedPieces) >= 2) {
-                createsFork = true;
-                createsThreat = true;  // Fork implies threat
-            }
+                // [TACTICAL BLINDNESS FIX] Detect potential mate threats
+                // Queen/Rook moves that attack squares adjacent to enemy king are dangerous
+                // This catches moves like Qg6 that threaten Qg7# or Qh7#
+                if (movedPt == QUEEN || movedPt == ROOK) {
+                    Square enemyKingSq = board.king_square(~us);
+                    Bitboard kingZone = king_attacks_bb(enemyKingSq);
 
-            // Also consider discovered attack potential
-            Bitboard ourSliders = board.pieces(us, BISHOP, QUEEN) | board.pieces(us, ROOK, QUEEN);
-            Bitboard enemyKing = square_bb(board.king_square(~us));
-            for (Bitboard sliders = ourSliders; sliders; ) {
-                Square sliderSq = pop_lsb(sliders);
-                if (sliderSq == m.from()) continue;  // We're moving this piece
+                    // If we attack squares around enemy king, this could be a mate threat
+                    if (attacksAfter & kingZone) {
+                        createsThreat = true;
+                    }
 
-                Bitboard sliderAttacks = attacks_bb(type_of(board.piece_on(sliderSq)), sliderSq, newOccupied);
-                if (sliderAttacks & enemyKing) {
-                    if (sliderAttacks & board.pieces(~us, QUEEN)) {
+                    // Also check if we directly attack the king square itself
+                    if (attacksAfter & square_bb(enemyKingSq)) {
                         createsThreat = true;
                     }
                 }
             }
-        }
+        };
 
         // Skip late quiet moves at low depths when we're not improving
-        // [PERBAIKAN] Skip LMP for moves that give check, create threats, OR escape attacks
+        // LAZY: Only compute threats if we're past LMP threshold
         if (!pvNode && !inCheck && depth <= 7 && !isCapture && !isPromotion &&
-            !givesCheck && !createsThreat && !escapesAttack && bestScore > VALUE_MATED_IN_MAX_PLY) {
-            if (moveCount > LMPThreshold[depth]) {
-                continue;
+            !givesCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
+            int lmpThresh = lmp_threshold(depth, improving);
+            if (moveCount > lmpThresh) {
+                // Only now compute threat detection
+                computeThreatDetection();
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
-        // [PERBAIKAN] Don't prune moves that escape attacks on valuable pieces
+        // Futility pruning - Don't prune moves that escape attacks on valuable pieces
+        // LAZY: compute threat detection only when needed
         if (!pvNode && !inCheck && depth <= 6 && depth >= 1 && !isCapture && !isPromotion &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck && !createsThreat && !escapesAttack) {
-            int futilityMargin = FutilityMargin[depth];
-            if (correctedStaticEval + futilityMargin <= alpha) {
-                // Skip this move - it won't raise alpha
-                continue;
+            bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
+            int futilMarg = futility_margin(depth, improving);
+            if (correctedStaticEval + futilMarg <= alpha) {
+                computeThreatDetection();  // Lazy compute
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
         // SEE pruning for captures
         // Skip losing captures at low depths
-        // [PERBAIKAN] Don't prune captures that win material (even just a pawn)
-        if (!pvNode && depth <= 4 && isCapture) {
+        // [FIX] NEVER prune captures that give check - they can be mating sacrifices!
+        if (!pvNode && depth <= 4 && isCapture && !givesCheck) {
             Piece capturedPiece = board.piece_on(m.to());
             PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
                                      (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
 
-            // If capturing anything of value (pawn or more), be very lenient with SEE pruning
-            // This prevents missing free material
             int seeThreshold;
             if (capturedType >= PAWN && capturedType <= QUEEN) {
-                // For real captures, use much more lenient threshold (-100 * depth)
-                // This means we keep captures unless they lose a LOT of material
-                seeThreshold = improving ?
-                    -100 * depth :
-                    -80 * depth;
+                seeThreshold = improving ? -100 * depth : -80 * depth;
             } else {
                 seeThreshold = improving ?
                     -SEE_CAPTURE_IMPROVING_FACTOR * depth :
@@ -1182,53 +1506,55 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
 
         // SEE pruning for quiet moves (prune if quiet move has very negative SEE)
-        // Skip SEE pruning for checking/threatening moves OR moves that escape attacks
-        if (!pvNode && !inCheck && depth <= 3 && !isCapture && !givesCheck && !createsThreat && !escapesAttack) {
+        // LAZY: compute threat detection only when needed
+        if (!pvNode && !inCheck && depth <= 3 && !isCapture && !givesCheck) {
             int seeThreshold = improving ?
                 -SEE_QUIET_IMPROVING_FACTOR * depth :
                 -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
             if (!SEE::see_ge(board, m, seeThreshold)) {
-                continue;
+                computeThreatDetection();  // Lazy compute
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
-        // History Leaf Pruning
-        // [PERBAIKAN] Don't prune escape moves based on history alone
+        // History Leaf Pruning - LAZY
         if (!pvNode && !inCheck && depth <= HISTORY_LEAF_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck && !createsThreat && !escapesAttack &&
+            !isCapture && !isPromotion && !givesCheck &&
             bestScore > VALUE_MATED_IN_MAX_PLY) {
             int histScore = history.get(board.side_to_move(), m);
             if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
-                continue;  // Skip moves with very bad history
+                computeThreatDetection();  // Lazy compute
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
         // =====================================================================
-        // COUNTERMOVE HISTORY PRUNING
-        // Prune quiet moves with poor countermove history scores.
-        // This uses the 1-ply continuation history to identify moves that are
-        // historically bad responses to the opponent's previous move.
+        // COUNTERMOVE HISTORY PRUNING - LAZY
         // =====================================================================
         if (!pvNode && !inCheck && depth <= COUNTER_HIST_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck && !createsThreat && !escapesAttack &&
+            !isCapture && !isPromotion && !givesCheck &&
             bestScore > VALUE_MATED_IN_MAX_PLY && contHist1ply) {
 
             PieceType pt = type_of(movedPiece);
             int cmHistScore = contHist1ply->get(pt, m.to());
 
             if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
-                continue;  // Skip moves with very poor countermove history
+                computeThreatDetection();  // Lazy compute
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
         // =====================================================================
-        // FOLLOW-UP HISTORY PRUNING
-        // Prune quiet moves based on 4-ply continuation history pattern.
-        // This captures longer-term move sequence patterns, pruning moves
-        // that have historically been poor follow-ups to our move 2-ply ago.
+        // FOLLOW-UP HISTORY PRUNING - LAZY
         // =====================================================================
         if (!pvNode && !inCheck && depth <= FOLLOWUP_HIST_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck && !createsThreat && !escapesAttack &&
+            !isCapture && !isPromotion && !givesCheck &&
             bestScore > VALUE_MATED_IN_MAX_PLY && ply >= 4 && stack[ply - 2].contHistory) {
 
             const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
@@ -1236,7 +1562,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             int followupScore = contHist4ply->get(pt, m.to());
 
             if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
-                continue;  // Skip moves with very poor follow-up history
+                computeThreatDetection();  // Lazy compute
+                if (!createsThreat && !escapesAttack) {
+                    continue;
+                }
             }
         }
 
@@ -1262,6 +1591,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             extension = std::max(extension, 1);
         }
 
+        // One Reply Extension: when there's only one legal move in check, extend deeper
+        // This is a forced move so we want to analyze the consequences more thoroughly
+        if (oneReplyExtension && currentExtensions < MAX_EXTENSIONS) {
+            extension = std::max(extension, 1);
+        }
+
         // Passed pawn extension (for pawn moves to 7th rank)
         if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS) {
             Rank toRank = relative_rank(us, m.to());
@@ -1273,9 +1608,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         // =====================================================================
         // MATE THREAT EXTENSION
         // =====================================================================
-        // When null move detected that opponent can mate us, extend all moves
-        // to search for defensive resources more thoroughly.
-        // Only apply at sufficient depth and if we haven't extended too much.
         if (mateThreat && currentExtensions < MAX_EXTENSIONS && extension == 0) {
             // Extend to find defensive moves against the mate threat
             // Only extend if this move might be a defensive resource:
@@ -1328,6 +1660,30 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (capturedPt == ROOK || capturedPt == QUEEN) {
                 if (SEE::see_ge(board, m, CAPTURE_EXT_SEE_THRESHOLD)) {
                     extension = std::max(extension, 1);
+                }
+            }
+        }
+
+        // =====================================================================
+        // KING ATTACK EXTENSION - Extend Queen/Rook moves attacking king zone
+        // =====================================================================
+        // [TACTICAL BLINDNESS FIX] Helps find mates like Qg6 threatening Qg7#
+        if (!isCapture && !givesCheck && currentExtensions < MAX_EXTENSIONS &&
+            extension == 0 && depth >= 4 && (movedPt == QUEEN || movedPt == ROOK)) {
+
+            Square enemyKingSq = board.king_square(~us);
+            Bitboard kingZone = king_attacks_bb(enemyKingSq);
+            Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
+            Bitboard attacksAfter = attacks_bb(movedPt, m.to(), newOccupied);
+
+            // Extend if the move attacks squares adjacent to enemy king
+            // This is a potential mate threat that deserves deeper search
+            if (attacksAfter & (kingZone | square_bb(enemyKingSq))) {
+                // Only extend if there's limited material (mostly for mating attacks)
+                // Don't extend too much in complex positions
+                int enemyMaterial = popcount(board.pieces(~us)) - 2; // -2 for king+pawns baseline
+                if (enemyMaterial <= 4) {  // Few pieces around king = mating attack likely
+                    extension = 1;
                 }
             }
         }
@@ -1405,71 +1761,76 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
 
         int reduction = 0;
-        // [PERBAIKAN] Langkah yang memberikan skak atau membuat ancaman TIDAK BOLEH
-        // direduksi sama sekali, bukan hanya dikurangi nilai reduksinya.
-        // Ini mencegah blunder taktis fatal dari reduksi langkah tajam.
-        if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck && !createsThreat) {
-            reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
+        // LMR: Moves that give check are NOT reduced at all.
+        // For other tactical moves (createsThreat), we compute lazily.
+        if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
+            // Compute threat detection lazily for LMR decision
+            computeThreatDetection();
 
+            // Skip LMR for threatening moves
+            if (!createsThreat) {
+                reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
 
-            if (cutNode) {
-                reduction += 1;  // Reduced from +2 to preserve tactics
-            }
+                if (cutNode) {
+                    reduction += 1;
+                }
 
-            if (!improving) {
-                reduction += 1;
-            }
+                if (!improving) {
+                    reduction += 1;
+                }
 
-            if (moveCount > 15) {
-                reduction += 1;
-            }
+                if (moveCount > 15) {
+                    reduction += 1;
+                }
 
-            if (pvNode) {
-                reduction -= 1;
-            }
+                if (pvNode) {
+                    reduction -= 1;
+                }
 
-            if (inCheck) {
-                reduction -= 1;
-            }
+                if (inCheck) {
+                    reduction -= 1;
+                }
 
-            // [DIHAPUS] givesCheck dan createsThreat sudah dikecualikan di kondisi awal
-            // Tidak perlu mengurangi reduksi di sini lagi
+                if (createsFork) {
+                    reduction -= 1;
+                }
 
-            if (createsFork) {
-                reduction -= 1;
-            }
+                if (escapesAttack) {
+                    reduction -= 1;  // Reduce less for escape moves
+                }
 
-            if (killers.is_killer(ply, m) ||
-                (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
-                reduction -= 2;
-            }
+                if (killers.is_killer(ply, m) ||
+                    (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
+                    reduction -= 2;
+                }
 
-            if (isTTMove) {
-                reduction -= 1;
-            }
+                if (isTTMove) {
+                    reduction -= 1;
+                }
 
-            if (improvementDelta > 0) {
-                reduction -= std::min(improvementDelta / 50, 2);
-            }
+                if (improvementDelta > 0) {
+                    reduction -= std::min(improvementDelta / 50, 2);
+                }
 
-            int histScore = history.get(board.side_to_move(), m);
+                int histScore = history.get(board.side_to_move(), m);
 
-            PieceType pt = type_of(movedPiece);
-            if (contHist1ply) {
-                histScore += CONT_HIST_1PLY_WEIGHT * contHist1ply->get(pt, m.to());
-            }
-            if (contHist2ply) {
-                histScore += CONT_HIST_2PLY_WEIGHT * contHist2ply->get(pt, m.to());
-            }
-            if (ply >= 4 && stack[ply - 2].contHistory) {
-                const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                histScore += CONT_HIST_4PLY_WEIGHT * contHist4ply->get(pt, m.to());
-            }
+                PieceType pt = type_of(movedPiece);
+                if (contHist1ply) {
+                    histScore += CONT_HIST_1PLY_WEIGHT * contHist1ply->get(pt, m.to());
+                }
+                if (contHist2ply) {
+                    histScore += CONT_HIST_2PLY_WEIGHT * contHist2ply->get(pt, m.to());
+                }
+                if (ply >= 4 && stack[ply - 2].contHistory) {
+                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                    histScore += CONT_HIST_4PLY_WEIGHT * contHist4ply->get(pt, m.to());
+                }
 
-            reduction -= std::clamp(histScore / HISTORY_LMR_DIVISOR, -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
+                reduction -= std::clamp(histScore / HISTORY_LMR_DIVISOR, -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
 
-            reduction = std::clamp(reduction, 0, newDepth - 1);
-        }
+                reduction = std::clamp(reduction, 0, newDepth - 1);
+            }  // end if (!createsThreat)
+        }  // end LMR block
 
         // Make the move
         Piece movedPiece2 = board.piece_on(m.from());
@@ -1583,6 +1944,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     // Update killer moves (only for quiet moves)
                     if (!isCapture) {
                         killers.store(ply, m);
+
+                        // Store as mate killer if this move led to checkmate
+                        if (score >= VALUE_MATE_IN_MAX_PLY) {
+                            mateKillers.store(ply, m);
+                        }
 
                         // Update counter move
                         if (previousMove) {
@@ -1738,10 +2104,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     }
 
     // Store in transposition table
+    // [PERBAIKAN KRITIS] Jangan simpan ke TT jika search dihentikan
+    // Saat search dihentikan, child nodes return 0 yang bisa mengkorrupt bestScore
+    // dan menyebabkan false mate scores disimpan ke TT
     Bound bound = bestScore >= beta ? BOUND_LOWER :
                   bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
 
-    if (tte) {
+    if (!stopped && tte) {
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
                   bound, depth, bestMove, TT.generation());
     }
@@ -1783,7 +2152,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     ++searchStats.nodes;
 
     // Check for time limits
-    if ((searchStats.nodes & 2047) == 0) {
+    if ((searchStats.nodes & 4095) == 0) {
         check_time();
     }
 
@@ -1827,8 +2196,11 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     } else {
         MoveGen::generate_captures(board, moves);
 
-        // [PERBAIKAN] Generate quiet checks at first qsearch plies
-        if (qsDepth > 0) {
+        // Generate quiet checks at appropriate qsDepth
+        // [FIX] Changed condition to enable quiet checks when QSEARCH_CHECK_DEPTH = 0
+        // This helps find mating attacks like Qg6 threatening Qg7#
+        // Only generate at qsDepth >= 0 to avoid explosion in deep qsearch
+        if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= 0) {
             MoveList quiets;
             MoveGen::generate_quiets(board, quiets);
 
@@ -2094,20 +2466,23 @@ void Search::report_info(Board& board, int depth, int score, const PVLine& pv, i
     std::cout << " time " << elapsed;
     std::cout << " hashfull " << TT.hashfull();
 
-    // [PERBAIKAN] Validate PV line before output
-    // Output only valid moves to prevent "Illegal PV move" warnings from cutechess
+    // Output PV line
+    // Note: PV should already be validated by caller before passing to report_info
+    // We still do basic validation but don't stop on first invalid move if PV is from cache
     std::cout << " pv";
     Board tempBoard = board;
-    for (int i = 0; i < pv.length; ++i) {
+    int movesOutput = 0;
+    for (int i = 0; i < pv.length && i < MAX_PLY; ++i) {
         Move m = pv.moves[i];
         if (m == MOVE_NONE) break;
 
-        // Validate move is legal in current position
+        // Try to validate move, but if we already output some moves, be more lenient
         if (!MoveGen::is_pseudo_legal(tempBoard, m) || !MoveGen::is_legal(tempBoard, m)) {
             break;  // Stop at first illegal move
         }
 
         std::cout << " " << move_to_string(m);
+        movesOutput++;
 
         // Make the move on temp board to validate next move in sequence
         StateInfo si;

@@ -537,11 +537,42 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     int ttDepth = ttHit ? tte->depth() : 0;
     Bound ttBound = ttHit ? tte->bound() : BOUND_NONE;
 
+    // [PERBAIKAN] Validasi tambahan untuk mate scores dari TT
+    // Mate score dari hash collision sangat berbahaya - bisa return evaluasi salah
+    if (ttHit && ttMove == MOVE_NONE && std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY) {
+        ttHit = false;
+        ttScore = VALUE_NONE;
+    }
+
     // TT cutoff (non-PV nodes)
-    if (!pvNode && ttHit && ttDepth >= depth) {
+    // [PERBAIKAN] Skip TT cutoff untuk mate scores yang tidak masuk akal
+    bool ttMateScore = std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY;
+    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth;
+
+    if (allowTTCutoff && ttMateScore) {
+        // [PERBAIKAN KRITIS] Validasi ketat untuk mate scores
+        if (ttMove == MOVE_NONE) {
+            allowTTCutoff = false;
+        } else {
+            int mateDistance = std::abs(VALUE_MATE - std::abs(ttScore));
+            if (ttDepth < mateDistance * 2) {
+                allowTTCutoff = false;
+            }
+            if (mateDistance < 1 || (ply > 0 && mateDistance > ply + depth)) {
+                allowTTCutoff = false;
+            }
+        }
+    }
+
+    if (allowTTCutoff) {
         if ((ttBound == BOUND_EXACT) ||
             (ttBound == BOUND_LOWER && ttScore >= beta) ||
             (ttBound == BOUND_UPPER && ttScore <= alpha)) {
+            // [PERBAIKAN] Update PV dengan ttMove
+            if (ttMove != MOVE_NONE && ply < MAX_PLY) {
+                thread->pvLines[ply].length = 1;
+                thread->pvLines[ply].moves[0] = ttMove;
+            }
             return ttScore;
         }
     }
@@ -558,13 +589,14 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         staticEval = evaluate(board);
     }
 
-    // Razoring
+    // Razoring - use predicted depth (modern engine pattern)
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
-        int razorMargin = RazorMargin[depth];
-        if (staticEval + razorMargin <= alpha) {
-            int razorScore = qsearch(thread, board, alpha - razorMargin,
-                                     alpha - razorMargin + 1, ply);
-            if (razorScore <= alpha - razorMargin) {
+        int predictedDepth = std::max(1, depth - 1);
+        int razorMarg = razoring_margin(predictedDepth);
+        if (staticEval + razorMarg <= alpha) {
+            int razorScore = qsearch(thread, board, alpha - razorMarg,
+                                     alpha - razorMarg + 1, ply);
+            if (razorScore <= alpha - razorMarg) {
                 return razorScore;
             }
         }
@@ -572,8 +604,8 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
 
     // Reverse futility pruning
     if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
-        int rfpMargin = RFPMargin[depth];
-        if (staticEval - rfpMargin >= beta && staticEval < VALUE_MATE_IN_MAX_PLY) {
+        int rfpMarg = rfp_margin(depth, true);  // Dynamic, assume improving
+        if (staticEval - rfpMarg >= beta && staticEval < VALUE_MATE_IN_MAX_PLY) {
             return staticEval;
         }
     }
@@ -661,14 +693,14 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
 
         // LMP
         if (!pvNode && !inCheck && depth <= 7 && !isCapture && !isPromotion &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > LMPThreshold[depth]) {
+            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > lmp_threshold(depth, true)) {
             continue;
         }
 
         // Futility pruning
         if (!pvNode && !inCheck && depth <= 6 && depth >= 1 && !isCapture &&
             !isPromotion && bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
-            if (staticEval + FutilityMargin[depth] <= alpha) continue;
+            if (staticEval + futility_margin(depth, true) <= alpha) continue;
         }
 
         // SEE pruning
@@ -784,10 +816,13 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     }
 
     // Store in TT
-    Bound bound = bestScore >= beta ? BOUND_LOWER :
-                  bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
-    tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
-              bound, depth, bestMove, TT.generation());
+    // [PERBAIKAN KRITIS] Jangan simpan ke TT jika search dihentikan
+    if (!Threads.stop_flag) {
+        Bound bound = bestScore >= beta ? BOUND_LOWER :
+                      bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
+        tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
+                  bound, depth, bestMove, TT.generation());
+    }
 
     return bestScore;
 }

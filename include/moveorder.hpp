@@ -17,12 +17,21 @@ constexpr int32_t SCORE_KNIGHT_PROMO   = 290000000;   // Promosi Kuda (taktis)
 constexpr int32_t SCORE_ROOK_PROMO     = 280000000;   // Promosi Benteng
 constexpr int32_t SCORE_BISHOP_PROMO   = 270000000;   // Promosi Gajah
 constexpr int32_t SCORE_WINNING_CAP    = 200000000;   // Winning capture (Base value + MVV/LVA nanti)
-constexpr int32_t SCORE_EQUAL_CAP      = 190000000;   // Equal capture
+constexpr int32_t SCORE_EQUAL_CAP      = 190000000;   // Equal capture base (adjusted by piece type)
+constexpr int32_t SCORE_MATE_KILLER    = 15000000;    // Mate killer (higher than regular killer)
 constexpr int32_t SCORE_KILLER_1       = 10000000;    // Killer move 1
 constexpr int32_t SCORE_KILLER_2       = 9000000;     // Killer move 2
 constexpr int32_t SCORE_COUNTER        = 8000000;     // Counter move
 constexpr int32_t SCORE_HISTORY_MAX    = 7000000;     // Batas atas History Heuristic (biasanya dinamis)
 constexpr int32_t SCORE_LOSING_CAP     = -10000000;   // Losing capture (dicari terakhir)
+
+// Equal Capture Bonus by Piece Type (added to SCORE_EQUAL_CAP)
+// Trading more valuable pieces is generally more important
+constexpr int32_t EQUAL_CAP_QUEEN_BONUS  = 5000;   // QxQ trading - most critical
+constexpr int32_t EQUAL_CAP_ROOK_BONUS   = 3000;   // RxR trading - changes game character
+constexpr int32_t EQUAL_CAP_BISHOP_BONUS = 1500;   // BxB trading
+constexpr int32_t EQUAL_CAP_KNIGHT_BONUS = 1000;   // NxN trading
+constexpr int32_t EQUAL_CAP_PAWN_BONUS   = 0;      // PxP trading - least critical
 
 // ============================================================================
 // Piece Values for MVV-LVA and SEE
@@ -132,6 +141,47 @@ public:
 
 private:
     Move killers[MAX_PLY][NUM_KILLERS];
+};
+
+// ============================================================================
+// Mate Killers
+//
+// Stores moves that led to checkmate. These have higher priority than
+// regular killer moves because they are proven to be winning.
+// ============================================================================
+
+class MateKillerTable {
+public:
+    static constexpr int MAX_PLY = 128;
+
+    MateKillerTable() { clear(); }
+
+    void clear() {
+        for (int i = 0; i < MAX_PLY; ++i) {
+            mateKiller[i] = MOVE_NONE;
+        }
+    }
+
+    // Store a mate killer move at the given ply
+    void store(int ply, Move m) {
+        if (ply >= MAX_PLY) return;
+        mateKiller[ply] = m;
+    }
+
+    // Check if move is a mate killer at this ply
+    bool is_mate_killer(int ply, Move m) const {
+        if (ply >= MAX_PLY) return false;
+        return mateKiller[ply] == m;
+    }
+
+    // Get mate killer move
+    Move get(int ply) const {
+        if (ply >= MAX_PLY) return MOVE_NONE;
+        return mateKiller[ply];
+    }
+
+private:
+    Move mateKiller[MAX_PLY];
 };
 
 // ============================================================================
@@ -465,15 +515,17 @@ private:
 // ============================================================================
 
 enum MovePickStage {
-    STAGE_TT_MOVE,
-    STAGE_GENERATE_CAPTURES,
-    STAGE_GOOD_CAPTURES,
-    STAGE_KILLER_1,
-    STAGE_KILLER_2,
-    STAGE_COUNTER_MOVE,
-    STAGE_GENERATE_QUIETS,
-    STAGE_QUIETS,
-    STAGE_BAD_CAPTURES,
+    // Main search stages - Stockfish-style ordering for optimal cutoff
+    STAGE_TT_MOVE,              // 1. Hash move - highest priority
+    STAGE_GENERATE_CAPTURES,    // 2. Generate and score all captures
+    STAGE_WINNING_CAPTURES,     // 3. Winning captures only (SEE > 0)
+    STAGE_KILLER_1,             // 4. Killer move 1 - BEFORE equal captures!
+    STAGE_KILLER_2,             // 5. Killer move 2
+    STAGE_COUNTER_MOVE,         // 6. Counter move
+    STAGE_GENERATE_QUIETS,      // 7. Generate and score quiet moves
+    STAGE_EQUAL_CAPTURES,       // 8. [FIX] Equal captures BEFORE quiets (tactical trades)
+    STAGE_QUIETS,               // 9. Quiet moves sorted by history
+    STAGE_BAD_CAPTURES,         // 10. Losing captures (SEE < 0) - lowest priority
     STAGE_DONE,
 
     // Quiescence stages
@@ -525,7 +577,9 @@ private:
 
     MoveList moves;
     MoveList badCaptures;
+    MoveList equalCaptures;  // Equal captures (SEE == 0) deferred after quiets
     int currentIdx;
+    int equalCaptureIdx;     // Index for equal captures iteration
     int ply;
 
     MovePickStage stage;

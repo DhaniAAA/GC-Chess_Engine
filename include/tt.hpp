@@ -130,10 +130,13 @@ public:
 private:
     TTCluster* table;
     size_t clusterCount;
+    size_t clusterMask;  // clusterCount - 1, for fast bitwise AND instead of modulo
     U8 generation8;
 
+    // Using bitwise AND with mask is ~5-10x faster than modulo
+    // Requires clusterCount to be power of 2 (ensured in resize())
     TTEntry* first_entry(Key key) {
-        return &table[key % clusterCount].entries[0];
+        return &table[key & clusterMask].entries[0];
     }
 };
 

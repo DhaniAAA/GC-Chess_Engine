@@ -394,6 +394,147 @@ constexpr EvalScore KnightProximityBonus = S(8, 5);
 constexpr EvalScore BishopColorComplex = S(5, 10);
 
 // ============================================================================
+// Piece Activity & Mobility Constants
+// Comprehensive evaluation of piece placement and control
+// ============================================================================
+
+// Centralization bonus tables - pieces in center are more active
+// Knight centralization (knights love the center)
+constexpr EvalScore KnightCentralization[4] = {
+    S(  0,   0),  // Edge/corner
+    S(  5,   3),  // Outer ring (b2-g7 area)
+    S( 12,   8),  // Inner ring (c3-f6 area)
+    S( 20,  12)   // Center (d4-e5)
+};
+
+// Bishop centralization (less important than knight)
+constexpr EvalScore BishopCentralization[4] = {
+    S(  0,   0),  // Edge
+    S(  3,   2),  // Outer ring
+    S(  8,   5),  // Inner ring
+    S( 12,   8)   // Center
+};
+
+// Rook centralization (file control matters more)
+constexpr EvalScore RookCentralization[4] = {
+    S(  0,   0),  // Edge file (a/h)
+    S(  3,   2),  // b/g files
+    S(  6,   4),  // c/f files
+    S( 10,   6)   // d/e files (central)
+};
+
+// Queen centralization (modest bonus, early queen out is bad)
+constexpr EvalScore QueenCentralization[4] = {
+    S( -5,   0),  // Edge (bad in middlegame)
+    S(  0,   2),
+    S(  3,   5),
+    S(  5,   8)   // Center
+};
+
+// Piece activity bonuses - pieces controlling many squares
+constexpr EvalScore HighMobilityBonus = S(10, 15);     // For pieces with very high mobility
+constexpr EvalScore LowMobilityPenalty = S(-15, -20);  // For pieces with very low mobility
+
+// Piece placement bonuses
+constexpr EvalScore KnightOnRim = S(-10, -8);          // "Knight on the rim is dim"
+constexpr EvalScore BishopLongDiagonal = S(15, 10);    // Bishop on long diagonal (a1-h8, h1-a8)
+constexpr EvalScore RookBehindPasser = S(20, 30);      // Rook behind passed pawn
+constexpr EvalScore RookOnQueenFile = S(8, 5);         // Rook on same file as enemy queen
+constexpr EvalScore QueenEarlyDevelopment = S(-15, 0); // Queen out before minor pieces
+
+// Fianchetto bonus - bishop on g2/b2/g7/b7 with pawns protecting
+constexpr EvalScore FianchettoBonus = S(12, 8);
+constexpr EvalScore FianchettoBroken = S(-10, -5);     // Fianchetto pawn missing
+
+// Trapped piece penalties
+constexpr EvalScore TrappedBishopPenalty = S(-100, -80);  // Bishop trapped on a7/h7
+constexpr EvalScore TrappedRookPenalty = S(-50, -30);     // Rook trapped by uncastled king
+constexpr EvalScore TrappedKnightPenalty = S(-40, -30);   // Knight trapped on edge
+
+// ============================================================================
+// Advanced King Safety Constants
+// Comprehensive king safety evaluation
+// ============================================================================
+
+// Pawn shield quality - detailed analysis of pawns protecting king
+// Based on distance from king and advancement
+constexpr int PawnShieldQuality[5][4] = {
+    //  No pawn  1 sq away  2 sq away  3+ sq away
+    {  -35,       0,        -10,       -20  },  // File -2 from king (far)
+    {  -25,      10,          0,       -10  },  // File -1 from king
+    {  -30,      15,          5,       -15  },  // King's file (most important)
+    {  -25,      10,          0,       -10  },  // File +1 from king
+    {  -35,       0,        -10,       -20  },  // File +2 from king (far)
+};
+
+// Pawn storm evaluation - enemy pawns advancing toward our king
+constexpr int PawnStormDanger[5][4] = {
+    //  No pawn  Far (r2-r3)  Mid (r4-r5)  Close (r6-r7)
+    {    0,         5,           15,          30   },  // File -2 from king
+    {    0,        10,           25,          45   },  // File -1 from king
+    {    0,        15,           35,          60   },  // King's file (most dangerous)
+    {    0,        10,           25,          45   },  // File +1 from king
+    {    0,         5,           15,          30   },  // File +2 from king
+};
+
+// King zone attack weights (refined)
+constexpr int AttackWeightByPiece[PIECE_TYPE_NB] = {
+    0,   // NO_PIECE_TYPE
+    0,   // PAWN (handled separately)
+    3,   // KNIGHT
+    2,   // BISHOP
+    4,   // ROOK
+    6,   // QUEEN
+    0    // KING
+};
+
+// Attack count thresholds for king safety
+constexpr int MinAttackersForDanger = 2;    // Need at least 2 attackers
+constexpr int MaxKingSafetyPenalty = 800;   // Cap on king safety penalty
+
+// King exposure penalties
+constexpr int KingExposedOnFile = 20;       // Open file near king
+constexpr int KingExposedOnDiagonal = 15;   // Open diagonal toward king
+constexpr int KingNoQueensideCastle = 25;   // Lost queenside castle rights
+constexpr int KingNoKingsideCastle = 30;    // Lost kingside castle rights (usually preferred)
+
+// Shelter weakness
+constexpr EvalScore ShelterWeakness[4] = {
+    S(  0,   0),  // Fully sheltered
+    S(-10,  -3),  // One pawn missing
+    S(-25,  -8),  // Two pawns missing
+    S(-50, -15)   // No shelter
+};
+
+// Check threat bonuses for attackers
+constexpr int SafeCheckBonus[PIECE_TYPE_NB] = {
+    0,   // NO_PIECE_TYPE
+    0,   // PAWN
+    45,  // KNIGHT (knight checks are very dangerous)
+    35,  // BISHOP
+    50,  // ROOK (rook checks often lead to mate)
+    60,  // QUEEN (queen checks are devastating)
+    0    // KING
+};
+
+// Contact check (piece directly attacking adjacent king square)
+constexpr int ContactCheckBonus = 40;
+
+// King tropism (piece proximity to enemy king)
+constexpr int KingTropismWeight[PIECE_TYPE_NB] = {
+    0,   // NO_PIECE_TYPE
+    0,   // PAWN
+    5,   // KNIGHT
+    3,   // BISHOP
+    4,   // ROOK
+    2,   // QUEEN (queen tropism less important as it's mobile)
+    0    // KING
+};
+
+// Virtual mobility - potential slider attacks through the king
+constexpr int VirtualMobilityWeight = 3;
+
+// ============================================================================
 // Function Declarations
 // ============================================================================
 
@@ -418,6 +559,16 @@ EvalScore eval_space(const Board& board, Color c);
 EvalScore eval_material_imbalance(const Board& board, Color c);
 EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx);
 EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx);
+
+// Piece Activity & Mobility evaluation
+EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx);
+
+// Advanced King Safety evaluation
+EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ctx);
+
+// Helper functions for centralization
+int get_centralization_index(Square sq);
+int get_file_centralization(File f);
 
 // Incremental PST helper - returns material + PST score for a single piece
 // Used by Board::do_move/undo_move for incremental updates

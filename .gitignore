@@ -5,6 +5,7 @@
 *.slo
 *.lo
 *.o
+*.gcda
 *.obj
 *.pgn
 *.py

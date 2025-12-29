@@ -97,7 +97,7 @@ inline std::string move_to_string(Move m) {
         bool isValidPromotion = (fromRank == RANK_7 && toRank == RANK_8) ||  // White promotion
                                 (fromRank == RANK_2 && toRank == RANK_1);    // Black promotion
         if (isValidPromotion) {
-            s += " nbrq"[m.promotion_type() - KNIGHT];
+            s += "nbrq"[m.promotion_type() - KNIGHT];
         }
     }
 
