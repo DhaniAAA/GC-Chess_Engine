@@ -162,7 +162,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
       contHist1ply(contHist1), contHist2ply(contHist2),
       captureHist(ch),
-      ttMoveCount(count), ttMoveIdx(0), currentIdx(0), equalCaptureIdx(0),
+      ttMoveCount(count), ttMoveIdx(0), currentIdx(0), equalCaptureIdx(0), quietCheckIdx(0),
       ply(p), stage(STAGE_TT_MOVE) {
 
     for (int i = 0; i < 3; ++i) {
@@ -374,6 +374,35 @@ void MovePicker::score_quiets() {
     }
 }
 
+void MovePicker::score_quiet_checks() {
+    Color us = board.side_to_move();
+
+    for (auto& sm : quietChecks) {
+        Move m = sm.move;
+        Piece pc = board.piece_on(m.from());
+        PieceType pt = type_of(pc);
+
+        // Base score for quiet check
+        sm.score = SCORE_QUIET_CHECK;
+
+        // Add history bonus
+        int histScore = history.get(us, m);
+        sm.score += histScore / 100;  // Scale down history contribution
+
+        // Bonus based on piece type giving check
+        // Knight and bishop checks are usually more forcing
+        if (pt == KNIGHT || pt == BISHOP) {
+            sm.score += 2000;
+        } else if (pt == ROOK || pt == QUEEN) {
+            // Rook/Queen checks can be strong too
+            sm.score += 1000;
+        } else if (pt == PAWN) {
+            // Pawn checks (discovered) can be very dangerous
+            sm.score += 3000;
+        }
+    }
+}
+
 Move MovePicker::pick_best() {
     if (currentIdx >= moves.size()) {
         return MOVE_NONE;
@@ -414,7 +443,7 @@ Move MovePicker::next_move() {
                 // Only return winning captures (score > SCORE_EQUAL_CAP)
                 // Equal captures (score == SCORE_EQUAL_CAP range) are deferred
                 if (moves[currentIdx - 1].score <= SCORE_EQUAL_CAP + EQUAL_CAP_QUEEN_BONUS) {
-                    // Not a winning capture - break and try killers
+                    // Not a winning capture - break and try quiet checks
                     break;
                 }
                 return m;
@@ -422,8 +451,44 @@ Move MovePicker::next_move() {
             ++stage;
             [[fallthrough]];
 
+        case STAGE_GENERATE_QUIET_CHECKS:
+            // Stage 4: Generate quiet moves that give check
+            {
+                // We need to generate all quiet moves and filter those that give check
+                MoveList tempQuiets;
+                MoveGen::generate_quiets(board, tempQuiets);
+
+                quietChecks.clear();
+                for (size_t i = 0; i < tempQuiets.size(); ++i) {
+                    Move qm = tempQuiets[i].move;
+                    // Skip TT moves and captures
+                    if (is_tt_move(qm)) continue;
+
+                    // Check if this quiet move gives check
+                    if (MoveGen::gives_check(board, qm)) {
+                        quietChecks.add(qm, 0);
+                    }
+                }
+                score_quiet_checks();
+                quietCheckIdx = 0;
+            }
+            ++stage;
+            [[fallthrough]];
+
+        case STAGE_QUIET_CHECKS:
+            // Stage 5: Return quiet checks (before killers)
+            while (quietCheckIdx < quietChecks.size()) {
+                m = quietChecks[quietCheckIdx++].move;
+                if (is_tt_move(m)) continue;
+                // Skip killers - they'll be tried in their own stage
+                if (m == killer1 || m == killer2 || m == counterMove) continue;
+                return m;
+            }
+            ++stage;
+            [[fallthrough]];
+
         case STAGE_KILLER_1:
-            // Stage 4: Killer 1 - tried BEFORE equal captures for faster cutoff
+            // Stage 6: Killer 1 - tried after quiet checks
             ++stage;
             if (killer1 && !is_tt_move(killer1) &&
                 MoveGen::is_pseudo_legal(board, killer1) &&
@@ -490,9 +555,20 @@ Move MovePicker::next_move() {
             // Stage 9: Quiet moves sorted by history
             while (currentIdx < moves.size()) {
                 m = pick_best();
+                // Skip TT moves, killers, counter moves, and quiet checks (already tried)
                 if (is_tt_move(m) || m == killer1 || m == killer2 || m == counterMove) {
                     continue;
                 }
+                // Skip moves that were already tried as quiet checks
+                bool isQuietCheck = false;
+                for (size_t i = 0; i < quietChecks.size(); ++i) {
+                    if (quietChecks[i].move == m) {
+                        isQuietCheck = true;
+                        break;
+                    }
+                }
+                if (isQuietCheck) continue;
+
                 return m;
             }
             ++stage;

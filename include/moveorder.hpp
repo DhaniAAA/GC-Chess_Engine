@@ -18,6 +18,7 @@ constexpr int32_t SCORE_ROOK_PROMO     = 280000000;   // Promosi Benteng
 constexpr int32_t SCORE_BISHOP_PROMO   = 270000000;   // Promosi Gajah
 constexpr int32_t SCORE_WINNING_CAP    = 200000000;   // Winning capture (Base value + MVV/LVA nanti)
 constexpr int32_t SCORE_EQUAL_CAP      = 190000000;   // Equal capture base (adjusted by piece type)
+constexpr int32_t SCORE_QUIET_CHECK    = 180000000;   // Quiet check (before killers)
 constexpr int32_t SCORE_MATE_KILLER    = 15000000;    // Mate killer (higher than regular killer)
 constexpr int32_t SCORE_KILLER_1       = 10000000;    // Killer move 1
 constexpr int32_t SCORE_KILLER_2       = 9000000;     // Killer move 2
@@ -519,13 +520,15 @@ enum MovePickStage {
     STAGE_TT_MOVE,              // 1. Hash move - highest priority
     STAGE_GENERATE_CAPTURES,    // 2. Generate and score all captures
     STAGE_WINNING_CAPTURES,     // 3. Winning captures only (SEE > 0)
-    STAGE_KILLER_1,             // 4. Killer move 1 - BEFORE equal captures!
-    STAGE_KILLER_2,             // 5. Killer move 2
-    STAGE_COUNTER_MOVE,         // 6. Counter move
-    STAGE_GENERATE_QUIETS,      // 7. Generate and score quiet moves
-    STAGE_EQUAL_CAPTURES,       // 8. [FIX] Equal captures BEFORE quiets (tactical trades)
-    STAGE_QUIETS,               // 9. Quiet moves sorted by history
-    STAGE_BAD_CAPTURES,         // 10. Losing captures (SEE < 0) - lowest priority
+    STAGE_GENERATE_QUIET_CHECKS,// 4. Generate quiet checks
+    STAGE_QUIET_CHECKS,         // 5. Quiet checks (before killers!)
+    STAGE_KILLER_1,             // 6. Killer move 1
+    STAGE_KILLER_2,             // 7. Killer move 2
+    STAGE_COUNTER_MOVE,         // 8. Counter move
+    STAGE_GENERATE_QUIETS,      // 9. Generate and score quiet moves
+    STAGE_EQUAL_CAPTURES,       // 10. Equal captures BEFORE quiets (tactical trades)
+    STAGE_QUIETS,               // 11. Quiet moves sorted by history
+    STAGE_BAD_CAPTURES,         // 12. Losing captures (SEE < 0) - lowest priority
     STAGE_DONE,
 
     // Quiescence stages
@@ -578,14 +581,17 @@ private:
     MoveList moves;
     MoveList badCaptures;
     MoveList equalCaptures;  // Equal captures (SEE == 0) deferred after quiets
+    MoveList quietChecks;    // Quiet moves that give check
     int currentIdx;
     int equalCaptureIdx;     // Index for equal captures iteration
+    int quietCheckIdx;       // Index for quiet checks iteration
     int ply;
 
     MovePickStage stage;
 
     void score_captures();
     void score_quiets();
+    void score_quiet_checks();
     Move pick_best();
     bool is_tt_move(Move m) const;
 };
