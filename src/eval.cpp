@@ -1894,10 +1894,6 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
 // Main Evaluation Function
 // ============================================================================
 
-// [FIX] Reduced lazy margin from 800 to 500 for better tactical accuracy
-// Positions with king safety or mobility issues need proper evaluation
-constexpr int LAZY_MARGIN = 500;
-
 int evaluate(const Board& board, int alpha, int beta) {
     EvalScore score;
 
@@ -1929,29 +1925,45 @@ int evaluate(const Board& board, int alpha, int beta) {
     }
     score += pawnScore;
 
-    // Lazy evaluation check - compute approximate score with current data
+    // =========================================================================
+    // LAZY EVALUATION - Quick check for clearly won/lost positions
+    // Only skip expensive calculations if position is VERY far from window
+    // =========================================================================
     {
         int mg = score.mg;
         int eg = score.eg;
         int lazyScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
         lazyScore = board.side_to_move() == WHITE ? lazyScore : -lazyScore;
 
-        // If score is far above beta or far below alpha, skip expensive calculations
+        // Use larger margin (600cp) since we want accurate eval for tactics
+        constexpr int LAZY_MARGIN = 600;
         if (lazyScore >= beta + LAZY_MARGIN || lazyScore <= alpha - LAZY_MARGIN) {
             return lazyScore;
         }
     }
 
-    // Use LIGHTWEIGHT evaluation functions (no expensive EvalContext!)
-    // This avoids the heavy init_eval_context which loops through all pieces
+    // =========================================================================
+    // FULL EVALUATION with EvalContext
+    // Initialize attack maps ONCE and reuse across all evaluation components
+    // This is more efficient than computing attacks separately in each function
+    // =========================================================================
+    EvalContext ctx;
+    init_eval_context(ctx, board);
 
-    // Piece mobility evaluation (lighter version without full attack maps)
-    score += eval_pieces(board, WHITE);
-    score -= eval_pieces(board, BLACK);
+    // Piece mobility and activity evaluation (uses cached attack maps)
+    score += eval_pieces_with_context(board, WHITE, ctx);
+    score -= eval_pieces_with_context(board, BLACK, ctx);
 
-    // King safety evaluation (lighter version)
-    score += eval_king_safety(board, WHITE);
-    score -= eval_king_safety(board, BLACK);
+    // King safety evaluation (uses cached attack maps and king ring info)
+    score += eval_king_safety_with_context(board, WHITE, ctx);
+    score -= eval_king_safety_with_context(board, BLACK, ctx);
+
+    // =========================================================================
+    // THREAT DETECTION - Critical for tactical accuracy!
+    // Evaluates hanging pieces, attacks on valuable pieces, etc.
+    // =========================================================================
+    score += eval_threats_with_context(board, WHITE, ctx);
+    score -= eval_threats_with_context(board, BLACK, ctx);
 
     // Space evaluation (control of central squares)
     score += eval_space(board, WHITE);
@@ -1966,8 +1978,7 @@ int evaluate(const Board& board, int alpha, int beta) {
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
 
-    // Return from side to move's perspective
-    // [FIX] Tempo bonus consistent at 12cp (was inconsistent 10 vs 15)
+    // Return from side to move's perspective with tempo bonus
     constexpr int TEMPO = 12;
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
 }

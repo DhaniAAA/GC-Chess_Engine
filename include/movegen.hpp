@@ -32,6 +32,9 @@ public:
     static void generate_quiets(const Board& board, MoveList& moves);
     static void generate_evasions(const Board& board, MoveList& moves);
 
+    // Generate quiet moves that give check (optimized for QSearch)
+    static void generate_checking_moves(const Board& board, MoveList& moves);
+
     // Generate legal moves only
     static void generate_legal(const Board& board, MoveList& moves);
 

@@ -1833,9 +1833,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }  // end LMR block
 
         // Make the move
-        Piece movedPiece2 = board.piece_on(m.from());
         if (ply + 2 < MAX_PLY + 4) {
-            stack[ply + 2].contHistory = contHistory.get_entry(movedPiece2, m.to());
+            stack[ply + 2].contHistory = contHistory.get_entry(movedPiece, m.to());
         }
 
         StateInfo si;
@@ -2197,20 +2196,10 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         MoveGen::generate_captures(board, moves);
 
         // Generate quiet checks at appropriate qsDepth
-        // [FIX] Changed condition to enable quiet checks when QSEARCH_CHECK_DEPTH = 0
-        // This helps find mating attacks like Qg6 threatening Qg7#
-        // Only generate at qsDepth >= 0 to avoid explosion in deep qsearch
+        // [OPTIMIZED] Use generate_checking_moves() instead of generate_quiets() + filter
+        // This is significantly faster as it directly generates only moves that give check
         if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= 0) {
-            MoveList quiets;
-            MoveGen::generate_quiets(board, quiets);
-
-            // Filter for only moves that give check
-            for (size_t i = 0; i < quiets.size(); ++i) {
-                Move m = quiets[i].move;
-                if (MoveGen::gives_check(board, m)) {
-                    quietChecks.add(m, 0);
-                }
-            }
+            MoveGen::generate_checking_moves(board, quietChecks);
         }
     }
 

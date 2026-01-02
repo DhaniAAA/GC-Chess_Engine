@@ -15,8 +15,14 @@ inline int futility_margin(int depth, bool improving) {
 }
 
 // Dynamic LMP Threshold - more aggressive pruning when not improving
+// Stockfish-style: lower thresholds = more pruning = fewer nodes
+// Formula: base + depth * multiplier, halved when not improving
 inline int lmp_threshold(int depth, bool improving) {
-    return (3 + depth * depth) / (improving ? 2 : 1);
+    // More aggressive thresholds:
+    // Depth 1: 3/4 moves, Depth 2: 5/6 moves, Depth 3: 7/9 moves
+    // Depth 4: 9/12 moves, Depth 5: 11/15 moves, Depth 6: 13/18 moves
+    int base = 3 + depth * 2;  // Linear scaling instead of quadratic
+    return improving ? base : (base * 3 / 2);  // 50% more when not improving
 }
 
 // Dynamic Razoring Margin - based on depth
