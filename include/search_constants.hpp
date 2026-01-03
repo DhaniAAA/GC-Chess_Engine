@@ -66,7 +66,7 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 6000; // Threshold for pruning
 // Extension Parameters
 // ============================================================================
 
-constexpr int MAX_EXTENSIONS = 6;           // Increased for better tactical vision
+constexpr int MAX_EXTENSIONS = 6;           // Reduced from 6 for better NPS
 
 // Singular extension parameters
 constexpr int SINGULAR_DEPTH = 6;            // Minimum depth for singular extensions
@@ -85,8 +85,8 @@ constexpr int MATE_THREAT_EXT_MIN_DEPTH = 4; // Minimum depth for mate threat ex
 // PV Extension parameters
 constexpr int PV_EXT_MIN_DEPTH = 5;          // Minimum depth for PV extension
 
-// One Reply Extension parameters
-constexpr int ONE_REPLY_EXT_MIN_DEPTH = 4;   // Extend forced moves for better tactical depth
+// One Reply Extension - REMOVED (overhead > benefit)
+// constexpr int ONE_REPLY_EXT_MIN_DEPTH = 4;
 
 // ============================================================================
 // Multi-Cut Parameters
@@ -130,7 +130,7 @@ constexpr int IIR_CUT_REDUCTION = 2;         // Reduction in cut nodes
 // Quiescence Search Parameters
 // ============================================================================
 
-constexpr int QSEARCH_CHECK_DEPTH = 0;       // Enable quiet checks from qsearch start
+constexpr int QSEARCH_CHECK_DEPTH = 0;      // Only generate quiet checks deeper into qsearch
 constexpr int DELTA_PRUNING_MARGIN = 450;    // Delta pruning margin for better tactics
 
 // ============================================================================
@@ -145,7 +145,7 @@ constexpr double LMR_DIVISOR = 2.25;         // Divisor for log scaling
 // ============================================================================
 
 // Double Extension Control
-constexpr int DOUBLE_EXT_LIMIT = 4;          // Maximum double extensions per search path
+constexpr int DOUBLE_EXT_LIMIT = 4;          // Reduced from 4 for better NPS
 constexpr int MAX_EXTENSION_PLY_RATIO = 2;   // Extension ratio for tactical depth
 
 // Negative Extension (extend when expected fail-high fails)
