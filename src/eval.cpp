@@ -7,6 +7,7 @@
 
 #include "eval.hpp"
 #include "tuning.hpp"
+#include "profiler.hpp"
 
 namespace Eval {
 
@@ -1895,15 +1896,14 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
 // ============================================================================
 
 int evaluate(const Board& board, int alpha, int beta) {
+    PROFILE_SCOPE("Eval::evaluate");
     EvalScore score;
-
-    // Calculate game phase
-    int phase = TotalPhase;
-    phase -= popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
-    phase -= popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
-    phase -= popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
-    phase -= popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
-    phase = std::max(0, phase);
+    int phase = 0;
+    phase += popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
+    phase += popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
+    phase += popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
+    phase += popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
+    phase = std::min(phase, TotalPhase);
 
     // Material and PST - use incrementally updated scores (no loop needed!)
     score += board.psqt_score(WHITE);
@@ -1994,12 +1994,12 @@ int evaluate_no_cache(const Board& board) {
     EvalScore score;
 
     // Calculate game phase
-    int phase = TotalPhase;
-    phase -= popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
-    phase -= popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
-    phase -= popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
-    phase -= popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
-    phase = std::max(0, phase);
+    int phase = 0;
+    phase += popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
+    phase += popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
+    phase += popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
+    phase += popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
+    phase = std::min(phase, TotalPhase);
 
     // Material and PST - use incrementally updated scores
     score += board.psqt_score(WHITE);

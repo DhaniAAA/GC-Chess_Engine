@@ -1,4 +1,5 @@
 #include "movegen.hpp"
+#include "profiler.hpp"
 
 void MoveGen::add_promotions(MoveList& moves, Square from, Square to) {
     moves.add(Move::make_promotion(from, to, QUEEN));
@@ -176,6 +177,7 @@ void MoveGen::generate_castling(const Board& board, MoveList& moves) {
 }
 
 void MoveGen::generate_all(const Board& board, MoveList& moves) {
+    PROFILE_SCOPE("generate_all");
     Color us = board.side_to_move();
     Bitboard target = ~board.pieces(us);
 
@@ -195,6 +197,7 @@ void MoveGen::generate_all(const Board& board, MoveList& moves) {
 }
 
 void MoveGen::generate_captures(const Board& board, MoveList& moves) {
+    PROFILE_SCOPE("generate_captures");
     Color us = board.side_to_move();
     Color them = ~us;
     Bitboard target = board.pieces(them);
@@ -213,6 +216,7 @@ void MoveGen::generate_captures(const Board& board, MoveList& moves) {
 }
 
 void MoveGen::generate_quiets(const Board& board, MoveList& moves) {
+    PROFILE_SCOPE("generate_quiets");
     Color us = board.side_to_move();
     Bitboard target = ~board.pieces();
 
@@ -492,6 +496,7 @@ bool MoveGen::is_legal(const Board& board, Move m) {
 }
 
 void MoveGen::generate_legal(const Board& board, MoveList& moves) {
+    PROFILE_SCOPE("generate_legal");
     if (board.in_check()) {
         generate_evasions(board, moves);
     } else {

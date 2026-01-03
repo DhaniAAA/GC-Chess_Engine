@@ -2,6 +2,7 @@
 #include "movegen.hpp"
 #include "tt.hpp"
 #include "thread.hpp"
+#include "profiler.hpp"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -703,6 +704,10 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
 
     // Signature (for comparing between different builds)
     std::cout << totalNodes << " nodes " << avgNps << " nps" << std::endl;
+
+    // Print profiling results if enabled
+    Profiler::print_results();
+    ProfilerAnalysis::analyze_bottlenecks();
 
     // Restore settings
     TT.resize(oldHash);

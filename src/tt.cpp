@@ -1,4 +1,5 @@
 #include "tt.hpp"
+#include "profiler.hpp"
 #include <iostream>
 #include <cstdlib>
 
@@ -62,6 +63,7 @@ void TranspositionTable::clear() {
 }
 
 TTEntry* TranspositionTable::probe(Key key, bool& found) {
+    PROFILE_SCOPE("TT::probe");
     if (!table || clusterCount == 0) {
         found = false;
         return nullptr;
