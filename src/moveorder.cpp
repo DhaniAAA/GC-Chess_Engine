@@ -1,6 +1,7 @@
 #include "moveorder.hpp"
 #include "movegen.hpp"
 #include "magic.hpp"
+#include "profiler.hpp"
 
 PieceType SEE::min_attacker(const Board& board, Color side, Square sq,
                             Bitboard occupied, Bitboard& attackers) {
@@ -43,6 +44,7 @@ PieceType SEE::min_attacker(const Board& board, Color side, Square sq,
 }
 
 int SEE::evaluate(const Board& board, Move m) {
+    PROFILE_SCOPE("SEE::evaluate");
     Square from = m.from();
     Square to = m.to();
 
@@ -196,6 +198,7 @@ bool MovePicker::is_quiet_check(Move m) const {
 }
 
 void MovePicker::score_captures() {
+    PROFILE_SCOPE("score_captures");
     for (auto& sm : moves) {
         Move m = sm.move;
 
@@ -241,32 +244,40 @@ void MovePicker::score_captures() {
             givesCheck = MoveGen::gives_check(board, m);
             if (givesCheck) {
                 sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
-                if (captureHist && captured != NO_PIECE) {
-                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
-                }
-                continue;
+            if (captureHist && captured != NO_PIECE) {
+                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
+            }
+            continue;
             }
         }
 
         if (!needsSEE && likelyGoodCapture) {
             sm.score = SCORE_WINNING_CAP + mvvLva;
         } else {
-            int see_value = SEE::evaluate(board, m);
+        int see_value = SEE::evaluate(board, m);
 
-            if (see_value >= 0) {
-                if (std::abs(see_value) <= 50 && capturedPt == attackerPt) {
-                    sm.score = SCORE_EQUAL_CAP + mvvLva;
-                    switch (capturedPt) {
-                        case QUEEN:  sm.score += EQUAL_CAP_QUEEN_BONUS;  break;
-                        case ROOK:   sm.score += EQUAL_CAP_ROOK_BONUS;   break;
-                        case BISHOP: sm.score += EQUAL_CAP_BISHOP_BONUS; break;
-                        case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
-                        default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
-                    }
-                } else {
-                    sm.score = SCORE_WINNING_CAP + mvvLva;
+        if (see_value >= 0) {
+            // SEE-neutral or winning - no need for gives_check
+            if (std::abs(see_value) <= 50 && capturedPt == attackerPt) {
+                sm.score = SCORE_EQUAL_CAP + mvvLva;
+                switch (capturedPt) {
+                    case QUEEN:  sm.score += EQUAL_CAP_QUEEN_BONUS;  break;
+                    case ROOK:   sm.score += EQUAL_CAP_ROOK_BONUS;   break;
+                    case BISHOP: sm.score += EQUAL_CAP_BISHOP_BONUS; break;
+                    case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
+                    default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
                 }
             } else {
+                sm.score = SCORE_WINNING_CAP + mvvLva;
+            }
+        } else {
+            // [CRITICAL] SEE-losing capture: check if it gives check to rescue tactical sacrifices
+            // Only call gives_check for SEE-negative captures (expensive but necessary for tactics)
+            if (MoveGen::gives_check(board, m)) {
+                // Sacrifice that gives check - promote to winning category for tactical play
+                sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
+            } else {
+                // Truly losing capture
                 sm.score = SCORE_LOSING_CAP + see_value;
                 badCaptures.add(m, sm.score);
             }
@@ -275,10 +286,12 @@ void MovePicker::score_captures() {
         if (captureHist && captured != NO_PIECE) {
             sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
         }
+        }
     }
 }
 
 void MovePicker::score_quiets() {
+    PROFILE_SCOPE("score_quiets");
     Color us = board.side_to_move();
 
     for (auto& sm : moves) {
@@ -367,6 +380,7 @@ Move MovePicker::pick_best() {
 }
 
 Move MovePicker::next_move() {
+    PROFILE_SCOPE("next_move");
     Move m;
 
     switch (stage) {
