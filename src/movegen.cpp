@@ -1,5 +1,6 @@
 #include "movegen.hpp"
 #include "profiler.hpp"
+#include "optimize.hpp"  // Branch prediction hints
 
 void MoveGen::add_promotions(MoveList& moves, Square from, Square to) {
     moves.add(Move::make_promotion(from, to, QUEEN));

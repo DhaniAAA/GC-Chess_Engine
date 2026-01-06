@@ -7,6 +7,12 @@
 #include <cstring>
 #include <memory>
 #include <xmmintrin.h>
+// ============================================================================
+// Cache Line Size Constant
+// Most modern CPUs (Intel, AMD, ARM) use 64-byte cache lines
+// ============================================================================
+
+constexpr size_t CACHE_LINE_SIZE = 64;
 
 // ============================================================================
 // Transposition Table Entry
@@ -22,18 +28,19 @@
 
 enum Bound : U8 {
     BOUND_NONE = 0,
-    BOUND_UPPER = 1,   // Score is upper bound (failed low, all-node)
-    BOUND_LOWER = 2,   // Score is lower bound (failed high, cut-node)
-    BOUND_EXACT = 3    // Score is exact (PV-node)
+    BOUND_UPPER = 1,
+    BOUND_LOWER = 2,
+    BOUND_EXACT = 3
 };
 
-struct TTEntry {
-    U16 key16;        // Upper 16 bits of position key
-    U16 move16;       // Best move
-    S16 score16;      // Search score
-    S16 eval16;       // Static evaluation
-    U8  depth8;       // Search depth
-    U8  genBound8;    // Generation (6 bits) + Bound (2 bits)
+struct alignas(16) TTEntry {
+    U16 key16;
+    U16 move16;
+    S16 score16;
+    S16 eval16;
+    U8  depth8;
+    U8  genBound8;
+    U8  padding[6];
 
     Move move() const { return Move(move16); }
     int score() const { return score16; }
@@ -43,12 +50,9 @@ struct TTEntry {
     U8 generation() const { return genBound8 >> 2; }
 
     void save(Key k, int s, int e, Bound b, int d, Move m, U8 gen) {
-        // Preserve move if we don't have a new one
         if (m || (k >> 48) != key16) {
             move16 = m.raw();
         }
-
-        // Don't overwrite entries with higher depth from same search
         if (b == BOUND_EXACT || (k >> 48) != key16 || d + 4 > depth8) {
             key16 = static_cast<U16>(k >> 48);
             score16 = static_cast<S16>(s);
@@ -59,22 +63,21 @@ struct TTEntry {
     }
 };
 
-static_assert(sizeof(TTEntry) == 10, "TTEntry size should be 10 bytes");
+static_assert(sizeof(TTEntry) == 16, "TTEntry size should be 16 bytes");
 
 // ============================================================================
 // Transposition Table Cluster
-//
 // Each cluster contains multiple entries to handle hash collisions.
 // Using 3 entries per cluster for a good balance.
 // ============================================================================
 
-struct TTCluster {
-    static constexpr int ENTRIES_PER_CLUSTER = 3;
+struct alignas(CACHE_LINE_SIZE) TTCluster {
+    static constexpr int ENTRIES_PER_CLUSTER = 4;
     TTEntry entries[ENTRIES_PER_CLUSTER];
-    char padding[2];  // Pad to 32 bytes for cache line efficiency
 };
 
-static_assert(sizeof(TTCluster) == 32, "TTCluster should be 32 bytes");
+static_assert(sizeof(TTCluster) == CACHE_LINE_SIZE, "TTCluster should be 64 bytes (1 cache line)");
+static_assert(alignof(TTCluster) == CACHE_LINE_SIZE, "TTCluster should be cache-line aligned");
 
 // ============================================================================
 // Transposition Table
@@ -85,13 +88,9 @@ public:
     TranspositionTable();
     ~TranspositionTable();
 
-    // Resize the table (size in MB)
     void resize(size_t mb);
-
-    // Clear the entire table
     void clear();
 
-    // Prefetch TT entry into cache
     void prefetch(Key key) {
         #if defined(_MM_HINT_T0)
         _mm_prefetch((const char*)first_entry(key), _MM_HINT_T0);
@@ -100,41 +99,27 @@ public:
         #endif
     }
 
-    // Prefetch TT entry into L2 cache (for positions 2 moves ahead)
     void prefetch2(Key key) {
         #if defined(_MM_HINT_T1)
         _mm_prefetch((const char*)first_entry(key), _MM_HINT_T1);
         #elif defined(__GNUC__)
-        __builtin_prefetch(first_entry(key), 0, 2);  // Read access, low temporal locality
+        __builtin_prefetch(first_entry(key), 0, 2);
         #endif
     }
 
-    // Increment the generation (call at start of each search)
-    void new_search() { generation8 += 4; }  // Shift by 4 to keep bound bits clear
+    void new_search() { generation8 += 4; }
 
-    // Probe the table for a position
-    // Returns pointer to entry if found, nullptr otherwise
-    // Sets 'found' to true if the entry matches the key
     TTEntry* probe(Key key, bool& found);
-
-    // Get all moves for a position (if multiple entries exist)
-    // Fills the moves array (max 3) and sets count
     void get_moves(Key key, Move* moves, int& count);
-
-    // Get estimated usage (permille, 0-1000)
     int hashfull() const;
-
-    // Get current generation
     U8 generation() const { return generation8; }
 
 private:
     TTCluster* table;
     size_t clusterCount;
-    size_t clusterMask;  // clusterCount - 1, for fast bitwise AND instead of modulo
+    size_t clusterMask;
     U8 generation8;
 
-    // Using bitwise AND with mask is ~5-10x faster than modulo
-    // Requires clusterCount to be power of 2 (ensured in resize())
     TTEntry* first_entry(Key key) {
         return &table[key & clusterMask].entries[0];
     }
@@ -155,7 +140,6 @@ constexpr int VALUE_TB_LOSS = -VALUE_TB_WIN;
 constexpr int VALUE_NONE = 32001;
 constexpr int VALUE_INFINITE = 32002;
 
-// Adjust score for storing in TT (convert to root-relative)
 inline int score_to_tt(int score, int ply) {
     if (score >= VALUE_MATE_IN_MAX_PLY) {
         return score + ply;
@@ -166,7 +150,6 @@ inline int score_to_tt(int score, int ply) {
     return score;
 }
 
-// Adjust score retrieved from TT (convert to current-ply-relative)
 inline int score_from_tt(int score, int ply) {
     if (score >= VALUE_MATE_IN_MAX_PLY) {
         return score - ply;
@@ -177,7 +160,6 @@ inline int score_from_tt(int score, int ply) {
     return score;
 }
 
-// Global transposition table
 extern TranspositionTable TT;
 
-#endif // TT_HPP
+#endif

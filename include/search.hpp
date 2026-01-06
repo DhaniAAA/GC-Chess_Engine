@@ -107,15 +107,16 @@ struct SearchStack {
     Move excludedMove;
     Move killers[2];
     int staticEval;
-    int correctedStaticEval;  // Static eval after correction history adjustment
+    int correctedStaticEval;
     int moveCount;
-    int extensions;           // Total extensions in this path (for limiting)
-    int doubleExtensions;     // Count of double extensions (for limiting)
+    int extensions;
+    int doubleExtensions;
     bool inCheck;
     bool ttPv;
     bool ttHit;
-    bool nullMovePruned;  // Was null move tried at this node?
-    ContinuationHistoryEntry* contHistory;  // Pointer to continuation history entry for this move
+    bool nullMovePruned;
+    int cutoffCnt;
+    ContinuationHistoryEntry* contHistory;
 };
 
 // ============================================================================
@@ -126,12 +127,9 @@ struct SearchStack {
 
 class CorrectionHistory {
 public:
-    // Size of the correction history table (power of 2 for efficient modulo)
-    static constexpr int SIZE = 16384;  // 16K entries
-
-    // Weight constants for exponential moving average
-    static constexpr int WEIGHT = 256;   // Weight for new entry
-    static constexpr int SCALE = 512;    // Scale divisor
+    static constexpr int SIZE = 16384;
+    static constexpr int WEIGHT = 256;
+    static constexpr int SCALE = 512;
 
     CorrectionHistory() { clear(); }
 
@@ -143,34 +141,22 @@ public:
         }
     }
 
-    // Get the correction value for a position (indexed by pawn structure key)
-    // Returns a correction value in centipawns
     int get(Color c, Key pawnKey) const {
         return table[c][pawnKey & (SIZE - 1)] / SCALE;
     }
 
-    // Update correction history when we know the true search result
-    // diff = searchScore - staticEval (positive if eval was too pessimistic)
     void update(Color c, Key pawnKey, int diff, int depth) {
-        // Weight based on depth - deeper searches provide more reliable data
         int weight = std::min(depth * depth + 2 * depth - 2, 1024);
-
-        // Clamp diff to prevent extreme values
         diff = std::clamp(diff, -400, 400);
 
         int idx = pawnKey & (SIZE - 1);
 
-        // Exponential moving average update
-        // new_value = old_value * (1 - weight/1024) + diff * weight
         table[c][idx] = (table[c][idx] * (1024 - weight) + diff * SCALE * weight) / 1024;
 
-        // Clamp to prevent runaway values
         table[c][idx] = std::clamp(table[c][idx], -128 * SCALE, 128 * SCALE);
     }
 
 private:
-    // Table indexed by [color][pawn_structure_hash]
-    // Stores scaled correction values
     int table[COLOR_NB][SIZE];
 };
 
@@ -187,7 +173,7 @@ struct SearchInfo {
     U64 time;
     U64 nps;
     int hashfull;
-    int multiPVIdx;  // MultiPV index (1-based for UCI output)
+    int multiPVIdx;
     PVLine pv;
 };
 
@@ -201,24 +187,19 @@ struct RootMove {
     int score = -VALUE_INFINITE;
     int previousScore = -VALUE_INFINITE;
     int selDepth = 0;
-    U64 subtreeNodes = 0;      // Nodes searched in subtree (for ordering)
-    U64 prevSubtreeNodes = 0;  // Subtree nodes from previous iteration
+    U64 subtreeNodes = 0;
+    U64 prevSubtreeNodes = 0;
     PVLine pv;
 
-    // Constructor
     RootMove() = default;
     explicit RootMove(Move m) : move(m), score(-VALUE_INFINITE), previousScore(-VALUE_INFINITE),
                                  selDepth(0), subtreeNodes(0), prevSubtreeNodes(0) {
         pv.clear();
     }
 
-    // Comparison operators for sorting (by score, then subtree size, descending)
     bool operator<(const RootMove& other) const {
-        // Primary: sort by score (higher is better)
         if (score != other.score) return score > other.score;
-        // Secondary: sort by previous score
         if (previousScore != other.previousScore) return previousScore > other.previousScore;
-        // Tertiary: sort by subtree size (larger subtrees are more important)
         return prevSubtreeNodes > other.prevSubtreeNodes;
     }
 
@@ -235,123 +216,91 @@ class Search {
 public:
     Search();
 
-    // Start search with the given position and limits
     void start(Board& board, const SearchLimits& limits);
 
-    // Stop the search
     void stop() { stopped = true; }
 
-    // Transition from ponder mode to normal search (on ponderhit)
     void on_ponderhit();
 
-    // Check if in ponder mode
     bool is_pondering() const { return isPondering; }
 
-    // Set ponder mode
     void set_pondering(bool p) { isPondering = p; }
 
-    // Check if search is running
     bool is_searching() const { return searching; }
 
-    // Get the best move from last search
     Move best_move() const { return rootBestMove; }
 
-    // Get the ponder move (2nd move in PV)
     Move ponder_move() const { return rootPonderMove; }
 
-    // Get search statistics
     const SearchStats& stats() const { return searchStats; }
 
-    // UCI output callback
     using InfoCallback = void(*)(const SearchInfo&);
     void set_info_callback(InfoCallback cb) { infoCallback = cb; }
 
-    // Clear history tables (between games)
     void clear_history();
 
-    // Static evaluation (public for UCI eval command)
     int evaluate(const Board& board);
     int evaluate(const Board& board, int alpha, int beta);  // With lazy eval
 
 private:
-    // Iterative deepening loop
     void iterative_deepening(Board& board);
 
-    // Alpha-beta search with Principal Variation Search
     int search(Board& board, int alpha, int beta, int depth, bool cutNode);
 
-    // Quiescence search
-    // qsDepth: 0 = normal qsearch, > 0 = also search quiet checks
-    // recaptureSquare: square of previous capture (SQ_NONE if none)
-    // Recaptures on the same square do NOT reduce qsDepth to complete exchanges
     int qsearch(Board& board, int alpha, int beta, int qsDepth = 0, Square recaptureSquare = SQ_NONE);
 
-
-    // Time management
     void init_time_management(Color us);
     void check_time();
     bool should_stop() const;
 
-    // UCI output
     void report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx = 1);
 
-    // Move ordering tables
     KillerTable killers;
-    MateKillerTable mateKillers;  // Mate killers (higher priority than regular killers)
+    MateKillerTable mateKillers;
     CounterMoveTable counterMoves;
     HistoryTable history;
-    ContinuationHistory contHistory;  // Continuation history (1-ply and 2-ply ago tracking)
-    CorrectionHistory corrHistory;    // Correction history for static eval bias correction
-    CaptureHistory captureHist;       // Capture history [Piece][To][CapturedPieceType]
-    MoveOrderStats moveOrderStats;    // Move ordering statistics tracking
+    ContinuationHistory contHistory;
+    CorrectionHistory corrHistory;
+    CaptureHistory captureHist;
+    MoveOrderStats moveOrderStats;
 
-    // Search state
     std::atomic<bool> stopped;
     std::atomic<bool> searching;
-    std::atomic<bool> isPondering;  // Currently in ponder mode
+    std::atomic<bool> isPondering;
     SearchLimits limits;
     SearchStats searchStats;
 
-    // Root info
     Move rootBestMove;
     Move rootPonderMove;
-    Move previousRootBestMove; // Best move from previous iteration
-    int previousRootScore;     // Best score from previous iteration
+    Move previousRootBestMove;
+    int previousRootScore;
     int rootDepth;
-    int rootPly;  // Starting ply for relative ply calculation
+    int rootPly;
+    std::vector<RootMove> rootMoves;
+    int pvIdx;
 
-    // MultiPV support
-    std::vector<RootMove> rootMoves;  // All legal root moves with their scores and PVs
-    int pvIdx;                         // Current PV index being searched (0-based)
-
-    // Time management
     std::chrono::steady_clock::time_point startTime;
-    int optimumTime;  // Soft time limit
-    int maximumTime;  // Hard time limit
+    int optimumTime;
+    int maximumTime;
 
-    // Advanced Time Management
-    int bestMoveStability;    // Consecutive iterations with same best move
-    int failLowCount;         // Consecutive fail-low iterations (score dropping)
-    int lastFailLowScore;     // Score at last fail-low
-    bool emergencyMode;       // Ultra-low time mode (< 500ms remaining)
-    int positionComplexity;   // Estimated position complexity (0-100)
+    int bestMoveStability;
+    int failLowCount;
+    int lastFailLowScore;
+    bool emergencyMode;
+    int positionComplexity;
 
-    // Stockfish-style PV and Score Stability Tracking
-    Move previousPV[4];       // Last 4 moves of previous PV for stability check
-    int scoreHistory[6];      // Score from last 6 iterations for fluctuation detection
-    int scoreHistoryIdx;      // Current index in scoreHistory ring buffer
-    int pvStability;          // Consecutive iterations with same PV[0..3]
-    int lastBigScoreChange;   // Depth of last big score change (anti-blunder)
+    Move previousPV[4];
+    int scoreHistory[6];
+    int scoreHistoryIdx;
+    int pvStability;
+    int lastBigScoreChange;
 
-    // Search stack and PV storage
     SearchStack stack[MAX_PLY + 4];
     Move pvTable[MAX_PLY][MAX_PLY];
     PVLine pvLines[MAX_PLY];
 
-    // Previous move (for counter move heuristic)
     Move previousMove;
 
-    // Callbacks
     InfoCallback infoCallback = nullptr;
 };
 

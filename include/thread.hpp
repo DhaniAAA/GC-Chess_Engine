@@ -28,7 +28,8 @@ constexpr int MAX_THREADS = 256;
 // Per-Thread Search Stack
 // ============================================================================
 
-struct ThreadStack {
+// Cache-line aligned ThreadStack to prevent false sharing
+struct alignas(64) ThreadStack {
     int ply;
     Move currentMove;
     Move excludedMove;
@@ -40,6 +41,7 @@ struct ThreadStack {
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
+    char padding[20];  // Pad to prevent false sharing
 };
 
 // ============================================================================
@@ -82,53 +84,54 @@ struct ThreadPVLine {
 // Thread Class - Each thread runs its own search
 // ============================================================================
 
-class SearchThread {
+// Cache-line aligned SearchThread to prevent false sharing between threads
+class alignas(64) SearchThread {
 public:
     explicit SearchThread(int id);
     ~SearchThread();
 
-    // Thread control
     void start_searching();
     void wait_for_search_finished();
 
-    // Thread identification
     int id() const { return threadId; }
     bool is_main() const { return threadId == 0; }
 
-    // Search state
-    std::atomic<bool> searching{false};
+    // ========================================================================
+    // HOT DATA - Frequently accessed during search (keep in first cache lines)
+    // ========================================================================
+
+    alignas(64) std::atomic<bool> searching{false};
     std::atomic<bool> exit{false};
 
-    // Per-thread data
-    Board* rootBoard = nullptr;
-    int rootDepth = 0;
-    int completedDepth = 0;
-    Move bestMove = MOVE_NONE;
-    Move ponderMove = MOVE_NONE;
-    int bestScore = 0;
-
-    // Per-thread statistics
-    U64 nodes = 0;
+    alignas(64) U64 nodes = 0;
     U64 tbHits = 0;
     int selDepth = 0;
+    int completedDepth = 0;
+    int bestScore = 0;
+    Move bestMove = MOVE_NONE;
+    Move ponderMove = MOVE_NONE;
 
-    // Per-thread history tables
-    KillerTable killers;
-    CounterMoveTable counterMoves;
-    HistoryTable history;
+    // ========================================================================
+    // WARM DATA - Accessed often but less frequently
+    // ========================================================================
 
-    // Per-thread search stack and PV
-    ThreadStack stack[MAX_PLY + 4];
-    ThreadPVLine pvLines[MAX_PLY];
-
-    // Previous move for counter move heuristic
+    alignas(64) Board* rootBoard = nullptr;
+    int rootDepth = 0;
     Move previousMove = MOVE_NONE;
-
-    // Clear history (between games)
-    void clear_history();
-
-    // Thread-local random for diversity
     U64 rand_seed;
+
+    // ========================================================================
+    // LARGE DATA STRUCTURES - Cache-aligned for efficiency
+    // ========================================================================
+
+    alignas(64) KillerTable killers;
+    alignas(64) CounterMoveTable counterMoves;
+    alignas(64) HistoryTable history;
+
+    alignas(64) ThreadStack stack[MAX_PLY + 4];
+    alignas(64) ThreadPVLine pvLines[MAX_PLY];
+
+    void clear_history();
     int rand_int(int max);
 
 private:
@@ -149,45 +152,32 @@ public:
     ThreadPool();
     ~ThreadPool();
 
-    // Thread management
     void set_thread_count(int count);
     int thread_count() const { return static_cast<int>(threads.size()); }
 
-    // Get main thread
     SearchThread* main() { return threads.empty() ? nullptr : threads[0].get(); }
     const SearchThread* main() const { return threads.empty() ? nullptr : threads[0].get(); }
 
-    // Start/stop searching on all threads
     void start_thinking(Board& board, const SearchLimits& limits);
     void stop();
-    void on_ponderhit();  // Transition from ponder to normal search
+    void on_ponderhit();
     void wait_for_search_finished();
-
-    // Check if any thread is still searching
     bool searching() const;
 
-    // Aggregate statistics from all threads
     U64 total_nodes() const;
     U64 total_tb_hits() const;
     int max_sel_depth() const;
-
-    // Get best move from main thread or best thread
     Move best_move() const;
     Move ponder_move() const;
     int best_score() const;
 
-    // Global stop flag
     std::atomic<bool> stop_flag{false};
-
-    // Search limits (shared by all threads)
     SearchLimits limits;
 
-    // Time management
     std::chrono::steady_clock::time_point startTime;
     int optimumTime = 0;
     int maximumTime = 0;
 
-    // Clear all history tables (new game)
     void clear_all_history();
 
 private:
@@ -208,28 +198,20 @@ extern ThreadPool Threads;
 
 namespace LazySMP {
 
-// Main entry point for parallel search
 void search(SearchThread* thread, Board& board, int depth);
-
-// Iterative deepening for a single thread
 void iterative_deepening(SearchThread* thread, Board& board);
 
-// Alpha-beta search
 int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                int depth, bool cutNode, int ply);
 
-// Quiescence search
 int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply);
 
-// Static evaluation
 int evaluate(const Board& board);
 
-// Time check
 bool should_stop(SearchThread* thread);
 
-// UCI output (only from main thread)
 void report_info(SearchThread* thread, int depth, int score);
 
-}  // namespace LazySMP
+}
 
-#endif // THREAD_HPP
+#endif

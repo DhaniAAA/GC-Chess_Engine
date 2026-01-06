@@ -5,6 +5,7 @@
 #include "book.hpp"
 #include "tablebase.hpp"
 #include "search_constants.hpp"
+#include "optimize.hpp"  // Branch prediction hints
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -16,13 +17,8 @@
 
 ThreadPool Threads;
 
-// ============================================================================
-// LMR Table (shared with search.cpp)
-// ============================================================================
-
 extern int LMRTable[64][64];
 
-// Using shared search parameters from search_constants.hpp
 using namespace SearchParams;
 
 // ============================================================================
@@ -41,13 +37,12 @@ SearchThread::SearchThread(int id) : rand_seed(id + 1), threadId(id) {
         stack[i].nullMovePruned = false;
     }
 
-    // Start thread in idle loop
     nativeThread = std::thread(&SearchThread::idle_loop, this);
 }
 
 SearchThread::~SearchThread() {
     exit = true;
-    start_searching();  // Wake up the thread
+    start_searching();
     if (nativeThread.joinable()) {
         nativeThread.join();
     }
@@ -88,9 +83,8 @@ void SearchThread::idle_loop() {
 
         if (exit) break;
 
-        // Perform search
         if (rootBoard && !Threads.stop_flag) {
-            Board board = *rootBoard;  // Copy board for this thread
+            Board board = *rootBoard;
             LazySMP::iterative_deepening(this, board);
         }
     }
@@ -101,7 +95,6 @@ void SearchThread::idle_loop() {
 // ============================================================================
 
 ThreadPool::ThreadPool() {
-    // Create main thread by default
     set_thread_count(1);
 }
 
@@ -111,14 +104,11 @@ ThreadPool::~ThreadPool() {
 }
 
 void ThreadPool::set_thread_count(int count) {
-    // Stop existing threads
     stop();
     wait_for_search_finished();
 
-    // Clear existing threads
     threads.clear();
 
-    // Create new threads
     count = std::clamp(count, 1, MAX_THREADS);
     for (int i = 0; i < count; ++i) {
         threads.push_back(std::make_unique<SearchThread>(i));
@@ -134,7 +124,6 @@ void ThreadPool::start_thinking(Board& board, const SearchLimits& lim) {
     init_time_management(board.side_to_move());
     startTime = std::chrono::steady_clock::now();
 
-    // Try opening book first (main thread only, if not in analysis mode)
     if (!limits.infinite && Book::book.is_loaded()) {
         Move bookMove = Book::book.probe(board);
         if (bookMove != MOVE_NONE) {
@@ -147,7 +136,6 @@ void ThreadPool::start_thinking(Board& board, const SearchLimits& lim) {
         }
     }
 
-    // Try tablebase at root
     if (Tablebase::TB.is_initialized() && Tablebase::TB.can_probe(board)) {
         Move tbMove = Tablebase::TB.probe_root(board);
         if (tbMove != MOVE_NONE) {
@@ -162,7 +150,6 @@ void ThreadPool::start_thinking(Board& board, const SearchLimits& lim) {
         }
     }
 
-    // Prepare all threads
     for (auto& thread : threads) {
         thread->rootBoard = &board;
         thread->rootDepth = 0;
@@ -175,7 +162,6 @@ void ThreadPool::start_thinking(Board& board, const SearchLimits& lim) {
         thread->selDepth = 0;
     }
 
-    // Start all threads searching
     for (auto& thread : threads) {
         thread->start_searching();
     }
@@ -186,17 +172,8 @@ void ThreadPool::stop() {
 }
 
 void ThreadPool::on_ponderhit() {
-    // Transition from ponder mode to normal search
-    // Called when opponent plays the predicted move
-
-    // 1. Disable ponder mode
     limits.ponder = false;
-
-    // 2. Reset start time for time management
     startTime = std::chrono::steady_clock::now();
-
-    // Note: We do NOT stop the search, it continues from the current depth
-    // The time checking in should_stop will now start working since limits.ponder is false
 }
 
 void ThreadPool::wait_for_search_finished() {
@@ -237,8 +214,6 @@ int ThreadPool::max_sel_depth() const {
 }
 
 Move ThreadPool::best_move() const {
-    // Return best move from main thread
-    // In a more advanced implementation, we'd pick the best thread
     return main() ? main()->bestMove : MOVE_NONE;
 }
 
@@ -258,8 +233,7 @@ void ThreadPool::clear_all_history() {
 }
 
 void ThreadPool::init_time_management(Color us) {
-    // Get move overhead from UCI options (default 10ms)
-    int moveOverhead = 50;  // Safety buffer for communication lag
+    int moveOverhead = 50;
 
     if (limits.movetime > 0) {
         optimumTime = std::max(1, limits.movetime - moveOverhead);
@@ -268,7 +242,7 @@ void ThreadPool::init_time_management(Color us) {
     }
 
     if (limits.time[us] == 0) {
-        optimumTime = 1000000;  // Essentially infinite
+        optimumTime = 1000000;
         maximumTime = 1000000;
         return;
     }
@@ -277,24 +251,17 @@ void ThreadPool::init_time_management(Color us) {
     int inc = limits.inc[us];
     int moves_to_go = limits.movestogo > 0 ? limits.movestogo : 30;
 
-    // Reserve time for safety
     int safeTime = std::max(1, time_left - moveOverhead);
 
-    // Base allocation: time_left / moves + increment bonus
     optimumTime = safeTime / moves_to_go + inc * 3 / 4;
 
-    // Maximum time: up to 5x optimal, but never more than 1/3 of remaining time
     maximumTime = std::min(safeTime / 3, optimumTime * 5);
 
-    // Ensure we don't exceed safe time
     optimumTime = std::min(optimumTime, safeTime - 10);
     maximumTime = std::min(maximumTime, safeTime - 10);
-
-    // Minimum time bounds
     optimumTime = std::max(optimumTime, 10);
     maximumTime = std::max(maximumTime, 20);
 
-    // Panic mode: if time is critically low (< 1 second), use minimal time
     if (time_left < 1000) {
         optimumTime = std::min(optimumTime, time_left / 10);
         maximumTime = std::min(maximumTime, time_left / 5);
@@ -310,31 +277,25 @@ void ThreadPool::init_time_management(Color us) {
 namespace LazySMP {
 
 bool should_stop(SearchThread* thread) {
-    if (Threads.stop_flag) return true;
+    if (UNLIKELY(Threads.stop_flag)) return true;
 
-    if (Threads.limits.infinite || Threads.limits.ponder) return false;
+    if (UNLIKELY(Threads.limits.infinite || Threads.limits.ponder)) return false;
 
-    // Only main thread checks time
-    if (!thread->is_main()) return false;
+    if (LIKELY(!thread->is_main())) return false;
 
-    // Check more frequently when time is low
-    // Every 512 nodes normally, every 128 nodes when in panic mode
     int checkInterval = (Threads.limits.time[WHITE] + Threads.limits.time[BLACK] < 10000) ? 127 : 511;
-    if ((thread->nodes & checkInterval) != 0) return false;
+    if (LIKELY((thread->nodes & checkInterval) != 0)) return false;
 
     auto now = std::chrono::steady_clock::now();
     int elapsed = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now - Threads.startTime).count()
     );
 
-    // Hard limit - must stop immediately
-    if (elapsed >= Threads.maximumTime) {
+    if (UNLIKELY(elapsed >= Threads.maximumTime)) {
         Threads.stop_flag = true;
         return true;
     }
-
-    // Node limit check
-    if (Threads.limits.nodes > 0 && Threads.total_nodes() >= Threads.limits.nodes) {
+    if (UNLIKELY(Threads.limits.nodes > 0 && Threads.total_nodes() >= Threads.limits.nodes)) {
         Threads.stop_flag = true;
         return true;
     }
@@ -347,7 +308,6 @@ void iterative_deepening(SearchThread* thread, Board& board) {
     int beta = VALUE_INFINITE;
     int score = 0;
 
-    // Generate root moves
     MoveList rootMoves;
     MoveGen::generate_legal(board, rootMoves);
 
@@ -361,25 +321,19 @@ void iterative_deepening(SearchThread* thread, Board& board) {
 
     int maxDepth = Threads.limits.depth > 0 ? Threads.limits.depth : MAX_PLY;
 
-    // Lazy SMP: Non-main threads start at slightly different depths for diversity
     int startDepth = 1;
     if (!thread->is_main()) {
-        // Add small random perturbation to depth for diversity
         startDepth = 1 + (thread->id() % 3);
     }
 
-    // Iterative deepening loop
     for (int depth = startDepth; depth <= maxDepth && !Threads.stop_flag; ++depth) {
         thread->rootDepth = depth;
 
-        // Lazy SMP: Skip some depths on helper threads for diversity
         if (!thread->is_main() && depth > 4) {
-            // Skip depth with probability based on thread id
             int skipChance = thread->rand_int(4);
             if (skipChance == 0) continue;
         }
 
-        // Aspiration windows
         int delta = 20;
 
         if (depth >= 5 && thread->completedDepth >= 1) {
@@ -410,28 +364,22 @@ void iterative_deepening(SearchThread* thread, Board& board) {
         if (!Threads.stop_flag) {
             Move bestMoveCandidate = thread->pvLines[0].first();
 
-            // [PERBAIKAN] Validate bestMoveCandidate is legal before storing
-            // This catches PV corruption cases that could lead to illegal moves
-            // Check both pseudo-legal and legal to catch all edge cases
             if (bestMoveCandidate != MOVE_NONE && thread->rootBoard &&
                 (!MoveGen::is_pseudo_legal(*thread->rootBoard, bestMoveCandidate) ||
                  !MoveGen::is_legal(*thread->rootBoard, bestMoveCandidate))) {
-                bestMoveCandidate = MOVE_NONE;  // Invalid move, will use fallback
+                bestMoveCandidate = MOVE_NONE;
             }
 
             thread->bestMove = bestMoveCandidate;
 
-            // Validate ponder move by making best move first
-            thread->ponderMove = MOVE_NONE;  // Default to no ponder
+            thread->ponderMove = MOVE_NONE;
             if (bestMoveCandidate != MOVE_NONE && thread->pvLines[0].length > 1) {
                 Move ponderCandidate = thread->pvLines[0].second();
                 if (ponderCandidate != MOVE_NONE && thread->rootBoard) {
-                    // Make best move on a copy of the board
                     StateInfo si;
                     Board tempBoard = *thread->rootBoard;
                     tempBoard.do_move(bestMoveCandidate, si);
 
-                    // Check if ponder move is legal in the new position
                     if (MoveGen::is_legal(tempBoard, ponderCandidate)) {
                         thread->ponderMove = ponderCandidate;
                     }
@@ -441,26 +389,20 @@ void iterative_deepening(SearchThread* thread, Board& board) {
             thread->bestScore = score;
             thread->completedDepth = depth;
 
-            // Only main thread reports info
             if (thread->is_main()) {
                 report_info(thread, depth, score);
 
-                // Time management: stop at optimumTime, but continue if early iteration
                 auto now = std::chrono::steady_clock::now();
                 int elapsed = static_cast<int>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - Threads.startTime).count()
                 );
 
-                // Stop when we've used optimal time
-                // Allow early break if we've used most of optimal time and have a stable move
                 if (elapsed >= Threads.optimumTime) {
                     break;
                 }
 
-                // Early break at 60% of optimal time if best move hasn't changed
                 if (depth >= 8 && elapsed >= Threads.optimumTime * 6 / 10) {
-                    // Continue searching to use remaining time
                 }
             }
         }
@@ -471,65 +413,49 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                int depth, bool cutNode, int ply) {
     const bool pvNode = (beta - alpha) > 1;
 
-    // [GUARD PLY] Prevent array overflow and infinite recursion
     if (ply >= MAX_PLY) {
         return evaluate(board);
     }
 
-    // Update selective depth
     if (ply > thread->selDepth) {
         thread->selDepth = ply;
     }
-
-    // Check for stop
     if (should_stop(thread)) return 0;
 
-    // Initialize PV for this ply BEFORE anything else
-    // This MUST happen before depth check to prevent stale PV data
     if (ply < MAX_PLY) {
         thread->pvLines[ply].clear();
     }
 
-    // Quiescence at depth 0
     if (depth <= 0) {
         return qsearch(thread, board, alpha, beta, ply);
     }
 
     ++thread->nodes;
 
-    // Mate distance pruning
     alpha = std::max(alpha, -VALUE_MATE + ply);
     beta = std::min(beta, VALUE_MATE - ply - 1);
     if (alpha >= beta) return alpha;
 
-    // Draw detection - CRITICAL: was missing in thread pool!
-    // Check repetition, 50-move rule, and insufficient material
     if (ply > 0 && board.is_draw(ply)) {
-        return 0;  // Draw score
+        return 0;
     }
 
-    // Also clear child's PV to prevent stale moves from previous searches
     if (ply + 1 < MAX_PLY) {
         thread->pvLines[ply + 1].clear();
     }
 
-    // TT probe
     bool ttHit = false;
     TTEntry* tte = TT.probe(board.key(), ttHit);
 
-    // Get multiple moves
     Move ttMoves[3];
     int ttMoveCount = 0;
     TT.get_moves(board.key(), ttMoves, ttMoveCount);
 
-    // Primary Move
     Move ttMove = (ttMoveCount > 0) ? ttMoves[0] : MOVE_NONE;
 
-    // [TT VALIDATION] Validate ttMove is pseudo-legal AND legal to prevent hash collision issues
-    // If the move is illegal (could happen with hash collision), ignore the entire TT entry
     if (ttMove != MOVE_NONE && (!MoveGen::is_pseudo_legal(board, ttMove) || !MoveGen::is_legal(board, ttMove))) {
         ttMove = MOVE_NONE;
-        ttHit = false;  // Treat as if we didn't find anything
+        ttHit = false;
         if (ttMoveCount > 0) ttMoves[0] = MOVE_NONE;
     }
 
@@ -537,20 +463,15 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     int ttDepth = ttHit ? tte->depth() : 0;
     Bound ttBound = ttHit ? tte->bound() : BOUND_NONE;
 
-    // [PERBAIKAN] Validasi tambahan untuk mate scores dari TT
-    // Mate score dari hash collision sangat berbahaya - bisa return evaluasi salah
     if (ttHit && ttMove == MOVE_NONE && std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY) {
         ttHit = false;
         ttScore = VALUE_NONE;
     }
 
-    // TT cutoff (non-PV nodes)
-    // [PERBAIKAN] Skip TT cutoff untuk mate scores yang tidak masuk akal
     bool ttMateScore = std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY;
     bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth;
 
     if (allowTTCutoff && ttMateScore) {
-        // [PERBAIKAN KRITIS] Validasi ketat untuk mate scores
         if (ttMove == MOVE_NONE) {
             allowTTCutoff = false;
         } else {
@@ -568,7 +489,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         if ((ttBound == BOUND_EXACT) ||
             (ttBound == BOUND_LOWER && ttScore >= beta) ||
             (ttBound == BOUND_UPPER && ttScore <= alpha)) {
-            // [PERBAIKAN] Update PV dengan ttMove
             if (ttMove != MOVE_NONE && ply < MAX_PLY) {
                 thread->pvLines[ply].length = 1;
                 thread->pvLines[ply].moves[0] = ttMove;
@@ -577,7 +497,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         }
     }
 
-    // Static evaluation
     int staticEval;
     bool inCheck = board.in_check();
 
@@ -589,7 +508,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         staticEval = evaluate(board);
     }
 
-    // Razoring - use predicted depth (modern engine pattern)
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
         int razorMarg = razoring_margin(predictedDepth);
@@ -602,23 +520,19 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         }
     }
 
-    // Reverse futility pruning
     if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
-        int rfpMarg = rfp_margin(depth, true);  // Dynamic, assume improving
+        int rfpMarg = rfp_margin(depth, true);
         if (staticEval - rfpMarg >= beta && staticEval < VALUE_MATE_IN_MAX_PLY) {
             return staticEval;
         }
     }
 
-    // Null move pruning
     bool hasNonPawnMaterial = board.pieces(board.side_to_move()) !=
                               board.pieces(board.side_to_move(), PAWN, KING);
 
-    // [GUARD] Safe stack access with bounds checking
     ThreadStack* ss = (ply + 2 < MAX_PLY + 4) ? &thread->stack[ply + 2] : &thread->stack[MAX_PLY + 3];
     bool doubleNull = (ply >= 1 && ply + 1 < MAX_PLY + 4 && thread->stack[ply + 1].nullMovePruned);
 
-    // Mate Threat Detection - set to true if null move shows opponent can mate us
     bool mateThreat = false;
 
     if (!pvNode && !inCheck && staticEval >= beta && depth >= 3 &&
@@ -642,24 +556,18 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
             if (nullScore >= VALUE_MATE_IN_MAX_PLY) nullScore = beta;
             return nullScore;
         }
-        // MATE THREAT EXTENSION DETECTION
-        // If null move shows we are getting mated, set flag to extend search
         else if (depth >= MATE_THREAT_EXT_MIN_DEPTH && nullScore <= VALUE_MATED_IN_MAX_PLY) {
             mateThreat = true;
         }
     }
 
-    // IID
-    // Use separate variable to not corrupt depth for TT store and extensions
     int searchDepth = depth;
     if (!ttMove && depth >= 6 && (pvNode || cutNode)) {
         alpha_beta(thread, board, alpha, beta, depth - 2, cutNode, ply);
         tte = TT.probe(board.key(), ttHit);
-        // ttMoves update logic skipped for IID simplicity, usually ttMove is enough
         ttMove = ttHit ? tte->move() : MOVE_NONE; // Re-probe single move for IID
     }
 
-    // Internal Iterative Reductions (IIR)
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
             searchDepth -= IIR_PV_REDUCTION;
@@ -670,7 +578,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         }
     }
 
-    // Move loop
     Move bestMove = MOVE_NONE;
     int bestScore = -VALUE_INFINITE;
     int moveCount = 0;
@@ -691,59 +598,45 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         bool isPromotion = m.is_promotion();
         bool givesCheck = MoveGen::gives_check(board, m);
 
-        // LMP
         if (!pvNode && !inCheck && depth <= 7 && !isCapture && !isPromotion &&
             bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > lmp_threshold(depth, true)) {
             continue;
         }
 
-        // Futility pruning
         if (!pvNode && !inCheck && depth <= 6 && depth >= 1 && !isCapture &&
             !isPromotion && bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
             if (staticEval + futility_margin(depth, true) <= alpha) continue;
         }
 
-        // SEE pruning
         if (!pvNode && depth <= 4 && isCapture && !SEE::see_ge(board, m, -50 * depth)) {
             continue;
         }
 
-        // Extensions
         int extension = 0;
-        // [GUARD] Safe stack access with bounds checking
         int currentExt = (ply >= 2 && ply + 1 < MAX_PLY + 4) ? thread->stack[ply + 1].extensions : 0;
 
-        // Check extension - safe checks (SEE >= 0) ALWAYS extend
         if (givesCheck && currentExt < MAX_EXTENSIONS && SEE::see_ge(board, m, 0)) {
             extension = 1;
         }
 
-        // In-check extension: when WE are in check, extend to find defensive resources
         if (inCheck && currentExt < MAX_EXTENSIONS) {
             extension = std::max(extension, 1);
         }
 
-        // MATE THREAT EXTENSION
-        // When null move detected opponent can mate us, extend to find defenses
         if (mateThreat && currentExt < MAX_EXTENSIONS && extension == 0) {
             extension = 1;
         }
 
-        // PV EXTENSION
-        // Extend first move in PV nodes at sufficient depth
         if (pvNode && moveCount == 1 && depth >= PV_EXT_MIN_DEPTH &&
             currentExt < MAX_EXTENSIONS && extension == 0) {
             extension = 1;
         }
 
         int newDepth = searchDepth - 1 + extension;
-        // [GUARD] Safe stack write with bounds checking
         if (ply + 2 < MAX_PLY + 4) {
             thread->stack[ply + 2].extensions = currentExt + extension;
         }
 
-        // LMR
-        // Moves that give check MUST NOT be reduced
         int reduction = 0;
         if (depth >= 3 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
             reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
@@ -752,8 +645,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
             if (inCheck) reduction -= 1;
             reduction = std::clamp(reduction, 0, newDepth - 1);
         }
-
-        // Make move
         StateInfo si;
         board.do_move(m, si);
 
@@ -778,18 +669,15 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
 
         if (Threads.stop_flag) return 0;
 
-        // Track quiets
         if (!isCapture && quietCount < 64) {
             quietsSearched[quietCount++] = m;
         }
 
-        // Update best
         if (score > bestScore) {
             bestScore = score;
             bestMove = m;
 
             if (score > alpha) {
-                // [GUARD] Safe PV update with bounds checking
                 if (ply + 1 < MAX_PLY) {
                     thread->pvLines[ply].update(m, thread->pvLines[ply + 1]);
                 }
@@ -806,17 +694,14 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                     break;
                 }
                 alpha = score;
-            }  // close if (ply + 1 < MAX_PLY) - implicitly balanced by scope
+            }
         }
     }
 
-    // No legal moves
     if (moveCount == 0) {
         return inCheck ? -VALUE_MATE + ply : 0;
     }
 
-    // Store in TT
-    // [PERBAIKAN KRITIS] Jangan simpan ke TT jika search dihentikan
     if (!Threads.stop_flag) {
         Bound bound = bestScore >= beta ? BOUND_LOWER :
                       bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
@@ -832,7 +717,6 @@ int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply) {
 
     if (should_stop(thread)) return 0;
 
-    // [GUARD PLY] Prevent array overflow at maximum ply
     if (ply >= MAX_PLY) {
         return evaluate(board);
     }
@@ -855,7 +739,6 @@ int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply) {
     bool ttHit = false;
     TTEntry* tte = TT.probe(board.key(), ttHit);
 
-    // Get multiple moves
     Move ttMoves[3];
     int ttMoveCount = 0;
     TT.get_moves(board.key(), ttMoves, ttMoveCount);
@@ -871,14 +754,11 @@ int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply) {
         if (!MoveGen::is_legal(board, m)) continue;
         ++moveCount;
 
-        // Delta pruning
         if (!inCheck && !m.is_promotion()) {
             int captureValue = PieceValue[type_of(board.piece_on(m.to()))];
             if (staticEval + captureValue + 200 < alpha) continue;
         }
 
-        // SEE pruning
-        // [PERBAIKAN] JANGAN prune capture Queen - pengorbanan ratu sering kunci taktik
         PieceType capturedPt = type_of(board.piece_on(m.to()));
         if (!inCheck && capturedPt != QUEEN && !SEE::see_ge(board, m, 0)) continue;
 
@@ -945,8 +825,7 @@ void report_info(SearchThread* thread, int depth, int score) {
               << " time " << elapsed
               << " hashfull " << TT.hashfull();
 
-    // [PERBAIKAN] Validate PV line before output
-    // Output only valid moves to prevent "Illegal PV move" warnings from cutechess
+
     std::cout << " pv";
     if (thread->rootBoard) {
         Board tempBoard = *thread->rootBoard;
@@ -955,14 +834,12 @@ void report_info(SearchThread* thread, int depth, int score) {
             Move m = pvLine.moves[i];
             if (m == MOVE_NONE) break;
 
-            // Validate move is legal in current position
             if (!MoveGen::is_pseudo_legal(tempBoard, m) || !MoveGen::is_legal(tempBoard, m)) {
-                break;  // Stop at first illegal move
+                break;
             }
 
             std::cout << " " << move_to_string(m);
 
-            // Make the move on temp board to validate next move in sequence
             StateInfo si;
             tempBoard.do_move(m, si);
         }
@@ -971,4 +848,4 @@ void report_info(SearchThread* thread, int depth, int score) {
     std::cout << std::endl;
 }
 
-}  // namespace LazySMP
+}

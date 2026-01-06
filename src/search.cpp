@@ -7,6 +7,7 @@
 #include "moveorder.hpp"
 #include "search_constants.hpp"
 #include "profiler.hpp"
+#include "optimize.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -23,7 +24,7 @@ Search Searcher;
 // Reduction Tables
 // ============================================================================
 
-int LMRTable[64][64];  // [depth][moveCount]
+int LMRTable[64][64];
 
 void init_lmr_table() {
     for (int depth = 0; depth < 64; ++depth) {
@@ -746,7 +747,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     int ply = board.game_ply() - rootPly;
 
-    if (ply >= MAX_PLY) {
+    if (UNLIKELY(ply >= MAX_PLY)) {
         return evaluate(board);
     }
     if (ply > searchStats.selDepth) {
@@ -755,15 +756,17 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     TT.prefetch(board.key());
 
-    if ((searchStats.nodes & 8191) == 0) {
+    if (UNLIKELY((searchStats.nodes & 16383) == 0)) {
         check_time();
     }
 
-    if (stopped) return 0;
+    if (UNLIKELY(stopped)) return 0;
 
     pvLines[ply].clear();
 
     SearchStack* ss = &stack[ply + 2];
+
+    ss->cutoffCnt = 0;
 
     if (depth <= 0) {
         return qsearch(board, alpha, beta, 0);
@@ -771,14 +774,14 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     ++searchStats.nodes;
 
-    if (ply > 0 && board.is_draw(ply)) {
+    if (UNLIKELY(ply > 0 && board.is_draw(ply))) {
         int contempt = get_contempt(board);
         return -contempt;
     }
 
     alpha = std::max(alpha, -VALUE_MATE + ply);
     beta = std::min(beta, VALUE_MATE - ply - 1);
-    if (alpha >= beta) {
+    if (UNLIKELY(alpha >= beta)) {
         return alpha;
     }
 
@@ -931,10 +934,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         ss->nullMovePruned = false;
 
-        if (stopped) return 0;
+        if (UNLIKELY(stopped)) return 0;
 
-        if (nullScore >= beta) {
-            if (nullScore >= VALUE_MATE_IN_MAX_PLY) {
+        if (LIKELY(nullScore >= beta)) {
+            if (UNLIKELY(nullScore >= VALUE_MATE_IN_MAX_PLY)) {
                 nullScore = beta;
             }
             if (depth >= NULL_MOVE_VERIFY_DEPTH) {
@@ -1161,8 +1164,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             !givesCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
             int lmpThresh = lmp_threshold(depth, improving);
             if (moveCount > lmpThresh) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
+                if (!killers.is_killer(ply, m) && history.get(us, m) < 0) {
                     continue;
                 }
             }
@@ -1172,8 +1174,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
             int futilMarg = futility_margin(depth, improving);
             if (correctedStaticEval + futilMarg <= alpha) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
+                if (!killers.is_killer(ply, m) && !isTTMove) {
                     continue;
                 }
             }
@@ -1203,60 +1204,41 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 -SEE_QUIET_IMPROVING_FACTOR * depth :
                 -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
             if (!SEE::see_ge(board, m, seeThreshold)) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
-                    continue;
-                }
+                continue;
             }
         }
 
-        // History Leaf Pruning - LAZY
         if (!pvNode && !inCheck && depth <= HISTORY_LEAF_PRUNING_DEPTH &&
             !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY) {
+            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > 4) {
             int histScore = history.get(board.side_to_move(), m);
             if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
-                    continue;
-                }
+                continue;
             }
         }
 
-        // =====================================================================
-        // COUNTERMOVE HISTORY PRUNING - LAZY
-        // =====================================================================
         if (!pvNode && !inCheck && depth <= COUNTER_HIST_PRUNING_DEPTH &&
             !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && contHist1ply) {
+            bestScore > VALUE_MATED_IN_MAX_PLY && contHist1ply && moveCount > 5) {
 
             PieceType pt = type_of(movedPiece);
             int cmHistScore = contHist1ply->get(pt, m.to());
 
             if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
-                    continue;
-                }
+                continue;
             }
         }
 
-        // =====================================================================
-        // FOLLOW-UP HISTORY PRUNING - LAZY
-        // =====================================================================
         if (!pvNode && !inCheck && depth <= FOLLOWUP_HIST_PRUNING_DEPTH &&
             !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && ply >= 4 && stack[ply - 2].contHistory) {
+            bestScore > VALUE_MATED_IN_MAX_PLY && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
 
             const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
             PieceType pt = type_of(movedPiece);
             int followupScore = contHist4ply->get(pt, m.to());
 
             if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
-                computeThreatDetection();
-                if (!createsThreat && !escapesAttack) {
-                    continue;
-                }
+                continue;
             }
         }
 
@@ -1299,41 +1281,26 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         // =====================================================================
         // CAPTURE EXTENSION - Extend important tactical captures
+        // Optimized: single SEE call, only for important captures at high depth
         // =====================================================================
-        if (isCapture && currentExtensions < MAX_EXTENSIONS && !m.is_enpassant()) {
+        if (isCapture && depth >= CAPTURE_EXT_MIN_DEPTH && currentExtensions < MAX_EXTENSIONS && !m.is_enpassant()) {
             Piece captured = board.piece_on(m.to());
             PieceType capturedPt = type_of(captured);
 
-            if (capturedPt == QUEEN && depth >= CAPTURE_EXT_MIN_DEPTH) {
-                if (SEE::see_ge(board, m, 0)) {
-                    extension = std::max(extension, 1);
-                }
-            }
+            bool shouldExtend = (capturedPt == QUEEN) ||
+                               (previousMove != MOVE_NONE && m.to() == previousMove.to());
 
-            if (capturedPt == ROOK && movedPt == ROOK && depth >= CAPTURE_EXT_MIN_DEPTH) {
-                if (SEE::see_ge(board, m, 0)) {
-                    extension = std::max(extension, 1);
-                }
-            }
-
-            if (previousMove != MOVE_NONE && m.to() == previousMove.to()) {
-                if (SEE::see_ge(board, m, 0)) {
-                    extension = std::max(extension, 1);
-                }
-            }
-
-            if (capturedPt == ROOK || capturedPt == QUEEN) {
-                if (SEE::see_ge(board, m, CAPTURE_EXT_SEE_THRESHOLD)) {
-                    extension = std::max(extension, 1);
-                }
+            if (shouldExtend && SEE::see_ge(board, m, 0)) {
+                extension = std::max(extension, 1);
             }
         }
 
         // =====================================================================
         // KING ATTACK EXTENSION - Extend Queen/Rook moves attacking king zone
+        // Only at high depths to reduce bitboard overhead
         // =====================================================================
         if (!isCapture && !givesCheck && currentExtensions < MAX_EXTENSIONS &&
-            extension == 0 && depth >= 4 && (movedPt == QUEEN || movedPt == ROOK)) {
+            extension == 0 && depth >= 8 && (movedPt == QUEEN || movedPt == ROOK)) {
 
             Square enemyKingSq = board.king_square(~us);
             Bitboard kingZone = king_attacks_bb(enemyKingSq);
@@ -1412,70 +1379,78 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         int reduction = 0;
         if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
-            computeThreatDetection();
-
-            if (!createsThreat) {
-                reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
-
-                if (cutNode) {
-                    reduction += 1;
-                }
-
-                if (!improving) {
-                    reduction += 1;
-                }
-
-                if (moveCount > 15) {
-                    reduction += 1;
-                }
-
-                if (pvNode) {
-                    reduction -= 1;
-                }
-
-                if (inCheck) {
-                    reduction -= 1;
-                }
-
-                if (createsFork) {
-                    reduction -= 1;
-                }
-
-                if (escapesAttack) {
-                    reduction -= 1;
-                }
-
-                if (killers.is_killer(ply, m) ||
-                    (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
-                    reduction -= 2;
-                }
-
-                if (isTTMove) {
-                    reduction -= 1;
-                }
-
-                if (improvementDelta > 0) {
-                    reduction -= std::min(improvementDelta / 50, 2);
-                }
-
-                int histScore = history.get(board.side_to_move(), m);
-
-                PieceType pt = type_of(movedPiece);
-                if (contHist1ply) {
-                    histScore += CONT_HIST_1PLY_WEIGHT * contHist1ply->get(pt, m.to());
-                }
-                if (contHist2ply) {
-                    histScore += CONT_HIST_2PLY_WEIGHT * contHist2ply->get(pt, m.to());
-                }
-                if (ply >= 4 && stack[ply - 2].contHistory) {
-                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                    histScore += CONT_HIST_4PLY_WEIGHT * contHist4ply->get(pt, m.to());
-                }
-
-                reduction -= std::clamp(histScore / HISTORY_LMR_DIVISOR, -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
-
-                reduction = std::clamp(reduction, 0, newDepth - 1);
+            reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
+            int delta = beta - alpha;
+            if (delta < 20) {
+                reduction += 1;
             }
+
+            if (cutNode) {
+                reduction += LMR_CUTNODE_BONUS;
+                if (!ttMove) {
+                    reduction += 1;
+                }
+            }
+
+            if (!improving) {
+                reduction += 1;
+            }
+
+            if (ply + 2 < MAX_PLY + 4) {
+                int childCutoffs = stack[ply + 2].cutoffCnt;
+                if (childCutoffs > 1) {
+                    reduction += LMR_CUTOFF_CNT_BONUS;
+                }
+                if (childCutoffs > 2) {
+                    reduction += LMR_CUTOFF_CNT_BONUS;
+                }
+            }
+
+            if (moveCount > 10) {
+                reduction += 1;
+            }
+            if (moveCount > 18) {
+                reduction += 1;
+            }
+
+            if (pvNode) {
+                reduction -= 2;
+            }
+
+            if (inCheck) {
+                reduction -= 1;
+            }
+
+            if (killers.is_killer(ply, m) ||
+                (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
+                reduction -= 2;
+            }
+
+            if (isTTMove) {
+                reduction -= 2;
+            }
+
+            int statScore = 2 * history.get(board.side_to_move(), m);
+
+            PieceType pt = type_of(movedPiece);
+            if (contHist1ply) {
+                statScore += contHist1ply->get(pt, m.to());
+            }
+            if (contHist2ply) {
+                statScore += contHist2ply->get(pt, m.to());
+            }
+            if (ply >= 4 && stack[ply - 2].contHistory) {
+                const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                statScore += contHist4ply->get(pt, m.to());
+            }
+
+            reduction -= statScore / 4096;
+
+            if (cutNode && !ttMove && depth >= 6) {
+                reduction += reduction / (depth + 1);
+            }
+
+            reduction = std::clamp(reduction, 0, newDepth - 1);
         }
 
         if (ply + 2 < MAX_PLY + 4) {
@@ -1522,7 +1497,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             }
         }
 
-        if (stopped) {
+        if (UNLIKELY(stopped)) {
             return 0;
         }
 
@@ -1628,6 +1603,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         }
                     }
 
+                    ss->cutoffCnt++;
+
                     break;
                 }
 
@@ -1731,15 +1708,15 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     PROFILE_FUNCTION();
     ++searchStats.nodes;
 
-    if ((searchStats.nodes & 8191) == 0) {
+    if (UNLIKELY((searchStats.nodes & 16383) == 0)) {
         check_time();
     }
 
-    if (stopped) return 0;
+    if (UNLIKELY(stopped)) return 0;
 
     int ply = board.game_ply() - rootPly;
 
-    if (ply >= MAX_PLY) {
+    if (UNLIKELY(ply >= MAX_PLY)) {
         return evaluate(board);
     }
 
@@ -1751,8 +1728,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
     int staticEval = inCheck ? -VALUE_INFINITE : evaluate(board, alpha, beta);
 
-    if (!inCheck) {
-        if (staticEval >= beta) {
+    if (LIKELY(!inCheck)) {
+        if (LIKELY(staticEval >= beta)) {
             return staticEval;
         }
         if (staticEval > alpha) {

@@ -2,6 +2,7 @@
 #include "movegen.hpp"
 #include "magic.hpp"
 #include "profiler.hpp"
+#include "optimize.hpp"
 
 PieceType SEE::min_attacker(const Board& board, Color side, Square sq,
                             Bitboard occupied, Bitboard& attackers) {
@@ -199,8 +200,16 @@ bool MovePicker::is_quiet_check(Move m) const {
 
 void MovePicker::score_captures() {
     PROFILE_SCOPE("score_captures");
-    for (auto& sm : moves) {
+
+    const int moveCount = static_cast<int>(moves.size());
+
+    for (int idx = 0; idx < moveCount; ++idx) {
+        auto& sm = moves[idx];
         Move m = sm.move;
+
+        if (idx + 2 < moveCount) {
+            PREFETCH_READ(&moves[idx + 2]);
+        }
 
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
@@ -257,7 +266,6 @@ void MovePicker::score_captures() {
         int see_value = SEE::evaluate(board, m);
 
         if (see_value >= 0) {
-            // SEE-neutral or winning - no need for gives_check
             if (std::abs(see_value) <= 50 && capturedPt == attackerPt) {
                 sm.score = SCORE_EQUAL_CAP + mvvLva;
                 switch (capturedPt) {
@@ -271,13 +279,9 @@ void MovePicker::score_captures() {
                 sm.score = SCORE_WINNING_CAP + mvvLva;
             }
         } else {
-            // [CRITICAL] SEE-losing capture: check if it gives check to rescue tactical sacrifices
-            // Only call gives_check for SEE-negative captures (expensive but necessary for tactics)
             if (MoveGen::gives_check(board, m)) {
-                // Sacrifice that gives check - promote to winning category for tactical play
                 sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
             } else {
-                // Truly losing capture
                 sm.score = SCORE_LOSING_CAP + see_value;
                 badCaptures.add(m, sm.score);
             }
@@ -294,11 +298,18 @@ void MovePicker::score_quiets() {
     PROFILE_SCOPE("score_quiets");
     Color us = board.side_to_move();
 
-    for (auto& sm : moves) {
+    const int moveCount = static_cast<int>(moves.size());
+
+    for (int idx = 0; idx < moveCount; ++idx) {
+        auto& sm = moves[idx];
         Move m = sm.move;
         Piece pc = board.piece_on(m.from());
         PieceType pt = type_of(pc);
         Square to = m.to();
+
+        if (idx + 2 < moveCount) {
+            PREFETCH_READ(&moves[idx + 2]);
+        }
 
         if (m == killer1) {
             sm.score = SCORE_KILLER_1;
