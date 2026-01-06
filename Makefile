@@ -14,12 +14,14 @@ CXX = g++
 # Mode Release (Optimized for Speed - Bullet Chess)
 # -O3: Maximum optimization
 # -march=native: Use all CPU features available
-# -funroll-loops: Unroll loops for speed
-CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -DNDEBUG
+# -flto: Link-time optimization for cross-unit inlining
+# -funroll-loops: Unroll loops for better performance
+CXXFLAGS := -std=c++17 -Wall -Wextra -O3 -march=native -flto -funroll-loops -DNDEBUG
 
 # Link-time optimization flags (must match CXXFLAGS)
 # -static: Static linking to avoid DLL dependencies (libgcc, libstdc++, etc)
-LFLAGS = -static
+# -flto: Enable LTO at link stage (MUST match CXXFLAGS)
+LFLAGS = -static -flto
 
 # define output directory
 OUTPUT	:= output
@@ -158,10 +160,17 @@ debug: clean all
 	@echo Debug build complete!
 
 # Profiling build for gprof analysis
-profile: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pg -g -march=native -DNDEBUG
-profile: LFLAGS += -pg
-profile: clean all
-	@echo Profiling build complete! Run the engine then use gprof.
+# profile: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pg -g -march=native -DNDEBUG
+# profile: LFLAGS += -pg
+# profile: clean all
+# 	@echo Profiling build complete! Run the engine then use gprof.
+
+# Internal profiling build (uses built-in timer-based profiler)
+# This enables PROFILE_SCOPE macros throughout the code
+# Run 'bench' command to see profiling results
+internal-profile: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -march=native -DNDEBUG -DPROFILING
+internal-profile: clean all
+	@echo Internal profiling build complete! Run 'bench' to see results.
 
 # ============================================================================
 # Texel Tuner Build
