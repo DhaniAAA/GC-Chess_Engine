@@ -137,18 +137,33 @@
 
 ### Quick Build
 
+#### 🪟 Windows (MinGW)
+
 ```bash
-# Standard release build (optimized)
+# Standard release build
 mingw32-make
 
-# Clean build
-mingw32-make clean
+# Clean and rebuild
+mingw32-make clean; mingw32-make all
 
 # Build and run
 mingw32-make run
 ```
 
-### Advanced Build Options
+#### 🐧 Linux
+
+```bash
+# Install dependencies (Ubuntu/Debian)
+sudo apt-get update && sudo apt-get install -y g++ make
+
+# Standard release build
+make
+
+# Clean and rebuild
+make clean && make all
+```
+
+### Advanced Build Options (Windows)
 
 ```bash
 # Debug build (no optimization, with symbols)

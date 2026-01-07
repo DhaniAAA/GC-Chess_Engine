@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make
+
+      - name: Build (Standard)
+        run: make clean && make all
+
+      - name: Test - Perft 5
+        run: echo -e "perft 5\nquit" | ./output/main
+
+      - name: Build (PEXT)
+        run: make clean && make pext
+
+      - name: Test - Perft 5 (PEXT)
+        run: echo -e "perft 5\nquit" | ./output/main
+
+      - name: Upload Linux Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gc-engine-linux
+          path: output/main
+
+  build-linux-clang:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make
+
+      - name: Build with Clang
+        run: make CXX=clang++ clean && make CXX=clang++ all
+
+      - name: Test - Perft 5
+        run: echo -e "perft 5\nquit" | ./output/main
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Build (Standard)
+        run: mingw32-make clean; mingw32-make all
+        shell: bash
+
+      - name: Test - Perft 5
+        run: echo -e "perft 5\nquit" | ./output/main.exe
+        shell: bash
+
+      - name: Upload Windows Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gc-engine-windows
+          path: output/main.exe
