@@ -59,18 +59,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MinGW
-        uses: egor-tensin/setup-mingw@v2
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          platform: x64
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make
 
       - name: Build (Standard)
-        run: mingw32-make clean; mingw32-make all
-        shell: bash
+        shell: msys2 {0}
+        run: |
+          make clean
+          make all
 
       - name: Test - Perft 5
+        shell: msys2 {0}
         run: echo -e "perft 5\nquit" | ./output/main.exe
-        shell: bash
 
       - name: Upload Windows Binary
         uses: actions/upload-artifact@v4
