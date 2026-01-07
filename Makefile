@@ -52,6 +52,8 @@ LIBDIRS		:= $(shell if [ -d "$(LIB)" ]; then find $(LIB) -type d 2>/dev/null; fi
 FIXPATH = $1
 RM = rm -f
 MD	:= mkdir -p
+# Add pthread for Linux/macOS threading support
+LFLAGS += -pthread
 endif
 
 # define any directories containing header files other than /usr/include
