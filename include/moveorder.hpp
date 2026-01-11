@@ -230,13 +230,18 @@ public:
         update_score(table[c][m.from()][m.to()], bonus);
     }
 
-    void update_quiet_stats(Color c, Move best, Move* quiets, int quiet_count, int depth) {
-        int bonus = depth * depth;
+    void update_with_bonus(Color c, Move m, int bonus) {
+        update_score(table[c][m.from()][m.to()], bonus);
+    }
 
+    void update_quiet_stats(Color c, Move best, Move* quiets, int quiet_count, int depth) {
+        int bonus = std::min(105 + 175 * depth + 11 * depth * depth, 2400);
         update_score(table[c][best.from()][best.to()], bonus);
+
+        int malus = -std::min(80 + 145 * depth + 8 * depth * depth, 1900);
         for (int i = 0; i < quiet_count; ++i) {
             if (quiets[i] != best) {
-                update_score(table[c][quiets[i].from()][quiets[i].to()], -bonus);
+                update_score(table[c][quiets[i].from()][quiets[i].to()], malus);
             }
         }
     }
@@ -274,6 +279,18 @@ public:
     }
 
     void update(PieceType pt, Square to, int bonus) {
+        int& entry = table[pt][to];
+        entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
+    }
+
+    void update_with_depth(PieceType pt, Square to, int depth, bool isCutoff, int weight = 1) {
+        int bonus;
+        if (isCutoff) {
+            bonus = std::min(105 + 175 * depth + 11 * depth * depth, 2400);
+        } else {
+            bonus = -std::min(80 + 145 * depth + 8 * depth * depth, 1900);
+        }
+        bonus = bonus * weight;
         int& entry = table[pt][to];
         entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
     }
@@ -345,14 +362,31 @@ public:
     int get(Piece movingPiece, Square to, PieceType capturedType) const {
         return table[movingPiece][to][capturedType];
     }
+
     void update(Piece movingPiece, Square to, PieceType capturedType, int bonus) {
         int& entry = table[movingPiece][to][capturedType];
         entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
     }
+
     void update_capture_stats(Piece movingPiece, Square to, PieceType capturedType,
                                int depth, bool causedCutoff) {
-        int bonus = causedCutoff ? depth * depth : -depth * depth / 2;
+        int bonus;
+        if (causedCutoff) {
+            bonus = std::min((105 + 175 * depth + 11 * depth * depth) * 7 / 10, 2400);
+        } else {
+            bonus = -std::min((80 + 145 * depth + 8 * depth * depth) * 5 / 10, 1900);
+        }
         update(movingPiece, to, capturedType, bonus);
+    }
+
+    void update_failed_captures(Piece* pieces, Move* captures, PieceType* capturedTypes,
+                                 int count, Move bestCapture, int depth) {
+        int malus = -std::min((80 + 145 * depth + 8 * depth * depth) * 5 / 10, 1900);
+        for (int i = 0; i < count; ++i) {
+            if (captures[i] != bestCapture && capturedTypes[i] != NO_PIECE_TYPE) {
+                update(pieces[i], captures[i].to(), capturedTypes[i], malus);
+            }
+        }
     }
 
 private:

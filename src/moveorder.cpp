@@ -254,7 +254,7 @@ void MovePicker::score_captures() {
             if (givesCheck) {
                 sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
             if (captureHist && captured != NO_PIECE) {
-                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
+                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
             }
             continue;
             }
@@ -262,6 +262,9 @@ void MovePicker::score_captures() {
 
         if (!needsSEE && likelyGoodCapture) {
             sm.score = SCORE_WINNING_CAP + mvvLva;
+            if (captureHist && captured != NO_PIECE) {
+                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
+            }
         } else {
         int see_value = SEE::evaluate(board, m);
 
@@ -275,20 +278,25 @@ void MovePicker::score_captures() {
                     case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
                     default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
                 }
+                if (captureHist && captured != NO_PIECE) {
+                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
+                }
             } else {
                 sm.score = SCORE_WINNING_CAP + mvvLva;
+                if (captureHist && captured != NO_PIECE) {
+                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
+                }
             }
         } else {
             if (MoveGen::gives_check(board, m)) {
                 sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
             } else {
                 sm.score = SCORE_LOSING_CAP + see_value;
+                if (captureHist && captured != NO_PIECE) {
+                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 64;
+                }
                 badCaptures.add(m, sm.score);
             }
-        }
-
-        if (captureHist && captured != NO_PIECE) {
-            sm.score += captureHist->get(attacker, m.to(), capturedPt) / 100;
         }
         }
     }

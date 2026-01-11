@@ -150,6 +150,33 @@ constexpr int SEE_QUIET_NOT_IMPROVING_FACTOR = 60;
 constexpr int HISTORY_LMR_DIVISOR = 3500;
 constexpr int HISTORY_LMR_MAX_ADJ = 6;
 
+constexpr int HISTORY_BONUS_BASE = 105;
+constexpr int HISTORY_BONUS_LINEAR = 175;
+constexpr int HISTORY_BONUS_QUADRATIC = 11;
+constexpr int HISTORY_BONUS_MAX = 2400;
+
+constexpr int HISTORY_MALUS_BASE = 80;
+constexpr int HISTORY_MALUS_LINEAR = 145;
+constexpr int HISTORY_MALUS_QUADRATIC = 8;
+constexpr int HISTORY_MALUS_MAX = 1900;
+
+constexpr int CONT_HIST_1PLY_WEIGHT = 2;
+constexpr int CONT_HIST_2PLY_WEIGHT = 1;
+constexpr int CONT_HIST_4PLY_WEIGHT = 1;
+
+constexpr int CAPTURE_HIST_BONUS_SCALE = 7;
+constexpr int CAPTURE_HIST_MALUS_SCALE = 5;
+
+inline int stat_bonus(int depth) {
+    return std::min(HISTORY_BONUS_BASE + HISTORY_BONUS_LINEAR * depth + HISTORY_BONUS_QUADRATIC * depth * depth,
+                    HISTORY_BONUS_MAX);
+}
+
+inline int stat_malus(int depth) {
+    return std::min(HISTORY_MALUS_BASE + HISTORY_MALUS_LINEAR * depth + HISTORY_MALUS_QUADRATIC * depth * depth,
+                    HISTORY_MALUS_MAX);
+}
+
 } // namespace SearchParams
 
 #endif // SEARCH_CONSTANTS_HPP

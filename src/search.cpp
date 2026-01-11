@@ -1536,10 +1536,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
                 if (score >= beta) {
                     // =========================================================
-                    // BETA CUTOFF - Big bonus for the winning move
+                    // BETA CUTOFF - Depth-dependent bonus for the winning move
+                    // Using stat_bonus/stat_malus formulas for better tuning
                     // =========================================================
 
-                    int bonus = depth * depth;
+                    int statBonus = std::min(105 + 175 * depth + 11 * depth * depth, 2400);
+                    int statMalus = std::min(80 + 145 * depth + 8 * depth * depth, 1900);
 
                     if (!isCapture) {
                         killers.store(ply, m);
@@ -1556,11 +1558,16 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                                    quietsSearched, quietCount - 1, depth);
 
                         PieceType pt = type_of(movedPiece);
+
                         if (contHist1ply) {
-                            const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), bonus);
+                            const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), statBonus * 2);
                         }
                         if (contHist2ply) {
-                            const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), bonus);
+                            const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), statBonus);
+                        }
+                        if (ply >= 4 && stack[ply - 2].contHistory) {
+                            const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                            const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(pt, m.to(), statBonus);
                         }
 
                         for (int i = 0; i < quietCount - 1; ++i) {
@@ -1572,10 +1579,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                 history.update(board.side_to_move(), quietsSearched[i], depth, false);
 
                                 if (contHist1ply) {
-                                    const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(qpt, qto, -bonus);
+                                    const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(qpt, qto, -statMalus * 2);
                                 }
                                 if (contHist2ply) {
-                                    const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(qpt, qto, -bonus);
+                                    const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(qpt, qto, -statMalus);
                                 }
                             }
                         }
@@ -1591,7 +1598,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     for (int i = 0; i < captureCount; ++i) {
                         if (capturesSearched[i] != m && capturedTypes[i] != NO_PIECE_TYPE) {
                             int penaltyDepth = depth;
-
                             if (captureSEE[i] < 0) {
                                 penaltyDepth = depth * 2;
                             }
@@ -1609,12 +1615,16 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
 
                 // =========================================================
-                // IMPROVED ALPHA but no cutoff - Small bonus
+                // IMPROVED ALPHA but no cutoff - Scaled bonus
                 // =========================================================
                 {
-                    int smallBonus = depth;
+                    // Use scaled stat_bonus for alpha improvement (1/4 of full bonus)
+                    int smallBonus = std::min((105 + 175 * depth + 11 * depth * depth) / 4, 600);
 
                     if (!isCapture) {
+                        // Small bonus to best move history
+                        history.update_with_bonus(board.side_to_move(), m, smallBonus);
+
                         PieceType pt = type_of(movedPiece);
                         if (contHist1ply) {
                             const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), smallBonus);
@@ -1719,6 +1729,9 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     if (UNLIKELY(ply >= MAX_PLY)) {
         return evaluate(board);
     }
+
+    // Prefetch TT entry early to hide memory latency
+    TT.prefetch(board.key());
 
     pvLines[ply].clear();
 
@@ -1857,6 +1870,10 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             StateInfo si;
             board.do_move(m, si);
+
+            // Prefetch TT for the new position
+            TT.prefetch(board.key());
+
             bool isRecapture = (recaptureSquare != SQ_NONE && m.to() == recaptureSquare);
             bool isCapture = (capturedPt != NO_PIECE_TYPE) || m.is_enpassant();
 
