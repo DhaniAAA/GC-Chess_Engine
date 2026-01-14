@@ -193,9 +193,11 @@ void DataGenerator::worker_thread(int thread_id) {
     local_entries.reserve(1000);
 
     while (!stop_requested.load()) {
-        // Check if we've reached the game target
-        uint64_t games = m_stats.games_completed.load();
-        if (games >= static_cast<uint64_t>(m_config.games)) {
+        // Atomically reserve a game slot BEFORE playing
+        // This prevents multiple threads from starting more games than requested
+        uint64_t game_num = m_stats.games_started.fetch_add(1);
+        if (game_num >= static_cast<uint64_t>(m_config.games)) {
+            // We've already started enough games, exit
             break;
         }
 

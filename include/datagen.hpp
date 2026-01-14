@@ -111,7 +111,8 @@ struct DataGenConfig {
 // ============================================================================
 
 struct DataGenStats {
-    std::atomic<uint64_t> games_completed{0};
+    std::atomic<uint64_t> games_started{0};     // Games reserved/started by threads
+    std::atomic<uint64_t> games_completed{0};   // Games fully completed
     std::atomic<uint64_t> games_white_wins{0};
     std::atomic<uint64_t> games_black_wins{0};
     std::atomic<uint64_t> games_draws{0};
@@ -120,6 +121,7 @@ struct DataGenStats {
     std::atomic<uint64_t> total_plies{0};
 
     void reset() {
+        games_started = 0;
         games_completed = 0;
         games_white_wins = 0;
         games_black_wins = 0;
