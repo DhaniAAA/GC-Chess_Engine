@@ -90,6 +90,7 @@ private:
     void cmd_d();  // Display board (debug)
     void cmd_eval(); // Display evaluation (debug)
     void cmd_bench(std::istringstream& is); // Benchmark command
+    void cmd_datagen(std::istringstream& is); // Data generation for NNUE training
 
     // Helper functions
     void parse_moves(std::istringstream& is);

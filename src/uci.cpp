@@ -3,6 +3,7 @@
 #include "tt.hpp"
 #include "thread.hpp"
 #include "profiler.hpp"
+#include "datagen.hpp"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -86,6 +87,8 @@ void UCIHandler::loop() {
                 cmd_ponderhit();
             } else if (token == "bench") {
                 cmd_bench(is);
+            } else if (token == "datagen") {
+                cmd_datagen(is);
             }
         }
     } catch (const std::exception& e) {
@@ -712,6 +715,178 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
     // Restore settings
     TT.resize(oldHash);
     Threads.set_thread_count(oldThreads);
+}
+
+void UCIHandler::cmd_datagen(std::istringstream& is) {
+    std::string subcommand;
+    is >> subcommand;
+
+    if (subcommand == "stop") {
+        // Stop data generation
+        if (DataGen::is_running()) {
+            DataGen::stop();
+            std::cout << "Data generation stopped." << std::endl;
+        } else {
+            std::cout << "No data generation running." << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "status") {
+        // Show status
+        if (DataGen::is_running()) {
+            std::cout << "Data generation is running." << std::endl;
+            DataGen::get_stats().print();
+        } else {
+            std::cout << "No data generation running." << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "view") {
+        // View binpack file contents
+        std::string path = "data/training.binpack";
+        size_t count = 10;
+        size_t offset = 0;
+
+        std::string token;
+        while (is >> token) {
+            if (token == "file" || token == "path") {
+                is >> path;
+            } else if (token == "count" || token == "n") {
+                is >> count;
+            } else if (token == "offset" || token == "skip") {
+                is >> offset;
+            } else {
+                // First unnamed arg is path
+                path = token;
+            }
+        }
+
+        DataGen::view_binpack_file(path, count, offset);
+        return;
+    }
+
+    if (subcommand == "convert") {
+        // Convert binpack to EPD
+        std::string binpack_path = "data/training.binpack";
+        std::string epd_path = "data/training.epd";
+        size_t max_entries = 0;
+
+        std::string token;
+        while (is >> token) {
+            if (token == "input" || token == "binpack") {
+                is >> binpack_path;
+            } else if (token == "output" || token == "epd") {
+                is >> epd_path;
+            } else if (token == "max" || token == "limit") {
+                is >> max_entries;
+            } else {
+                binpack_path = token;
+            }
+        }
+
+        DataGen::convert_to_epd(binpack_path, epd_path, max_entries);
+        return;
+    }
+
+    if (subcommand == "stats") {
+        // Show file statistics
+        std::string path = "data/training.binpack";
+        std::string token;
+        if (is >> token) {
+            path = token;
+        }
+
+        DataGen::FileStats stats;
+        if (DataGen::get_file_stats(path, stats)) {
+            std::cout << "\n=== Training Data Statistics ===" << std::endl;
+            std::cout << "File: " << path << std::endl;
+            std::cout << "Total entries: " << stats.total_entries << std::endl;
+            std::cout << "White wins: " << stats.white_wins
+                      << " (" << (stats.total_entries > 0 ? stats.white_wins * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Black wins: " << stats.black_wins
+                      << " (" << (stats.total_entries > 0 ? stats.black_wins * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Draws: " << stats.draws
+                      << " (" << (stats.total_entries > 0 ? stats.draws * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Score range: [" << stats.min_score << ", " << stats.max_score << "]" << std::endl;
+            std::cout << "Average score: " << (stats.total_entries > 0 ? stats.total_score / (int64_t)stats.total_entries : 0) << std::endl;
+            std::cout << "================================\n" << std::endl;
+        } else {
+            std::cerr << "Error: Cannot read file " << path << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "help" || subcommand == "?") {
+        std::cout << "\n=== Data Generation Commands ===" << std::endl;
+        std::cout << "datagen start [options]  - Start data generation" << std::endl;
+        std::cout << "datagen stop             - Stop data generation" << std::endl;
+        std::cout << "datagen status           - Show generation status" << std::endl;
+        std::cout << "datagen view [file]      - View binpack file contents" << std::endl;
+        std::cout << "datagen stats [file]     - Show file statistics" << std::endl;
+        std::cout << "datagen convert [opts]   - Convert binpack to EPD text format" << std::endl;
+        std::cout << "\nOptions for 'datagen start':" << std::endl;
+        std::cout << "  threads <n>      - Number of worker threads (default: 1)" << std::endl;
+        std::cout << "  depth <n>        - Search depth (default: 8)" << std::endl;
+        std::cout << "  nodes <n>        - Node limit per move (default: 5000)" << std::endl;
+        std::cout << "  games <n>        - Number of games to play (default: 100000)" << std::endl;
+        std::cout << "  random <n>       - Random opening plies (default: 8)" << std::endl;
+        std::cout << "  maxply <n>       - Maximum game length (default: 400)" << std::endl;
+        std::cout << "  output <path>    - Output file path (default: data/training.binpack)" << std::endl;
+        std::cout << "  resign <cp>      - Resign threshold in cp (default: 3000)" << std::endl;
+        std::cout << "  book <path>      - Opening book path (default: book/Perfect2023.bin)" << std::endl;
+        std::cout << "  bookdepth <n>    - Book depth in half-moves (default: 12)" << std::endl;
+        std::cout << "  nobook           - Disable opening book" << std::endl;
+        std::cout << "\nOptions for 'datagen view':" << std::endl;
+        std::cout << "  file <path>      - File to view (default: data/training.binpack)" << std::endl;
+        std::cout << "  count <n>        - Number of entries to show (default: 10)" << std::endl;
+        std::cout << "  offset <n>       - Starting entry offset (default: 0)" << std::endl;
+        std::cout << "\nOptions for 'datagen convert':" << std::endl;
+        std::cout << "  input <path>     - Binpack file to convert" << std::endl;
+        std::cout << "  output <path>    - EPD output file path" << std::endl;
+        std::cout << "  max <n>          - Maximum entries to convert (0 = all)" << std::endl;
+        std::cout << "\nExamples:" << std::endl;
+        std::cout << "  datagen start threads 8 depth 8 games 1000000" << std::endl;
+        std::cout << "  datagen start output data/custom.binpack" << std::endl;
+        std::cout << "  datagen view data/training.binpack count 20" << std::endl;
+        std::cout << "  datagen stats data/training.binpack" << std::endl;
+        std::cout << "  datagen convert data/training.binpack output data/training.epd" << std::endl;
+        std::cout << "================================\n" << std::endl;
+        return;
+    }
+
+    if (subcommand == "start" || !subcommand.empty()) {
+        // Check if already running
+        if (DataGen::is_running()) {
+            std::cout << "Data generation already running. Use 'datagen stop' first." << std::endl;
+            return;
+        }
+
+        // Parse config - if subcommand wasn't "start", put it back for parsing
+        std::string remaining;
+        if (subcommand != "start") {
+            remaining = subcommand + " ";
+        }
+        std::string token;
+        while (is >> token) {
+            remaining += token + " ";
+        }
+
+        std::istringstream config_stream(remaining);
+        DataGen::DataGenConfig config = DataGen::parse_config(config_stream);
+
+        // Start generation
+        DataGen::start(config);
+        std::cout << "Data generation started in background." << std::endl;
+        std::cout << "Format: binpack" << std::endl;
+        std::cout << "Output: " << config.output << std::endl;
+        std::cout << "Use 'datagen status' to check progress, 'datagen stop' to cancel." << std::endl;
+        return;
+    }
+
+    // Default: show help
+    std::cout << "Unknown datagen command. Use 'datagen help' for usage." << std::endl;
 }
 
 // ============================================================================
