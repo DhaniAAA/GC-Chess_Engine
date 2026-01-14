@@ -24,6 +24,7 @@ namespace DataGen {
 
 static std::unique_ptr<DataGenerator> g_generator = nullptr;
 static std::mutex g_mutex;
+static std::mutex g_search_mutex;  // Protects global Searcher for multi-threaded datagen
 
 // ============================================================================
 // Statistics Printing
@@ -62,6 +63,12 @@ DataGenerator::DataGenerator(const DataGenConfig& config)
     uint64_t base_seed = std::chrono::steady_clock::now().time_since_epoch().count();
     for (int i = 0; i < config.threads; ++i) {
         m_random_seeds[i] = base_seed ^ (i * 0x9E3779B97F4A7C15ULL);
+    }
+
+    // Create per-thread searchers for true multi-threading
+    m_searchers.reserve(config.threads);
+    for (int i = 0; i < config.threads; ++i) {
+        m_searchers.push_back(std::make_unique<Search>());
     }
 }
 
@@ -372,10 +379,8 @@ Move DataGenerator::select_random_move(Board& board, int thread_id) {
 }
 
 Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) {
-    (void)thread_id;  // Suppress unused parameter warning
-
     // Create a mini search for this position
-    // We use the global Searcher with limited settings
+    // Each thread has its own searcher for true multi-threading
 
     SearchLimits limits;
     limits.depth = m_config.depth;
@@ -385,13 +390,16 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
         limits.nodes = m_config.soft_nodes;
     }
 
+    // Use thread-local searcher for true parallelism
+    Search& searcher = *m_searchers[thread_id];
+
     // Run search synchronously
-    Searcher.start(board, limits);
+    searcher.start(board, limits);
 
     // Get the static evaluation for training data
     // The search score is relative to side to move, so we use evaluate for consistency
-    score = Searcher.evaluate(board);
-    Move best = Searcher.best_move();
+    score = searcher.evaluate(board);
+    Move best = searcher.best_move();
 
     // Score is already from white's perspective in evaluate()
     // No adjustment needed

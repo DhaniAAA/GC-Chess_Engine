@@ -11,6 +11,7 @@
 #include "board.hpp"
 #include "move.hpp"
 #include "types.hpp"
+#include "search.hpp"
 #include <string>
 #include <vector>
 #include <atomic>
@@ -194,6 +195,9 @@ private:
     std::vector<uint64_t> m_random_seeds;
     uint64_t rand_next(int thread_id);
     int rand_int(int thread_id, int max);
+
+    // Per-thread searchers for true multi-threading
+    std::vector<std::unique_ptr<Search>> m_searchers;
 };
 
 // ============================================================================
