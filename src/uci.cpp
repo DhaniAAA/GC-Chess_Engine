@@ -828,6 +828,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "datagen convert [opts]   - Convert binpack to EPD text format" << std::endl;
         std::cout << "\nOptions for 'datagen start':" << std::endl;
         std::cout << "  threads <n>      - Number of worker threads (default: 1)" << std::endl;
+        std::cout << "  hash <mb>        - Hash table size in MB (default: 16)" << std::endl;
         std::cout << "  depth <n>        - Search depth (default: 8)" << std::endl;
         std::cout << "  nodes <n>        - Node limit per move (default: 5000)" << std::endl;
         std::cout << "  games <n>        - Number of games to play (default: 100000)" << std::endl;
@@ -848,6 +849,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "  max <n>          - Maximum entries to convert (0 = all)" << std::endl;
         std::cout << "\nExamples:" << std::endl;
         std::cout << "  datagen start threads 8 depth 8 games 1000000" << std::endl;
+        std::cout << "  datagen start threads 128 hash 8192 games 1000000" << std::endl;
         std::cout << "  datagen start output data/custom.binpack" << std::endl;
         std::cout << "  datagen view data/training.binpack count 20" << std::endl;
         std::cout << "  datagen stats data/training.binpack" << std::endl;

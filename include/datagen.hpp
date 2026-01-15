@@ -71,6 +71,7 @@ constexpr uint8_t PTYPE_BP = 7, PTYPE_BN = 8, PTYPE_BB = 9, PTYPE_BR = 10, PTYPE
 struct DataGenConfig {
     // Threading
     int threads = 1;                    // Number of worker threads
+    int hash_mb = 16;                   // Hash table size in MB (per thread if separate TT)
 
     // Search settings
     int depth = 8;                      // Search depth for scoring positions

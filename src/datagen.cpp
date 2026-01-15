@@ -7,6 +7,7 @@
 #include "eval.hpp"
 #include "search.hpp"
 #include "book.hpp"
+#include "tt.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -121,8 +122,13 @@ void DataGenerator::run() {
         }
     }
 
+    // Resize hash table for datagen
+    TT.resize(m_config.hash_mb);
+    TT.clear();
+
     std::cout << "\n=== Starting Data Generation ===" << std::endl;
     std::cout << "Threads       : " << m_config.threads << std::endl;
+    std::cout << "Hash          : " << m_config.hash_mb << " MB" << std::endl;
     std::cout << "Depth         : " << m_config.depth << std::endl;
     std::cout << "Games target  : " << m_config.games << std::endl;
     std::cout << "Opening book  : " << (m_config.use_book && book_loaded ?
@@ -604,6 +610,8 @@ DataGenConfig parse_config(std::istringstream& is) {
             is >> config.book_depth;
         } else if (token == "nobook") {
             config.use_book = false;
+        } else if (token == "hash") {
+            is >> config.hash_mb;
         }
     }
 
@@ -613,6 +621,7 @@ DataGenConfig parse_config(std::istringstream& is) {
     config.games = std::max(1, config.games);
     config.random_plies = std::max(0, std::min(config.random_plies, 20));
     config.book_depth = std::max(0, std::min(config.book_depth, 30));
+    config.hash_mb = std::max(1, std::min(config.hash_mb, 32768));
 
     return config;
 }
