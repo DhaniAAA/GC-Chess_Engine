@@ -950,12 +950,6 @@ bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si) {
 // ============================================================================
 
 bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
-    std::cerr << "[DEBUG] filter_binpack() called" << std::endl;
-    std::cerr << "[DEBUG] input_path = " << config.input_path << std::endl;
-    std::cerr << "[DEBUG] output_path = " << config.output_path << std::endl;
-
-    std::cout << "Filter: Opening input file..." << std::endl;
-    std::cout.flush();
 
     std::ifstream input(config.input_path, std::ios::binary);
     if (!input.is_open()) {
@@ -963,8 +957,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
         return false;
     }
 
-    std::cout << "Filter: Opening output file..." << std::endl;
-    std::cout.flush();
 
     std::ofstream output(config.output_path, std::ios::binary);
     if (!output.is_open()) {
@@ -972,8 +964,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
         return false;
     }
 
-    std::cout << "Filter: Getting file size..." << std::endl;
-    std::cout.flush();
 
     // Get file size for progress reporting
     input.seekg(0, std::ios::end);
@@ -981,25 +971,18 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     input.seekg(0, std::ios::beg);
     size_t total_entries = file_size / sizeof(TrainingEntry);
 
-    std::cout << "\nFiltering Training Data" << std::endl;
+    std::cout << "\n=== Filtering Training Data ===" << std::endl;
     std::cout << "Input       : " << config.input_path << std::endl;
     std::cout << "Output      : " << config.output_path << std::endl;
     std::cout << "Total entries: " << total_entries << std::endl;
     std::cout << "Filters:" << std::endl;
-    std::cout << "  skip_in_check     : " << (config.skip_in_check ? "true" : "false") << std::endl;
-    std::cout << "  skip_tactical     : " << (config.skip_tactical_bestmove ? "true" : "false") << std::endl;
-    std::cout << "  qsearch_margin    : " << config.qsearch_margin << " cp" << std::endl;
-    std::cout << "  max_score         : " << config.max_score << " cp" << std::endl;
-    std::cout.flush();
-
-    std::cout << "Filter: Creating Search object (on heap)..." << std::endl;
-    std::cout.flush();
+    std::cout << "  skip_in_check  : " << (config.skip_in_check ? "true" : "false") << std::endl;
+    std::cout << "  qsearch_margin : " << config.qsearch_margin << " cp" << std::endl;
+    std::cout << "  max_score      : " << config.max_score << " cp" << std::endl;
+    std::cout << "==============================" << std::endl;
 
     // Create a searcher on heap to avoid stack overflow (Search object is large)
     std::unique_ptr<Search> searcher = std::make_unique<Search>();
-
-    std::cout << "Filter: Search object created, initializing variables..." << std::endl;
-    std::cout.flush();
 
     stats = FilterStats{};
     auto start_time = std::chrono::steady_clock::now();
@@ -1008,8 +991,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     StateInfo si;
     Board board;
 
-    std::cout << "Filter: Starting to read entries..." << std::endl;
-    std::cout.flush();
 
     try {
         while (input.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {

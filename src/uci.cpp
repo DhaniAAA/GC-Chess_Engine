@@ -827,15 +827,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
             return;
         }
 
-        std::cout << "Starting filter process..." << std::endl;
-        std::cout.flush();
         DataGen::FilterStats stats;
-        std::cout << "Calling filter_binpack..." << std::endl;
-        std::cout.flush();
-        std::cerr << "[UCI DEBUG] input_path = '" << config.input_path << "'" << std::endl;
-        std::cerr << "[UCI DEBUG] output_path = '" << config.output_path << "'" << std::endl;
-        std::cerr << "[UCI DEBUG] About to call DataGen::filter_binpack()" << std::endl;
-        std::cerr.flush();
         if (DataGen::filter_binpack(config, stats)) {
             std::cout << "Filter completed successfully!" << std::endl;
         } else {
