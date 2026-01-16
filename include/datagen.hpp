@@ -70,8 +70,8 @@ constexpr uint8_t PTYPE_BP = 7, PTYPE_BN = 8, PTYPE_BB = 9, PTYPE_BR = 10, PTYPE
 
 struct DataGenConfig {
     // Threading
-    int threads = 1;                    // Number of worker threads
-    int hash_mb = 16;                   // Hash table size in MB (per thread if separate TT)
+    int threads = 2;                    // Number of worker threads
+    int hash_mb = 64;                   // Hash table size in MB (per thread if separate TT)
 
     // Search settings
     int depth = 8;                      // Search depth for scoring positions
@@ -91,10 +91,17 @@ struct DataGenConfig {
     int adjudicate_draw_count = 12;     // Number of low-score moves for draw
     int adjudicate_draw_ply = 80;       // Minimum ply before draw adjudication
 
-    // Position filtering
+    // Position filtering (based on "Study of the Proper NNUE Dataset" paper)
     bool skip_in_check = true;          // Skip positions where side to move is in check
-    bool skip_captures = false;         // Skip positions where best move is capture
-    int max_score = 3000;               // Skip positions with |score| > max_score
+    bool skip_captures = true;          // Skip positions where best move is capture
+    bool skip_tactical_bestmove = true; // Skip positions where best move is capture or promotion
+    int max_score = 2500;               // Skip positions with |score| > max_score
+
+    // Quiet position thresholds (from paper: arXiv Dec 2024)
+    // Position is "quiet" if |static_eval - qsearch| <= qsearch_margin
+    // AND |static_eval - search_score| <= search_margin
+    int qsearch_margin = 60;            // M1: quiescence search margin (cp)
+    int search_margin = 70;             // M2: negamax search margin (cp)
 
     // Output
     std::string output = "data/training.binpack";  // Output file path (binpack format)
@@ -104,7 +111,7 @@ struct DataGenConfig {
     bool use_book = true;               // Use opening book for variety (default: true)
     std::string book_path = "book/Perfect2023.bin"; // Path to Polyglot opening book
     int book_depth = 12;                // Maximum depth to use book moves (half-moves)
-    int random_multi_pv = 0;            // Use multi-PV for randomization (0 = disabled)
+    int random_multi_pv = 2;            // Use multi-PV for randomization (0 = disabled)
 };
 
 // ============================================================================
@@ -187,8 +194,8 @@ private:
     Move select_random_move(Board& board, int thread_id);
     Move select_search_move(Board& board, int& score, int thread_id);
 
-    // Filtering
-    bool should_record_position(const Board& board, int score, int ply);
+    // Filtering (implements "Study of the Proper NNUE Dataset" paper algorithm)
+    bool should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id);
 
     // Output
     void write_entries(const std::vector<TrainingEntry>& entries);
@@ -259,6 +266,44 @@ std::string entry_to_string(const TrainingEntry& entry);
 
 // Decode TrainingEntry to FEN string (approximate - pieces only)
 std::string entry_to_fen(const TrainingEntry& entry);
+
+// Decode TrainingEntry to Board (for filtering)
+bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si);
+
+// ============================================================================
+// Filter Existing Data (Quiet Position Detection)
+// ============================================================================
+
+struct FilterConfig {
+    std::string input_path;             // Input binpack file
+    std::string output_path;            // Output binpack file (filtered)
+    int threads = 1;                    // Number of threads for filtering
+
+    // Filter thresholds (from "Study of the Proper NNUE Dataset" paper)
+    bool skip_in_check = true;          // Skip positions in check
+    bool skip_tactical_bestmove = true; // Skip positions where best move is capture/promotion
+    int qsearch_margin = 60;            // M1: |static_eval - qsearch| threshold (cp)
+    int search_margin = 0;              // M2: |static_eval - search_score| threshold (0=disabled for filter)
+    int max_score = 2500;               // Skip positions with |score| > max_score
+
+    // Progress reporting
+    int report_interval = 100000;       // Report progress every N positions
+};
+
+struct FilterStats {
+    size_t total_read = 0;
+    size_t passed = 0;
+    size_t filtered_check = 0;
+    size_t filtered_tactical = 0;
+    size_t filtered_qsearch = 0;
+    size_t filtered_score = 0;
+};
+
+// Filter binpack file to keep only quiet positions
+bool filter_binpack(const FilterConfig& config, FilterStats& stats);
+
+// Parse filter config from UCI command stream
+FilterConfig parse_filter_config(std::istringstream& is);
 
 } // namespace DataGen
 

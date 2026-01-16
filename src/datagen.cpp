@@ -16,6 +16,7 @@
 #include <cmath>
 #include <sstream>
 #include <filesystem>
+#include <memory>
 
 namespace DataGen {
 
@@ -318,34 +319,36 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         }
 
         // Search for best move
-        int score;
-        Move best_move = select_search_move(board, score, thread_id);
+        int static_eval;
+        Move best_move = select_search_move(board, static_eval, thread_id);
+
+        // Get search score (from the search that just ran)
+        // For simplicity, we use static_eval as the score for training data
+        // The actual search score would require accessing internal search state
 
         if (best_move == MOVE_NONE) {
             // Fallback to first legal move
             best_move = moves[0].move;
-            score = 0;
+            static_eval = 0;
         }
 
-        // Record position if appropriate
-        if (should_record_position(board, score, ply)) {
-            entries.push_back(encode_position(board, score, GameResult::ongoing));
+        // Record position if appropriate (implements paper's quiet position algorithm)
+        if (should_record_position(board, static_eval, static_eval, ply, best_move, thread_id)) {
+            entries.push_back(encode_position(board, static_eval, GameResult::ongoing));
             m_stats.positions_generated++;
         } else {
             m_stats.positions_filtered++;
         }
 
         // Adjudication check
-        int abs_score = std::abs(score);
+        int abs_score = std::abs(static_eval);
 
         // Resignation adjudication: one side is winning decisively
         if (abs_score >= m_config.adjudicate_score) {
             adjudicate_count++;
             if (adjudicate_count >= m_config.adjudicate_count) {
-                // Score is from perspective of side to move
-                return score > 0 ?
-                    (board.side_to_move() == WHITE ? GameResult::white_wins : GameResult::black_wins) :
-                    (board.side_to_move() == WHITE ? GameResult::black_wins : GameResult::white_wins);
+                // Score is from perspective of white (static_eval)
+                return static_eval > 0 ? GameResult::white_wins : GameResult::black_wins;
             }
         } else {
             adjudicate_count = 0;
@@ -415,20 +418,71 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
     return best;
 }
 
-bool DataGenerator::should_record_position(const Board& board, int score, int ply) {
+bool DataGenerator::should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id) {
+    // =========================================================================
+    // Quiet Position Detection Algorithm
+    // Based on: "Study of the Proper NNUE Dataset" (arXiv, December 2024)
+    //
+    // A position is "quiet" if:
+    // 1. Not in check
+    // 2. |static_eval - qsearch_score| <= M1 (default 60 cp)
+    // 3. |static_eval - search_score| <= M2 (default 70 cp)
+    // 4. Best move is not tactical (capture/promotion) if skip_tactical_bestmove
+    // =========================================================================
+
     // Skip early game positions
     if (ply < m_config.min_ply) {
         return false;
     }
 
-    // Skip positions in check
+    // Skip positions in check (forcing positions, score determined by tactics)
     if (m_config.skip_in_check && board.in_check()) {
         return false;
     }
 
-    // Skip extreme scores
-    if (std::abs(score) > m_config.max_score) {
+    // Skip extreme scores (already decided games)
+    if (std::abs(static_eval) > m_config.max_score) {
         return false;
+    }
+
+    // Skip tactical positions where best move is a capture
+    if (m_config.skip_captures && best_move != MOVE_NONE && board.is_capture(best_move)) {
+        return false;
+    }
+
+    // Skip positions where best move is capture OR promotion (tactical bestmove)
+    if (m_config.skip_tactical_bestmove && best_move != MOVE_NONE) {
+        if (board.is_capture(best_move) || best_move.is_promotion()) {
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // Paper's Quiet Position Algorithm:
+    // Check volatility with quiescence search (M1 threshold)
+    // =========================================================================
+    if (m_config.qsearch_margin > 0) {
+        // Get qsearch score for this position
+        Search& searcher = *m_searchers[thread_id];
+        int qsearch_score = searcher.qsearch_score(board);
+
+        // Check: |static_eval - qsearch| <= M1
+        int qsearch_diff = std::abs(static_eval - qsearch_score);
+        if (qsearch_diff > m_config.qsearch_margin) {
+            return false;  // Position is tactical/volatile
+        }
+    }
+
+    // =========================================================================
+    // Paper's Quiet Position Algorithm:
+    // Check divergence with search score (M2 threshold)
+    // =========================================================================
+    if (m_config.search_margin > 0) {
+        // Check: |static_eval - search_score| <= M2
+        int search_diff = std::abs(static_eval - search_score);
+        if (search_diff > m_config.search_margin) {
+            return false;  // Position has forcing sequences/mating threats
+        }
     }
 
     return true;
@@ -874,6 +928,211 @@ bool get_file_stats(const std::string& path, FileStats& stats) {
     }
 
     return stats.total_entries > 0;
+}
+
+// ============================================================================
+// Entry to Board Conversion (for filtering)
+// ============================================================================
+
+bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si) {
+    // Build FEN from entry and set board
+    std::string fen = entry_to_fen(entry);
+    try {
+        board.set(fen, &si);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ============================================================================
+// Filter Binpack Implementation
+// ============================================================================
+
+bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
+    std::cerr << "[DEBUG] filter_binpack() called" << std::endl;
+    std::cerr << "[DEBUG] input_path = " << config.input_path << std::endl;
+    std::cerr << "[DEBUG] output_path = " << config.output_path << std::endl;
+
+    std::cout << "Filter: Opening input file..." << std::endl;
+    std::cout.flush();
+
+    std::ifstream input(config.input_path, std::ios::binary);
+    if (!input.is_open()) {
+        std::cerr << "Error: Cannot open input file " << config.input_path << std::endl;
+        return false;
+    }
+
+    std::cout << "Filter: Opening output file..." << std::endl;
+    std::cout.flush();
+
+    std::ofstream output(config.output_path, std::ios::binary);
+    if (!output.is_open()) {
+        std::cerr << "Error: Cannot open output file " << config.output_path << std::endl;
+        return false;
+    }
+
+    std::cout << "Filter: Getting file size..." << std::endl;
+    std::cout.flush();
+
+    // Get file size for progress reporting
+    input.seekg(0, std::ios::end);
+    size_t file_size = input.tellg();
+    input.seekg(0, std::ios::beg);
+    size_t total_entries = file_size / sizeof(TrainingEntry);
+
+    std::cout << "\n=== Filtering Training Data ===" << std::endl;
+    std::cout << "Input       : " << config.input_path << std::endl;
+    std::cout << "Output      : " << config.output_path << std::endl;
+    std::cout << "Total entries: " << total_entries << std::endl;
+    std::cout << "Filters:" << std::endl;
+    std::cout << "  skip_in_check     : " << (config.skip_in_check ? "true" : "false") << std::endl;
+    std::cout << "  skip_tactical     : " << (config.skip_tactical_bestmove ? "true" : "false") << std::endl;
+    std::cout << "  qsearch_margin    : " << config.qsearch_margin << " cp" << std::endl;
+    std::cout << "  max_score         : " << config.max_score << " cp" << std::endl;
+    std::cout << "==============================\n" << std::endl;
+    std::cout.flush();
+
+    std::cout << "Filter: Creating Search object (on heap)..." << std::endl;
+    std::cout.flush();
+
+    // Create a searcher on heap to avoid stack overflow (Search object is large)
+    std::unique_ptr<Search> searcher = std::make_unique<Search>();
+
+    std::cout << "Filter: Search object created, initializing variables..." << std::endl;
+    std::cout.flush();
+
+    stats = FilterStats{};
+    auto start_time = std::chrono::steady_clock::now();
+
+    TrainingEntry entry;
+    StateInfo si;
+    Board board;
+
+    std::cout << "Filter: Starting to read entries..." << std::endl;
+    std::cout.flush();
+
+    try {
+        while (input.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {
+            stats.total_read++;
+
+            // Convert entry to board
+            if (!entry_to_board(entry, board, si)) {
+                continue;  // Skip invalid entries
+            }
+
+            int stored_score = entry.score;  // Score from white's perspective
+
+            // Filter 1: Skip positions in check
+            if (config.skip_in_check && board.in_check()) {
+                stats.filtered_check++;
+                continue;
+            }
+
+            // Filter 2: Skip extreme scores
+            if (std::abs(stored_score) > config.max_score) {
+                stats.filtered_score++;
+                continue;
+            }
+
+            // Filter 3: Quiescence search volatility check
+            if (config.qsearch_margin > 0) {
+                // Get static eval from white's perspective
+                int static_eval = searcher->evaluate(board);
+
+                // Get qsearch score
+                int qsearch_score = searcher->qsearch_score(board);
+
+                // Check volatility: |static_eval - qsearch| > margin
+                int qsearch_diff = std::abs(static_eval - qsearch_score);
+                if (qsearch_diff > config.qsearch_margin) {
+                    stats.filtered_qsearch++;
+                    continue;
+                }
+            }
+
+            // Position passed all filters - write to output
+            output.write(reinterpret_cast<const char*>(&entry), sizeof(entry));
+            stats.passed++;
+
+            // Progress reporting
+            if (stats.total_read % config.report_interval == 0) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
+                double pct = 100.0 * stats.total_read / total_entries;
+                double pass_rate = 100.0 * stats.passed / stats.total_read;
+
+                std::cout << "Progress: " << stats.total_read << "/" << total_entries
+                          << " (" << std::fixed << std::setprecision(1) << pct << "%)"
+                          << " | Passed: " << stats.passed
+                          << " (" << std::setprecision(1) << pass_rate << "%)"
+                          << " | Time: " << elapsed << "s"
+                          << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error during filtering at entry " << stats.total_read << ": " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "Unknown error during filtering at entry " << stats.total_read << std::endl;
+        return false;
+    }
+
+    output.flush();
+    output.close();
+    input.close();
+
+    auto end_time = std::chrono::steady_clock::now();
+    auto total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+
+    std::cout << "\n=== Filter Complete ===" << std::endl;
+    std::cout << "Total time     : " << total_time << " seconds" << std::endl;
+    std::cout << "Positions read : " << stats.total_read << std::endl;
+    std::cout << "Positions passed: " << stats.passed
+              << " (" << std::setprecision(1) << (100.0 * stats.passed / stats.total_read) << "%)" << std::endl;
+    std::cout << "Filtered by:" << std::endl;
+    std::cout << "  In-check     : " << stats.filtered_check << std::endl;
+    std::cout << "  Extreme score: " << stats.filtered_score << std::endl;
+    std::cout << "  QSearch      : " << stats.filtered_qsearch << std::endl;
+    std::cout << "Output saved to: " << config.output_path << std::endl;
+    std::cout << "========================" << std::endl;
+
+    return true;
+}
+
+FilterConfig parse_filter_config(std::istringstream& is) {
+    FilterConfig config;
+    std::string token;
+
+    while (is >> token) {
+        if (token == "input") {
+            is >> config.input_path;
+        } else if (token == "output") {
+            is >> config.output_path;
+        } else if (token == "threads") {
+            is >> config.threads;
+        } else if (token == "qsearch_margin" || token == "qsearch") {
+            is >> config.qsearch_margin;
+        } else if (token == "max_score" || token == "maxscore") {
+            is >> config.max_score;
+        } else if (token == "no_check_filter") {
+            config.skip_in_check = false;
+        } else if (token == "no_tactical_filter") {
+            config.skip_tactical_bestmove = false;
+        }
+    }
+
+    // Default output path if not specified
+    if (config.output_path.empty() && !config.input_path.empty()) {
+        size_t dot_pos = config.input_path.rfind('.');
+        if (dot_pos != std::string::npos) {
+            config.output_path = config.input_path.substr(0, dot_pos) + "_filtered.binpack";
+        } else {
+            config.output_path = config.input_path + "_filtered.binpack";
+        }
+    }
+
+    return config;
 }
 
 } // namespace DataGen
