@@ -981,7 +981,7 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     input.seekg(0, std::ios::beg);
     size_t total_entries = file_size / sizeof(TrainingEntry);
 
-    std::cout << "\n=== Filtering Training Data ===" << std::endl;
+    std::cout << "\nFiltering Training Data" << std::endl;
     std::cout << "Input       : " << config.input_path << std::endl;
     std::cout << "Output      : " << config.output_path << std::endl;
     std::cout << "Total entries: " << total_entries << std::endl;
@@ -990,7 +990,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  skip_tactical     : " << (config.skip_tactical_bestmove ? "true" : "false") << std::endl;
     std::cout << "  qsearch_margin    : " << config.qsearch_margin << " cp" << std::endl;
     std::cout << "  max_score         : " << config.max_score << " cp" << std::endl;
-    std::cout << "==============================\n" << std::endl;
     std::cout.flush();
 
     std::cout << "Filter: Creating Search object (on heap)..." << std::endl;
