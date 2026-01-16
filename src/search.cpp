@@ -1970,6 +1970,31 @@ int Search::evaluate(const Board& board, int alpha, int beta) {
     return score;
 }
 
+// Quiescence search wrapper for datagen quiet position detection
+// Returns the qsearch score from side-to-move's perspective
+int Search::qsearch_score(Board& board) {
+    // Initialize all necessary search state for qsearch
+    rootPly = board.game_ply();
+    stopped = false;
+    searchStats.reset();
+
+    // Initialize PV lines to prevent crashes
+    for (int i = 0; i < MAX_PLY; ++i) {
+        pvLines[i].clear();
+    }
+
+    // Run qsearch with full window
+    int score = qsearch(board, -VALUE_INFINITE, VALUE_INFINITE, 0, SQ_NONE);
+
+    // Score is already from side-to-move's perspective
+    // Convert to white's perspective for consistency with evaluate()
+    if (board.side_to_move() == BLACK) {
+        score = -score;
+    }
+
+    return score;
+}
+
 void Search::report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx) {
     auto now = std::chrono::steady_clock::now();
     U64 elapsed = static_cast<U64>(

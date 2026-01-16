@@ -818,6 +818,32 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         return;
     }
 
+    if (subcommand == "filter") {
+        // Filter existing binpack file to keep only quiet positions
+        DataGen::FilterConfig config = DataGen::parse_filter_config(is);
+
+        if (config.input_path.empty()) {
+            std::cerr << "Error: No input file specified. Use 'datagen filter input <path>'" << std::endl;
+            return;
+        }
+
+        std::cout << "Starting filter process..." << std::endl;
+        std::cout.flush();
+        DataGen::FilterStats stats;
+        std::cout << "Calling filter_binpack..." << std::endl;
+        std::cout.flush();
+        std::cerr << "[UCI DEBUG] input_path = '" << config.input_path << "'" << std::endl;
+        std::cerr << "[UCI DEBUG] output_path = '" << config.output_path << "'" << std::endl;
+        std::cerr << "[UCI DEBUG] About to call DataGen::filter_binpack()" << std::endl;
+        std::cerr.flush();
+        if (DataGen::filter_binpack(config, stats)) {
+            std::cout << "Filter completed successfully!" << std::endl;
+        } else {
+            std::cerr << "Filter failed!" << std::endl;
+        }
+        return;
+    }
+
     if (subcommand == "help" || subcommand == "?") {
         std::cout << "\n=== Data Generation Commands ===" << std::endl;
         std::cout << "datagen start [options]  - Start data generation" << std::endl;
@@ -826,6 +852,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "datagen view [file]      - View binpack file contents" << std::endl;
         std::cout << "datagen stats [file]     - Show file statistics" << std::endl;
         std::cout << "datagen convert [opts]   - Convert binpack to EPD text format" << std::endl;
+        std::cout << "datagen filter [opts]    - Filter existing data for quiet positions" << std::endl;
         std::cout << "\nOptions for 'datagen start':" << std::endl;
         std::cout << "  threads <n>      - Number of worker threads (default: 1)" << std::endl;
         std::cout << "  hash <mb>        - Hash table size in MB (default: 16)" << std::endl;
@@ -839,6 +866,11 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "  book <path>      - Opening book path (default: book/Perfect2023.bin)" << std::endl;
         std::cout << "  bookdepth <n>    - Book depth in half-moves (default: 12)" << std::endl;
         std::cout << "  nobook           - Disable opening book" << std::endl;
+        std::cout << "\nOptions for 'datagen filter':" << std::endl;
+        std::cout << "  input <path>     - Input binpack file (required)" << std::endl;
+        std::cout << "  output <path>    - Output file path (default: input_filtered.binpack)" << std::endl;
+        std::cout << "  qsearch <cp>     - Qsearch margin threshold (default: 60)" << std::endl;
+        std::cout << "  max_score <cp>   - Max absolute score (default: 2500)" << std::endl;
         std::cout << "\nOptions for 'datagen view':" << std::endl;
         std::cout << "  file <path>      - File to view (default: data/training.binpack)" << std::endl;
         std::cout << "  count <n>        - Number of entries to show (default: 10)" << std::endl;
@@ -851,6 +883,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "  datagen start threads 8 depth 8 games 1000000" << std::endl;
         std::cout << "  datagen start threads 128 hash 8192 games 1000000" << std::endl;
         std::cout << "  datagen start output data/custom.binpack" << std::endl;
+        std::cout << "  datagen filter input data/training.binpack qsearch 60" << std::endl;
         std::cout << "  datagen view data/training.binpack count 20" << std::endl;
         std::cout << "  datagen stats data/training.binpack" << std::endl;
         std::cout << "  datagen convert data/training.binpack output data/training.epd" << std::endl;

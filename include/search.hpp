@@ -242,6 +242,9 @@ public:
     int evaluate(const Board& board);
     int evaluate(const Board& board, int alpha, int beta);  // With lazy eval
 
+    // Quiescence search wrapper for datagen (returns score from white's perspective)
+    int qsearch_score(Board& board);
+
 private:
     void iterative_deepening(Board& board);
 

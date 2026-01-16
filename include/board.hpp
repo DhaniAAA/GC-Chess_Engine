@@ -144,6 +144,11 @@ public:
     // Is square attacked by color?
     bool is_attacked_by(Color c, Square s) const;
 
+    // Is move a capture? (includes en passant)
+    bool is_capture(Move m) const {
+        return !empty(m.to()) || m.is_enpassant();
+    }
+
     // Slider blockers
     Bitboard slider_blockers(Bitboard sliders, Square s, Bitboard& pinners) const;
 
