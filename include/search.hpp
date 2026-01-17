@@ -237,6 +237,10 @@ public:
     using InfoCallback = void(*)(const SearchInfo&);
     void set_info_callback(InfoCallback cb) { infoCallback = cb; }
 
+    // Silent mode - suppresses UCI info output (used by datagen)
+    void set_silent(bool silent) { silentMode = silent; }
+    bool is_silent() const { return silentMode; }
+
     void clear_history();
 
     int evaluate(const Board& board);
@@ -270,6 +274,7 @@ private:
     std::atomic<bool> stopped;
     std::atomic<bool> searching;
     std::atomic<bool> isPondering;
+    bool silentMode = false;  // Suppress UCI info output when true
     SearchLimits limits;
     SearchStats searchStats;
 

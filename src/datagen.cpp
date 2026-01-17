@@ -68,9 +68,12 @@ DataGenerator::DataGenerator(const DataGenConfig& config)
     }
 
     // Create per-thread searchers for true multi-threading
+    // Enable silent mode to suppress UCI info output during datagen
     m_searchers.reserve(config.threads);
     for (int i = 0; i < config.threads; ++i) {
-        m_searchers.push_back(std::make_unique<Search>());
+        auto searcher = std::make_unique<Search>();
+        searcher->set_silent(true);  // Suppress UCI output for clean datagen progress
+        m_searchers.push_back(std::move(searcher));
     }
 }
 

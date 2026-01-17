@@ -124,9 +124,11 @@ void Search::start(Board& board, const SearchLimits& lim) {
         Move bookMove = Book::book.probe(board);
         if (bookMove != MOVE_NONE) {
             rootBestMove = bookMove;
-            std::cout << "info string Book move: " << move_to_string(bookMove) << std::endl;
-            std::cout << "info depth 1 score cp 0 nodes 0 time 0 pv "
-                      << move_to_string(bookMove) << std::endl;
+            if (!silentMode) {
+                std::cout << "info string Book move: " << move_to_string(bookMove) << std::endl;
+                std::cout << "info depth 1 score cp 0 nodes 0 time 0 pv "
+                          << move_to_string(bookMove) << std::endl;
+            }
             searching = false;
             return;
         }
@@ -137,10 +139,12 @@ void Search::start(Board& board, const SearchLimits& lim) {
         if (tbMove != MOVE_NONE) {
             rootBestMove = tbMove;
             Tablebase::WDLScore wdl = Tablebase::TB.probe_wdl(board);
-            std::cout << "info string Tablebase hit: " << move_to_string(tbMove) << std::endl;
-            int score = Tablebase::Tablebases::wdl_to_score(wdl, 0);
-            std::cout << "info depth 100 score cp " << score << " nodes 0 time 0 pv "
-                      << move_to_string(tbMove) << std::endl;
+            if (!silentMode) {
+                std::cout << "info string Tablebase hit: " << move_to_string(tbMove) << std::endl;
+                int score = Tablebase::Tablebases::wdl_to_score(wdl, 0);
+                std::cout << "info depth 100 score cp " << score << " nodes 0 time 0 pv "
+                          << move_to_string(tbMove) << std::endl;
+            }
             searching = false;
             return;
         }
@@ -328,7 +332,9 @@ void Search::iterative_deepening(Board& board) {
             }
             report_info(rootBoard, 1, score, rootMoves[0].pv, 1);
 
-            std::cout << "info string Only one legal move" << std::endl;
+            if (!silentMode) {
+                std::cout << "info string Only one legal move" << std::endl;
+            }
         }
 
         return;
@@ -1996,6 +2002,11 @@ int Search::qsearch_score(Board& board) {
 }
 
 void Search::report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx) {
+    // In silent mode, skip UCI output entirely (used by datagen)
+    if (silentMode) {
+        return;
+    }
+
     auto now = std::chrono::steady_clock::now();
     U64 elapsed = static_cast<U64>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
