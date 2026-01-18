@@ -96,6 +96,7 @@ struct DataGenConfig {
     bool skip_captures = true;          // Skip positions where best move is capture
     bool skip_tactical_bestmove = true; // Skip positions where best move is capture or promotion
     int max_score = 2500;               // Skip positions with |score| > max_score
+    int eval_limit = 0;                 // Clamp scores to [-eval_limit, eval_limit] (0=disabled)
 
     // Quiet position thresholds (from paper: arXiv Dec 2024)
     // Position is "quiet" if |static_eval - qsearch| <= qsearch_margin
@@ -285,6 +286,7 @@ struct FilterConfig {
     int qsearch_margin = 60;            // M1: |static_eval - qsearch| threshold (cp)
     int search_margin = 0;              // M2: |static_eval - search_score| threshold (0=disabled for filter)
     int max_score = 2500;               // Skip positions with |score| > max_score
+    int eval_limit = 0;                 // Clamp scores to [-eval_limit, eval_limit] (0=disabled)
 
     // Progress reporting
     int report_interval = 100000;       // Report progress every N positions
@@ -297,6 +299,7 @@ struct FilterStats {
     size_t filtered_tactical = 0;
     size_t filtered_qsearch = 0;
     size_t filtered_score = 0;
+    size_t clamped_eval_limit = 0;       // Positions with score clamped by eval_limit
 };
 
 // Filter binpack file to keep only quiet positions

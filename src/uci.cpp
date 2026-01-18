@@ -858,11 +858,13 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "  book <path>      - Opening book path (default: book/Perfect2023.bin)" << std::endl;
         std::cout << "  bookdepth <n>    - Book depth in half-moves (default: 12)" << std::endl;
         std::cout << "  nobook           - Disable opening book" << std::endl;
+        std::cout << "  eval_limit <cp>  - Clamp scores to +/-limit (default: disabled)" << std::endl;
         std::cout << "\nOptions for 'datagen filter':" << std::endl;
         std::cout << "  input <path>     - Input binpack file (required)" << std::endl;
         std::cout << "  output <path>    - Output file path (default: input_filtered.binpack)" << std::endl;
         std::cout << "  qsearch <cp>     - Qsearch margin threshold (default: 60)" << std::endl;
-        std::cout << "  max_score <cp>   - Max absolute score (default: 2500)" << std::endl;
+        std::cout << "  max_score <cp>   - Max absolute score to keep (default: 2500)" << std::endl;
+        std::cout << "  eval_limit <cp>  - Clamp scores to +/-limit without discarding (default: disabled)" << std::endl;
         std::cout << "\nOptions for 'datagen view':" << std::endl;
         std::cout << "  file <path>      - File to view (default: data/training.binpack)" << std::endl;
         std::cout << "  count <n>        - Number of entries to show (default: 10)" << std::endl;

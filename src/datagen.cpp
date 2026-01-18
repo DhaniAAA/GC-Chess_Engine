@@ -552,7 +552,12 @@ TrainingEntry DataGenerator::encode_position(const Board& board, int score, Game
     entry.padding = 0;
 
     // Score (from white's perspective, clamped)
-    entry.score = static_cast<int16_t>(std::clamp(score, -32000, 32000));
+    int clamped_score = std::clamp(score, -32000, 32000);
+    // Apply eval_limit if configured
+    if (m_config.eval_limit > 0) {
+        clamped_score = std::clamp(clamped_score, -m_config.eval_limit, m_config.eval_limit);
+    }
+    entry.score = static_cast<int16_t>(clamped_score);
 
     return entry;
 }
@@ -669,6 +674,8 @@ DataGenConfig parse_config(std::istringstream& is) {
             config.use_book = false;
         } else if (token == "hash") {
             is >> config.hash_mb;
+        } else if (token == "eval_limit" || token == "evallimit") {
+            is >> config.eval_limit;
         }
     }
 
@@ -982,6 +989,7 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  skip_in_check  : " << (config.skip_in_check ? "true" : "false") << std::endl;
     std::cout << "  qsearch_margin : " << config.qsearch_margin << " cp" << std::endl;
     std::cout << "  max_score      : " << config.max_score << " cp" << std::endl;
+    std::cout << "  eval_limit     : " << (config.eval_limit > 0 ? std::to_string(config.eval_limit) + " cp" : "disabled") << std::endl;
     std::cout << "==============================" << std::endl;
 
     // Create a searcher on heap to avoid stack overflow (Search object is large)
@@ -1034,8 +1042,20 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
                 }
             }
 
+            // Apply eval_limit clamping (clamp score without discarding position)
+            TrainingEntry clamped_entry = entry;
+            if (config.eval_limit > 0) {
+                int16_t clamped_score = static_cast<int16_t>(
+                    std::clamp(static_cast<int>(entry.score), -config.eval_limit, config.eval_limit)
+                );
+                if (clamped_score != entry.score) {
+                    clamped_entry.score = clamped_score;
+                    stats.clamped_eval_limit++;
+                }
+            }
+
             // Position passed all filters - write to output
-            output.write(reinterpret_cast<const char*>(&entry), sizeof(entry));
+            output.write(reinterpret_cast<const char*>(&clamped_entry), sizeof(clamped_entry));
             stats.passed++;
 
             // Progress reporting
@@ -1077,6 +1097,9 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  In-check     : " << stats.filtered_check << std::endl;
     std::cout << "  Extreme score: " << stats.filtered_score << std::endl;
     std::cout << "  QSearch      : " << stats.filtered_qsearch << std::endl;
+    if (config.eval_limit > 0) {
+        std::cout << "Clamped by eval_limit: " << stats.clamped_eval_limit << std::endl;
+    }
     std::cout << "Output saved to: " << config.output_path << std::endl;
     std::cout << "========================" << std::endl;
 
@@ -1098,6 +1121,8 @@ FilterConfig parse_filter_config(std::istringstream& is) {
             is >> config.qsearch_margin;
         } else if (token == "max_score" || token == "maxscore") {
             is >> config.max_score;
+        } else if (token == "eval_limit" || token == "evallimit") {
+            is >> config.eval_limit;
         } else if (token == "no_check_filter") {
             config.skip_in_check = false;
         } else if (token == "no_tactical_filter") {
