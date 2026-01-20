@@ -139,6 +139,10 @@ void DataGenerator::run() {
                                         m_config.book_path + " (loaded, depth " + std::to_string(m_config.book_depth) + ")" :
                                         "disabled") << std::endl;
     std::cout << "Random plies  : " << m_config.random_plies << std::endl;
+    std::cout << "QSearch margin: " << m_config.qsearch_margin << " cp" << std::endl;
+    std::cout << "Search margin : " << m_config.search_margin << " cp" << std::endl;
+    std::cout << "Max score     : " << m_config.max_score << " cp" << std::endl;
+    std::cout << "Eval limit    : " << (m_config.eval_limit > 0 ? std::to_string(m_config.eval_limit) + " cp" : "disabled") << std::endl;
     std::cout << "Format        : binpack" << std::endl;
     std::cout << "Output        : " << m_config.output << std::endl;
     std::cout << "================================\n" << std::endl;
@@ -676,6 +680,16 @@ DataGenConfig parse_config(std::istringstream& is) {
             is >> config.hash_mb;
         } else if (token == "eval_limit" || token == "evallimit") {
             is >> config.eval_limit;
+        } else if (token == "qsearch" || token == "qsearch_margin") {
+            is >> config.qsearch_margin;
+        } else if (token == "search_margin") {
+            is >> config.search_margin;
+        } else if (token == "max_score" || token == "maxscore") {
+            is >> config.max_score;
+        } else if (token == "no_check_filter") {
+            config.skip_in_check = false;
+        } else if (token == "no_tactical_filter") {
+            config.skip_tactical_bestmove = false;
         }
     }
 

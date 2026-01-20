@@ -845,6 +845,7 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "datagen stats [file]     - Show file statistics" << std::endl;
         std::cout << "datagen convert [opts]   - Convert binpack to EPD text format" << std::endl;
         std::cout << "datagen filter [opts]    - Filter existing data for quiet positions" << std::endl;
+
         std::cout << "\nOptions for 'datagen start':" << std::endl;
         std::cout << "  threads <n>      - Number of worker threads (default: 1)" << std::endl;
         std::cout << "  hash <mb>        - Hash table size in MB (default: 16)" << std::endl;
@@ -859,22 +860,30 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::cout << "  bookdepth <n>    - Book depth in half-moves (default: 12)" << std::endl;
         std::cout << "  nobook           - Disable opening book" << std::endl;
         std::cout << "  eval_limit <cp>  - Clamp scores to +/-limit (default: disabled)" << std::endl;
+        std::cout << "  qsearch <cp>     - QSearch quietness margin (default: 60)" << std::endl;
+        std::cout << "  search_margin <cp>  - Search margin for quiet detection (default: 70)" << std::endl;
+        std::cout << "  max_score <cp>   - Skip positions with |score| > max (default: 2500)" << std::endl;
+
         std::cout << "\nOptions for 'datagen filter':" << std::endl;
         std::cout << "  input <path>     - Input binpack file (required)" << std::endl;
         std::cout << "  output <path>    - Output file path (default: input_filtered.binpack)" << std::endl;
         std::cout << "  qsearch <cp>     - Qsearch margin threshold (default: 60)" << std::endl;
         std::cout << "  max_score <cp>   - Max absolute score to keep (default: 2500)" << std::endl;
         std::cout << "  eval_limit <cp>  - Clamp scores to +/-limit without discarding (default: disabled)" << std::endl;
+
         std::cout << "\nOptions for 'datagen view':" << std::endl;
         std::cout << "  file <path>      - File to view (default: data/training.binpack)" << std::endl;
         std::cout << "  count <n>        - Number of entries to show (default: 10)" << std::endl;
         std::cout << "  offset <n>       - Starting entry offset (default: 0)" << std::endl;
+
         std::cout << "\nOptions for 'datagen convert':" << std::endl;
         std::cout << "  input <path>     - Binpack file to convert" << std::endl;
         std::cout << "  output <path>    - EPD output file path" << std::endl;
         std::cout << "  max <n>          - Maximum entries to convert (0 = all)" << std::endl;
+
         std::cout << "\nExamples:" << std::endl;
         std::cout << "  datagen start threads 8 depth 8 games 1000000" << std::endl;
+        std::cout << "  datagen start threads 8 depth 9 qsearch 60 games 500000" << std::endl;
         std::cout << "  datagen start threads 128 hash 8192 games 1000000" << std::endl;
         std::cout << "  datagen start output data/custom.binpack" << std::endl;
         std::cout << "  datagen filter input data/training.binpack qsearch 60" << std::endl;
