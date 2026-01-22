@@ -32,22 +32,22 @@ namespace UCI {
 // ============================================================================
 
 struct EngineOptions {
-    int hash = 256;             // Hash size in MB
-    int threads = 2;            // Number of threads
-    int multiPV = 1;            // Number of principal variations
-    bool ponder = true;        // Pondering enabled by default
-    std::string bookPath = "";  // Opening book path
-    std::string syzygyPath = ""; // Syzygy tablebase path
-    int moveOverhead = 10;      // Time overhead per move (ms)
+    int hash = 256;
+    int threads = 2;
+    int multiPV = 1;
+    bool ponder = true;
+    std::string bookPath = "";
+    std::string syzygyPath = "";
+    int moveOverhead = 10;
 
     // Contempt Factor
-    int contempt = 20;          // Contempt value in centipawns (positive = avoid draws)
-    bool dynamicContempt = true; // Adjust contempt based on position
+    int contempt = 20;
+    bool dynamicContempt = true;
 
     // Ponder Statistics (for tracking hit rate)
-    U64 ponderHits = 0;         // Times opponent played predicted move
-    U64 ponderAttempts = 0;     // Total ponder attempts
-    Move lastPonderMove = MOVE_NONE; // Last ponder move (to verify hit)
+    U64 ponderHits = 0;
+    U64 ponderAttempts = 0;
+    Move lastPonderMove = MOVE_NONE;
 };
 
 // Global options
@@ -71,9 +71,9 @@ private:
     std::atomic<bool> searching;
 
     // Ponder state
-    std::string ponderFen;        // FEN after best move (where ponder move starts)
-    Move expectedPonderMove;      // The ponder move we outputted
-    bool isPondering = false;     // Currently in ponder mode
+    std::string ponderFen;
+    Move expectedPonderMove;
+    bool isPondering = false;
 
     // Command handlers
     void cmd_uci();
@@ -82,15 +82,15 @@ private:
     void cmd_position(std::istringstream& is);
     void cmd_go(std::istringstream& is);
     void cmd_stop();
-    void cmd_ponderhit();         // Handle ponderhit command
+    void cmd_ponderhit();
     void cmd_quit();
     void cmd_setoption(std::istringstream& is);
     void cmd_perft(std::istringstream& is);
-    void cmd_divide(std::istringstream& is);  // Debugging command
-    void cmd_d();  // Display board (debug)
-    void cmd_eval(); // Display evaluation (debug)
-    void cmd_bench(std::istringstream& is); // Benchmark command
-    void cmd_datagen(std::istringstream& is); // Data generation for NNUE training
+    void cmd_divide(std::istringstream& is);
+    void cmd_d();
+    void cmd_eval();
+    void cmd_bench(std::istringstream& is);
+    void cmd_datagen(std::istringstream& is);
 
     // Helper functions
     void parse_moves(std::istringstream& is);
@@ -106,26 +106,20 @@ class TimeManager {
 public:
     TimeManager();
 
-    // Initialize time management for a search
     void init(Color us, int timeLeft, int increment, int movesToGo, int moveTime);
 
-    // Get time limits
     int optimal_time() const { return optimalTime; }
     int maximum_time() const { return maximumTime; }
-
-    // Check if we should stop based on time
     bool should_stop(int elapsed, int depth, bool bestMoveStable);
-
-    // Adjust time based on search progress
     void adjust(bool scoreDropped, bool bestMoveChanged);
 
 private:
-    int optimalTime;    // Target time to use
-    int maximumTime;    // Hard time limit
+    int optimalTime;
+    int maximumTime;
     int startTime;
     int incrementTime;
     int movesToGo;
-    double stability;   // How stable the best move is (0.5 - 2.0)
+    double stability;
 };
 
 extern TimeManager timeMgr;

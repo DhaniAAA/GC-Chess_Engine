@@ -50,9 +50,6 @@ inline U64 pdep(U64 src, U64 mask) {
 
 #else
 
-// Software fallback when hardware PEXT is not available
-// This is slower than magic bitboards, so USE_PEXT should not be used
-// without proper BMI2 support
 
 inline U64 pext(U64 src, U64 mask) {
     U64 result = 0;

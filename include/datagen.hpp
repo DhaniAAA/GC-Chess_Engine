@@ -24,42 +24,21 @@ namespace DataGen {
 // ============================================================================
 // Training Data Entry
 // ============================================================================
-
-// Binary format for training data (efficient storage)
-// This format stores the complete chess position in a compact binary form.
-//
-// Encoding explanation:
-// - packed_board[32]: stores all 64 squares, 4 bits per piece (2 per byte)
-//   Piece type: 0=empty, 1=WP, 2=WN, 3=WB, 4=WR, 5=WQ, 6=WK, 7=BP, 8=BN, 9=BB, 10=BR, 11=BQ, 12=BK
-//   Lower nibble = even square, Upper nibble = odd square
-// - stm: side to move
-// - castling: castling rights
-// - ep_square: en passant square (64 = none)
-// - rule50: halfmove clock
-// - result: game outcome
-// - score: evaluation in centipawns
-//
 #pragma pack(push, 1)
 struct TrainingEntry {
-    // Board state (packed representation - 64 squares, 4 bits each = 32 bytes)
-    uint8_t packed_board[32];   // Packed piece types for all 64 squares
-
-    // Metadata (8 bytes)
-    uint8_t stm;                // Side to move: 0 = White, 1 = Black
-    uint8_t castling;           // Castling rights (4 bits used)
-    uint8_t ep_square;          // En passant square (64 = none)
-    uint8_t rule50;             // 50-move rule counter (capped at 255)
-    uint8_t result;             // Game result: 0 = Black wins, 1 = Draw, 2 = White wins
-    uint8_t padding;            // Padding for alignment
-    int16_t score;              // Evaluation score from white's perspective (centipawns)
+    uint8_t packed_board[32];
+    uint8_t stm;
+    uint8_t castling;
+    uint8_t ep_square;
+    uint8_t rule50;
+    uint8_t result;
+    uint8_t padding;
+    int16_t score;
 };
 #pragma pack(pop)
 
-// Expected size: 32 + 8 = 40 bytes
 static_assert(sizeof(TrainingEntry) == 40, "TrainingEntry should be 40 bytes");
 
-// Piece type encoding for packed board (4 bits per piece)
-// 0 = empty, 1-6 = white pieces (P,N,B,R,Q,K), 7-12 = black pieces (P,N,B,R,Q,K)
 constexpr uint8_t PTYPE_EMPTY = 0;
 constexpr uint8_t PTYPE_WP = 1, PTYPE_WN = 2, PTYPE_WB = 3, PTYPE_WR = 4, PTYPE_WQ = 5, PTYPE_WK = 6;
 constexpr uint8_t PTYPE_BP = 7, PTYPE_BN = 8, PTYPE_BB = 9, PTYPE_BR = 10, PTYPE_BQ = 11, PTYPE_BK = 12;
@@ -69,50 +48,40 @@ constexpr uint8_t PTYPE_BP = 7, PTYPE_BN = 8, PTYPE_BB = 9, PTYPE_BR = 10, PTYPE
 // ============================================================================
 
 struct DataGenConfig {
-    // Threading
-    int threads = 2;                    // Number of worker threads
-    int hash_mb = 64;                   // Hash table size in MB (per thread if separate TT)
+    int threads = 2;
+    int hash_mb = 64;
 
-    // Search settings
-    int depth = 8;                      // Search depth for scoring positions
-    int nodes = 0;                      // Node limit (0 = use depth limit instead)
-    int soft_nodes = 5000;              // Soft node limit for faster generation
+    int depth = 8;
+    int nodes = 0;
+    int soft_nodes = 5000;
 
-    // Game settings
-    int games = 100000;                 // Total games to play
-    int random_plies = 8;               // Random opening moves after book (half-moves)
-    int max_ply = 400;                  // Maximum game length (half-moves)
-    int min_ply = 16;                   // Minimum ply before recording positions
+    int games = 100000;
+    int random_plies = 8;
+    int max_ply = 400;
+    int min_ply = 16;
 
-    // Adjudication
-    int adjudicate_score = 2500;        // Score threshold for resignation (centipawns)
-    int adjudicate_count = 4;           // Consecutive moves above threshold to adjudicate
-    int adjudicate_draw = 5;            // Draw if |score| < 5 for this many moves
-    int adjudicate_draw_count = 12;     // Number of low-score moves for draw
-    int adjudicate_draw_ply = 80;       // Minimum ply before draw adjudication
+    int adjudicate_score = 2500;
+    int adjudicate_count = 4;
+    int adjudicate_draw = 5;
+    int adjudicate_draw_count = 12;
+    int adjudicate_draw_ply = 80;
 
-    // Position filtering (based on "Study of the Proper NNUE Dataset" paper)
-    bool skip_in_check = true;          // Skip positions where side to move is in check
-    bool skip_captures = true;          // Skip positions where best move is capture
-    bool skip_tactical_bestmove = true; // Skip positions where best move is capture or promotion
-    int max_score = 2500;               // Skip positions with |score| > max_score
-    int eval_limit = 0;                 // Clamp scores to [-eval_limit, eval_limit] (0=disabled)
+    bool skip_in_check = true;
+    bool skip_captures = true;
+    bool skip_tactical_bestmove = true;
+    int max_score = 2500;
+    int eval_limit = 0;
 
-    // Quiet position thresholds (from paper: arXiv Dec 2024)
-    // Position is "quiet" if |static_eval - qsearch| <= qsearch_margin
-    // AND |static_eval - search_score| <= search_margin
-    int qsearch_margin = 60;            // M1: quiescence search margin (cp)
-    int search_margin = 70;             // M2: negamax search margin (cp)
+    int qsearch_margin = 60;
+    int search_margin = 70;
 
-    // Output
-    std::string output = "data/training.binpack";  // Output file path (binpack format)
-    int flush_interval = 10000;                    // Flush to disk every N positions
+    std::string output = "data/training.binpack";
+    int flush_interval = 10000;
 
-    // Opening book
-    bool use_book = true;               // Use opening book for variety (default: true)
-    std::string book_path = "book/Perfect2023.bin"; // Path to Polyglot opening book
-    int book_depth = 12;                // Maximum depth to use book moves (half-moves)
-    int random_multi_pv = 2;            // Use multi-PV for randomization (0 = disabled)
+    bool use_book = true;
+    std::string book_path = "book/Perfect2023.bin";
+    int book_depth = 12;
+    int random_multi_pv = 2;
 };
 
 // ============================================================================
@@ -120,8 +89,8 @@ struct DataGenConfig {
 // ============================================================================
 
 struct DataGenStats {
-    std::atomic<uint64_t> games_started{0};     // Games reserved/started by threads
-    std::atomic<uint64_t> games_completed{0};   // Games fully completed
+    std::atomic<uint64_t> games_started{0};
+    std::atomic<uint64_t> games_completed{0};
     std::atomic<uint64_t> games_white_wins{0};
     std::atomic<uint64_t> games_black_wins{0};
     std::atomic<uint64_t> games_draws{0};
@@ -163,12 +132,10 @@ public:
     DataGenerator(const DataGenConfig& config);
     ~DataGenerator();
 
-    // Control
-    void run();             // Start data generation (blocking)
-    void stop();            // Request stop
+    void run();
+    void stop();
     bool is_running() const { return running; }
 
-    // Statistics
     const DataGenStats& stats() const { return m_stats; }
 
 private:
@@ -178,36 +145,25 @@ private:
     std::atomic<bool> running{false};
     std::atomic<bool> stop_requested{false};
 
-    // Output file
-    std::ofstream m_output;         // Binpack output
+    std::ofstream m_output;
     std::mutex m_output_mutex;
 
-    // Thread workers
     void worker_thread(int thread_id);
-
-    // Game playing
     GameResult play_game(std::vector<TrainingEntry>& entries, int thread_id);
 
-    // Position encoding
     TrainingEntry encode_position(const Board& board, int score, GameResult result);
 
-    // Move selection
     Move select_random_move(Board& board, int thread_id);
     Move select_search_move(Board& board, int& score, int thread_id);
 
-    // Filtering (implements "Study of the Proper NNUE Dataset" paper algorithm)
     bool should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id);
 
-    // Output
     void write_entries(const std::vector<TrainingEntry>& entries);
     void flush_output();
 
-    // Random number generation per thread
     std::vector<uint64_t> m_random_seeds;
     uint64_t rand_next(int thread_id);
     int rand_int(int thread_id, int max);
-
-    // Per-thread searchers for true multi-threading
     std::vector<std::unique_ptr<Search>> m_searchers;
 };
 
@@ -215,42 +171,27 @@ private:
 // Marlinformat Conversion (for Bullet trainer compatibility)
 // ============================================================================
 
-// Convert TrainingEntry to Marlinformat binary
 void to_marlinformat(const TrainingEntry& entry, std::vector<uint8_t>& output);
 
 // ============================================================================
 // Global Interface (used by UCI)
 // ============================================================================
 
-// Start data generation with given config
 void start(const DataGenConfig& config);
-
-// Stop data generation
 void stop();
-
-// Check if running
 bool is_running();
-
-// Get statistics
 const DataGenStats& get_stats();
 
-// Parse config from UCI command stream
 DataGenConfig parse_config(std::istringstream& is);
 
 // ============================================================================
 // Binpack File Reading & Conversion
 // ============================================================================
 
-// Read entries from binpack file
 bool read_binpack_file(const std::string& path, std::vector<TrainingEntry>& entries, size_t max_entries = 0);
-
-// View entries from binpack file (print to stdout)
 void view_binpack_file(const std::string& path, size_t count = 10, size_t offset = 0);
-
-// Convert binpack file to EPD text format
 bool convert_to_epd(const std::string& binpack_path, const std::string& epd_path, size_t max_entries = 0);
 
-// Get file statistics
 struct FileStats {
     size_t total_entries = 0;
     size_t white_wins = 0;
@@ -262,13 +203,8 @@ struct FileStats {
 };
 bool get_file_stats(const std::string& path, FileStats& stats);
 
-// Decode TrainingEntry to human-readable string
 std::string entry_to_string(const TrainingEntry& entry);
-
-// Decode TrainingEntry to FEN string (approximate - pieces only)
 std::string entry_to_fen(const TrainingEntry& entry);
-
-// Decode TrainingEntry to Board (for filtering)
 bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si);
 
 // ============================================================================
@@ -276,20 +212,18 @@ bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si);
 // ============================================================================
 
 struct FilterConfig {
-    std::string input_path;             // Input binpack file
-    std::string output_path;            // Output binpack file (filtered)
-    int threads = 1;                    // Number of threads for filtering
+    std::string input_path;
+    std::string output_path;
+    int threads = 1;
 
-    // Filter thresholds (from "Study of the Proper NNUE Dataset" paper)
-    bool skip_in_check = true;          // Skip positions in check
-    bool skip_tactical_bestmove = true; // Skip positions where best move is capture/promotion
-    int qsearch_margin = 60;            // M1: |static_eval - qsearch| threshold (cp)
-    int search_margin = 0;              // M2: |static_eval - search_score| threshold (0=disabled for filter)
-    int max_score = 2500;               // Skip positions with |score| > max_score
-    int eval_limit = 0;                 // Clamp scores to [-eval_limit, eval_limit] (0=disabled)
+    bool skip_in_check = true;
+    bool skip_tactical_bestmove = true;
+    int qsearch_margin = 60;
+    int search_margin = 0;
+    int max_score = 2500;
+    int eval_limit = 0;
 
-    // Progress reporting
-    int report_interval = 100000;       // Report progress every N positions
+    int report_interval = 100000;
 };
 
 struct FilterStats {
@@ -299,13 +233,10 @@ struct FilterStats {
     size_t filtered_tactical = 0;
     size_t filtered_qsearch = 0;
     size_t filtered_score = 0;
-    size_t clamped_eval_limit = 0;       // Positions with score clamped by eval_limit
+    size_t clamped_eval_limit = 0;
 };
 
-// Filter binpack file to keep only quiet positions
 bool filter_binpack(const FilterConfig& config, FilterStats& stats);
-
-// Parse filter config from UCI command stream
 FilterConfig parse_filter_config(std::istringstream& is);
 
 } // namespace DataGen

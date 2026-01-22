@@ -17,24 +17,20 @@
 // ============================================================================
 
 struct Magic {
-    Bitboard  mask;      // Relevant occupancy mask (excludes edges)
-    Bitboard  magic;     // Magic number for hashing (unused with PEXT)
-    Bitboard* attacks;   // Pointer to attack table
-    int       shift;     // Bits to shift (64 - popcount(mask))
+    Bitboard  mask;
+    Bitboard  magic;
+    Bitboard* attacks;
+    int       shift;
 
-    // Get the index into the attack table
     unsigned index(Bitboard occupied) const {
 #ifdef USE_PEXT
-        // PEXT-based lookup (faster on BMI2-capable CPUs)
         return static_cast<unsigned>(pext(occupied, mask));
 #else
-        // Traditional magic multiplication
         return static_cast<unsigned>(((occupied & mask) * magic) >> shift);
 #endif
     }
 };
 
-// Magic tables for bishops and rooks
 extern Magic BishopMagics[SQUARE_NB];
 extern Magic RookMagics[SQUARE_NB];
 
@@ -54,7 +50,6 @@ inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
     return bishop_attacks_bb(s, occupied) | rook_attacks_bb(s, occupied);
 }
 
-// Attack generation based on piece type
 inline Bitboard attacks_bb(PieceType pt, Square s, Bitboard occupied) {
     switch (pt) {
         case BISHOP: return bishop_attacks_bb(s, occupied);

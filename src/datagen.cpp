@@ -26,7 +26,7 @@ namespace DataGen {
 
 static std::unique_ptr<DataGenerator> g_generator = nullptr;
 static std::mutex g_mutex;
-static std::mutex g_search_mutex;  // Protects global Searcher for multi-threaded datagen
+static std::mutex g_search_mutex;
 
 // ============================================================================
 // Statistics Printing
@@ -60,19 +60,17 @@ void DataGenStats::print() const {
 DataGenerator::DataGenerator(const DataGenConfig& config)
     : m_config(config) {
 
-    // Initialize random seeds for each thread
     m_random_seeds.resize(config.threads);
     uint64_t base_seed = std::chrono::steady_clock::now().time_since_epoch().count();
     for (int i = 0; i < config.threads; ++i) {
         m_random_seeds[i] = base_seed ^ (i * 0x9E3779B97F4A7C15ULL);
     }
 
-    // Create per-thread searchers for true multi-threading
-    // Enable silent mode to suppress UCI info output during datagen
+
     m_searchers.reserve(config.threads);
     for (int i = 0; i < config.threads; ++i) {
         auto searcher = std::make_unique<Search>();
-        searcher->set_silent(true);  // Suppress UCI output for clean datagen progress
+        searcher->set_silent(true);
         m_searchers.push_back(std::move(searcher));
     }
 }
@@ -94,7 +92,6 @@ void DataGenerator::run() {
     stop_requested = false;
     m_stats.reset();
 
-    // Create output directory if needed
     auto create_output_dir = [](const std::string& filepath) {
         std::filesystem::path output_path(filepath);
         std::filesystem::path output_dir = output_path.parent_path();
@@ -103,7 +100,6 @@ void DataGenerator::run() {
         }
     };
 
-    // Open binpack output file
     create_output_dir(m_config.output);
     m_output.open(m_config.output, std::ios::binary | std::ios::app);
     if (!m_output.is_open()) {
@@ -112,7 +108,6 @@ void DataGenerator::run() {
         return;
     }
 
-    // Load opening book if requested
     bool book_loaded = false;
     if (m_config.use_book) {
         if (!Book::book.is_loaded()) {
@@ -126,7 +121,6 @@ void DataGenerator::run() {
         }
     }
 
-    // Resize hash table for datagen
     TT.resize(m_config.hash_mb);
     TT.clear();
 
@@ -149,13 +143,11 @@ void DataGenerator::run() {
 
     auto start_time = std::chrono::steady_clock::now();
 
-    // Launch worker threads
     std::vector<std::thread> threads;
     for (int i = 0; i < m_config.threads; ++i) {
         threads.emplace_back(&DataGenerator::worker_thread, this, i);
     }
 
-    // Progress reporting thread
     std::thread progress_thread([this, start_time]() {
         while (running.load() && !stop_requested.load()) {
             std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -178,7 +170,6 @@ void DataGenerator::run() {
         }
     });
 
-    // Wait for all workers
     for (auto& t : threads) {
         t.join();
     }
@@ -186,7 +177,6 @@ void DataGenerator::run() {
     running = false;
     progress_thread.join();
 
-    // Final flush and stats
     flush_output();
     if (m_output.is_open()) m_output.close();
 
@@ -207,19 +197,14 @@ void DataGenerator::worker_thread(int thread_id) {
     local_entries.reserve(1000);
 
     while (!stop_requested.load()) {
-        // Atomically reserve a game slot BEFORE playing
-        // This prevents multiple threads from starting more games than requested
         uint64_t game_num = m_stats.games_started.fetch_add(1);
         if (game_num >= static_cast<uint64_t>(m_config.games)) {
-            // We've already started enough games, exit
             break;
         }
 
-        // Play a game
         local_entries.clear();
         GameResult result = play_game(local_entries, thread_id);
 
-        // Update game result statistics
         m_stats.games_completed++;
         switch (result) {
             case GameResult::white_wins:
@@ -235,7 +220,6 @@ void DataGenerator::worker_thread(int thread_id) {
                 break;
         }
 
-        // Update entries with final result and write
         for (auto& entry : local_entries) {
             switch (result) {
                 case GameResult::white_wins:
@@ -248,7 +232,7 @@ void DataGenerator::worker_thread(int thread_id) {
                     entry.result = 1;
                     break;
                 default:
-                    entry.result = 1;  // Default to draw if ongoing
+                    entry.result = 1;
                     break;
             }
         }
@@ -277,7 +261,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         while (ply < m_config.book_depth && state_idx < 510) {
             Move book_move = Book::book.probe(board);
             if (book_move == MOVE_NONE) {
-                break;  // No more book moves, proceed to random/search phase
+                break;
             }
 
             board.do_move(book_move, state_stack[state_idx++]);
@@ -292,7 +276,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
     while (random_moves_made < m_config.random_plies && state_idx < 510) {
         Move m = select_random_move(board, thread_id);
         if (m == MOVE_NONE) {
-            // No legal moves - game over
             if (board.in_check()) {
                 return board.side_to_move() == WHITE ? GameResult::black_wins : GameResult::white_wins;
             }
@@ -308,38 +291,28 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
     // Phase 3: Main game phase (search-based play)
     // =========================================================================
     while (ply < m_config.max_ply && state_idx < 510) {
-        // Check for terminal positions
         MoveList moves;
         MoveGen::generate_legal(board, moves);
 
         if (moves.size() == 0) {
-            // Checkmate or stalemate
             if (board.in_check()) {
                 return board.side_to_move() == WHITE ? GameResult::black_wins : GameResult::white_wins;
             }
             return GameResult::draw;
         }
 
-        // Check for draw by 50-move rule, 3-fold repetition, or insufficient material
         if (board.is_draw(ply)) {
             return GameResult::draw;
         }
 
-        // Search for best move
         int static_eval;
         Move best_move = select_search_move(board, static_eval, thread_id);
 
-        // Get search score (from the search that just ran)
-        // For simplicity, we use static_eval as the score for training data
-        // The actual search score would require accessing internal search state
-
         if (best_move == MOVE_NONE) {
-            // Fallback to first legal move
             best_move = moves[0].move;
             static_eval = 0;
         }
 
-        // Record position if appropriate (implements paper's quiet position algorithm)
         if (should_record_position(board, static_eval, static_eval, ply, best_move, thread_id)) {
             entries.push_back(encode_position(board, static_eval, GameResult::ongoing));
             m_stats.positions_generated++;
@@ -347,22 +320,17 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
             m_stats.positions_filtered++;
         }
 
-        // Adjudication check
         int abs_score = std::abs(static_eval);
 
-        // Resignation adjudication: one side is winning decisively
         if (abs_score >= m_config.adjudicate_score) {
             adjudicate_count++;
             if (adjudicate_count >= m_config.adjudicate_count) {
-                // Score is from perspective of white (static_eval)
                 return static_eval > 0 ? GameResult::white_wins : GameResult::black_wins;
             }
         } else {
             adjudicate_count = 0;
         }
 
-        // Draw adjudication: position is very equal for extended period
-        // Only after sufficient ply to avoid adjudicating early games
         if (ply >= m_config.adjudicate_draw_ply && abs_score < m_config.adjudicate_draw) {
             draw_count++;
             if (draw_count >= m_config.adjudicate_draw_count) {
@@ -379,7 +347,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
 
     m_stats.total_plies += ply;
 
-    // Game exceeded max length - adjudicate as draw
     return GameResult::draw;
 }
 
@@ -391,15 +358,11 @@ Move DataGenerator::select_random_move(Board& board, int thread_id) {
         return MOVE_NONE;
     }
 
-    // Select random move
     int idx = rand_int(thread_id, moves.size());
     return moves[idx].move;
 }
 
 Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) {
-    // Create a mini search for this position
-    // Each thread has its own searcher for true multi-threading
-
     SearchLimits limits;
     limits.depth = m_config.depth;
     if (m_config.nodes > 0) {
@@ -408,19 +371,11 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
         limits.nodes = m_config.soft_nodes;
     }
 
-    // Use thread-local searcher for true parallelism
     Search& searcher = *m_searchers[thread_id];
-
-    // Run search synchronously
     searcher.start(board, limits);
 
-    // Get the static evaluation for training data
-    // The search score is relative to side to move, so we use evaluate for consistency
     score = searcher.evaluate(board);
     Move best = searcher.best_move();
-
-    // Score is already from white's perspective in evaluate()
-    // No adjustment needed
 
     return best;
 }
@@ -429,35 +384,24 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
     // =========================================================================
     // Quiet Position Detection Algorithm
     // Based on: "Study of the Proper NNUE Dataset" (arXiv, December 2024)
-    //
-    // A position is "quiet" if:
-    // 1. Not in check
-    // 2. |static_eval - qsearch_score| <= M1 (default 60 cp)
-    // 3. |static_eval - search_score| <= M2 (default 70 cp)
-    // 4. Best move is not tactical (capture/promotion) if skip_tactical_bestmove
     // =========================================================================
 
-    // Skip early game positions
     if (ply < m_config.min_ply) {
         return false;
     }
 
-    // Skip positions in check (forcing positions, score determined by tactics)
     if (m_config.skip_in_check && board.in_check()) {
         return false;
     }
 
-    // Skip extreme scores (already decided games)
     if (std::abs(static_eval) > m_config.max_score) {
         return false;
     }
 
-    // Skip tactical positions where best move is a capture
     if (m_config.skip_captures && best_move != MOVE_NONE && board.is_capture(best_move)) {
         return false;
     }
 
-    // Skip positions where best move is capture OR promotion (tactical bestmove)
     if (m_config.skip_tactical_bestmove && best_move != MOVE_NONE) {
         if (board.is_capture(best_move) || best_move.is_promotion()) {
             return false;
@@ -469,14 +413,12 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
     // Check volatility with quiescence search (M1 threshold)
     // =========================================================================
     if (m_config.qsearch_margin > 0) {
-        // Get qsearch score for this position
         Search& searcher = *m_searchers[thread_id];
         int qsearch_score = searcher.qsearch_score(board);
 
-        // Check: |static_eval - qsearch| <= M1
         int qsearch_diff = std::abs(static_eval - qsearch_score);
         if (qsearch_diff > m_config.qsearch_margin) {
-            return false;  // Position is tactical/volatile
+            return false;
         }
     }
 
@@ -485,10 +427,9 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
     // Check divergence with search score (M2 threshold)
     // =========================================================================
     if (m_config.search_margin > 0) {
-        // Check: |static_eval - search_score| <= M2
         int search_diff = std::abs(static_eval - search_score);
         if (search_diff > m_config.search_margin) {
-            return false;  // Position has forcing sequences/mating threats
+            return false;
         }
     }
 
@@ -499,65 +440,49 @@ TrainingEntry DataGenerator::encode_position(const Board& board, int score, Game
     TrainingEntry entry;
     memset(&entry, 0, sizeof(entry));
 
-    // Initialize packed_board with empty (0x00 = all nibbles are PTYPE_EMPTY)
     memset(entry.packed_board, 0, sizeof(entry.packed_board));
 
-    // Encode all 64 squares using packed format
-    // Each byte stores 2 squares: lower nibble = even sq, upper nibble = odd sq
-    // Piece encoding: 0=empty, 1-6=White(P,N,B,R,Q,K), 7-12=Black(P,N,B,R,Q,K)
     for (Square sq = SQ_A1; sq <= SQ_H8; ++sq) {
         Piece pc = board.piece_on(sq);
 
-        uint8_t piece_code = PTYPE_EMPTY;  // 0 = empty
+        uint8_t piece_code = PTYPE_EMPTY;
         if (pc != NO_PIECE) {
             PieceType pt = type_of(pc);
             Color c = color_of(pc);
-            // piece_code: WP=1, WN=2, WB=3, WR=4, WQ=5, WK=6, BP=7, BN=8, BB=9, BR=10, BQ=11, BK=12
-            piece_code = static_cast<uint8_t>(pt - PAWN + 1);  // 1-6 for P,N,B,R,Q,K
+            piece_code = static_cast<uint8_t>(pt - PAWN + 1);
             if (c == BLACK) {
-                piece_code += 6;  // 7-12 for Black pieces
+                piece_code += 6;
             }
         }
 
-        // Store in packed_board
         int sq_idx = static_cast<int>(sq);
         int byte_idx = sq_idx / 2;
         if (sq_idx % 2 == 0) {
-            // Even square: lower nibble
             entry.packed_board[byte_idx] = (entry.packed_board[byte_idx] & 0xF0) | piece_code;
         } else {
-            // Odd square: upper nibble
             entry.packed_board[byte_idx] = (entry.packed_board[byte_idx] & 0x0F) | (piece_code << 4);
         }
     }
 
-    // Side to move
     entry.stm = board.side_to_move() == WHITE ? 0 : 1;
 
-    // Castling rights
     entry.castling = static_cast<uint8_t>(board.castling_rights());
 
-    // En passant square
     Square ep = board.en_passant_square();
     entry.ep_square = (ep == SQ_NONE) ? 64 : static_cast<uint8_t>(ep);
 
-    // 50-move rule counter
     entry.rule50 = static_cast<uint8_t>(std::min(255, board.halfmove_clock()));
 
-    // Result (will be updated after game ends)
     switch (result) {
         case GameResult::white_wins: entry.result = 2; break;
         case GameResult::black_wins: entry.result = 0; break;
         case GameResult::draw: entry.result = 1; break;
-        default: entry.result = 1; break;  // Ongoing treated as draw placeholder
+        default: entry.result = 1; break;
     }
 
-    // Padding
     entry.padding = 0;
 
-    // Score (from white's perspective, clamped)
     int clamped_score = std::clamp(score, -32000, 32000);
-    // Apply eval_limit if configured
     if (m_config.eval_limit > 0) {
         clamped_score = std::clamp(clamped_score, -m_config.eval_limit, m_config.eval_limit);
     }
@@ -569,14 +494,12 @@ TrainingEntry DataGenerator::encode_position(const Board& board, int score, Game
 void DataGenerator::write_entries(const std::vector<TrainingEntry>& entries) {
     std::lock_guard<std::mutex> lock(m_output_mutex);
 
-    // Write binpack format
     if (m_output.is_open()) {
         for (const auto& entry : entries) {
             m_output.write(reinterpret_cast<const char*>(&entry), sizeof(entry));
         }
     }
 
-    // Periodic flush
     static std::atomic<uint64_t> write_count{0};
     write_count += entries.size();
     if (write_count >= static_cast<uint64_t>(m_config.flush_interval)) {
@@ -592,7 +515,6 @@ void DataGenerator::flush_output() {
     }
 }
 
-// Xorshift64 random number generator
 uint64_t DataGenerator::rand_next(int thread_id) {
     uint64_t x = m_random_seeds[thread_id];
     x ^= x << 13;
@@ -619,7 +541,6 @@ void start(const DataGenConfig& config) {
 
     g_generator = std::make_unique<DataGenerator>(config);
 
-    // Run in background thread
     std::thread([config]() {
         g_generator->run();
     }).detach();
@@ -693,7 +614,6 @@ DataGenConfig parse_config(std::istringstream& is) {
         }
     }
 
-    // Clamp values
     config.threads = std::max(1, std::min(config.threads, 128));
     config.depth = std::max(1, std::min(config.depth, 30));
     config.games = std::max(1, config.games);
@@ -711,14 +631,11 @@ DataGenConfig parse_config(std::istringstream& is) {
 std::string entry_to_string(const TrainingEntry& entry) {
     std::ostringstream ss;
 
-    // Result
     const char* result_str = (entry.result == 2) ? "1-0" :
                              (entry.result == 0) ? "0-1" : "1/2-1/2";
 
-    // Side to move
     const char* stm_str = (entry.stm == 0) ? "White" : "Black";
 
-    // En passant
     std::string ep_str = "-";
     if (entry.ep_square < 64) {
         char file_char = 'a' + (entry.ep_square % 8);
@@ -737,34 +654,26 @@ std::string entry_to_string(const TrainingEntry& entry) {
 }
 
 std::string entry_to_fen(const TrainingEntry& entry) {
-    // Reconstruct FEN from TrainingEntry with full 64-square packed board
     char board[64];
     memset(board, '.', 64);
 
-    // Piece character lookup table (indexed by piece_code 1-12)
-    // 0=empty, 1=WP, 2=WN, 3=WB, 4=WR, 5=WQ, 6=WK, 7=BP, 8=BN, 9=BB, 10=BR, 11=BQ, 12=BK
     static const char piece_chars[] = ".PNBRQKpnbrqk";
 
-    // Decode all 64 squares from packed_board
     for (int sq = 0; sq < 64; ++sq) {
         int byte_idx = sq / 2;
         uint8_t piece_code;
 
         if (sq % 2 == 0) {
-            // Even square: lower nibble
             piece_code = entry.packed_board[byte_idx] & 0x0F;
         } else {
-            // Odd square: upper nibble
             piece_code = (entry.packed_board[byte_idx] >> 4) & 0x0F;
         }
 
         if (piece_code >= 1 && piece_code <= 12) {
             board[sq] = piece_chars[piece_code];
         }
-        // piece_code == 0 means empty, already handled by initial memset
     }
 
-    // Build FEN string
     std::ostringstream fen;
     for (int rank = 7; rank >= 0; --rank) {
         int empty_count = 0;
@@ -786,10 +695,8 @@ std::string entry_to_fen(const TrainingEntry& entry) {
         if (rank > 0) fen << '/';
     }
 
-    // Side to move
     fen << ' ' << (entry.stm == 0 ? 'w' : 'b');
 
-    // Castling
     fen << ' ';
     bool any_castling = false;
     if (entry.castling & 1) { fen << 'K'; any_castling = true; }
@@ -798,7 +705,6 @@ std::string entry_to_fen(const TrainingEntry& entry) {
     if (entry.castling & 8) { fen << 'q'; any_castling = true; }
     if (!any_castling) fen << '-';
 
-    // En passant
     fen << ' ';
     if (entry.ep_square < 64) {
         char file_char = 'a' + (entry.ep_square % 8);
@@ -808,7 +714,6 @@ std::string entry_to_fen(const TrainingEntry& entry) {
         fen << '-';
     }
 
-    // Halfmove clock and fullmove number
     fen << ' ' << static_cast<int>(entry.rule50) << " 1";
 
     return fen.str();
@@ -821,7 +726,6 @@ bool read_binpack_file(const std::string& path, std::vector<TrainingEntry>& entr
         return false;
     }
 
-    // Get file size
     file.seekg(0, std::ios::end);
     size_t file_size = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -842,7 +746,6 @@ void view_binpack_file(const std::string& path, size_t count, size_t offset) {
         return;
     }
 
-    // Get file size and entry count
     file.seekg(0, std::ios::end);
     size_t file_size = file.tellg();
     size_t total_entries = file_size / sizeof(TrainingEntry);
@@ -858,7 +761,6 @@ void view_binpack_file(const std::string& path, size_t count, size_t offset) {
         return;
     }
 
-    // Seek to offset
     file.seekg(offset * sizeof(TrainingEntry), std::ios::beg);
 
     size_t entries_to_show = std::min(count, total_entries - offset);
@@ -888,7 +790,6 @@ bool convert_to_epd(const std::string& binary_path, const std::string& epd_path,
         return false;
     }
 
-    // Get total entries
     in_file.seekg(0, std::ios::end);
     size_t file_size = in_file.tellg();
     in_file.seekg(0, std::ios::beg);
@@ -901,7 +802,6 @@ bool convert_to_epd(const std::string& binary_path, const std::string& epd_path,
     size_t count = 0;
     TrainingEntry entry;
     while (count < entries_to_convert && in_file.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {
-        // Write FEN (first 4 fields only for EPD)
         std::string fen = entry_to_fen(entry);
         std::istringstream fen_stream(fen);
         std::string field;
@@ -989,7 +889,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     }
 
 
-    // Get file size for progress reporting
     input.seekg(0, std::ios::end);
     size_t file_size = input.tellg();
     input.seekg(0, std::ios::beg);
@@ -1006,7 +905,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  eval_limit     : " << (config.eval_limit > 0 ? std::to_string(config.eval_limit) + " cp" : "disabled") << std::endl;
     std::cout << "==============================" << std::endl;
 
-    // Create a searcher on heap to avoid stack overflow (Search object is large)
     std::unique_ptr<Search> searcher = std::make_unique<Search>();
 
     stats = FilterStats{};
@@ -1021,34 +919,26 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
         while (input.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {
             stats.total_read++;
 
-            // Convert entry to board
             if (!entry_to_board(entry, board, si)) {
-                continue;  // Skip invalid entries
+                continue;
             }
 
-            int stored_score = entry.score;  // Score from white's perspective
+            int stored_score = entry.score;
 
-            // Filter 1: Skip positions in check
             if (config.skip_in_check && board.in_check()) {
                 stats.filtered_check++;
                 continue;
             }
 
-            // Filter 2: Skip extreme scores
             if (std::abs(stored_score) > config.max_score) {
                 stats.filtered_score++;
                 continue;
             }
 
-            // Filter 3: Quiescence search volatility check
             if (config.qsearch_margin > 0) {
-                // Get static eval from white's perspective
                 int static_eval = searcher->evaluate(board);
 
-                // Get qsearch score
                 int qsearch_score = searcher->qsearch_score(board);
-
-                // Check volatility: |static_eval - qsearch| > margin
                 int qsearch_diff = std::abs(static_eval - qsearch_score);
                 if (qsearch_diff > config.qsearch_margin) {
                     stats.filtered_qsearch++;
@@ -1056,7 +946,6 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
                 }
             }
 
-            // Apply eval_limit clamping (clamp score without discarding position)
             TrainingEntry clamped_entry = entry;
             if (config.eval_limit > 0) {
                 int16_t clamped_score = static_cast<int16_t>(
@@ -1068,11 +957,9 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
                 }
             }
 
-            // Position passed all filters - write to output
             output.write(reinterpret_cast<const char*>(&clamped_entry), sizeof(clamped_entry));
             stats.passed++;
 
-            // Progress reporting
             if (stats.total_read % config.report_interval == 0) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
@@ -1131,7 +1018,7 @@ FilterConfig parse_filter_config(std::istringstream& is) {
             is >> config.output_path;
         } else if (token == "threads") {
             is >> config.threads;
-        } else if (token == "qsearch_margin" || token == "qsearch") {
+        } else if (token == "on" || token == "qsearch") {
             is >> config.qsearch_margin;
         } else if (token == "max_score" || token == "maxscore") {
             is >> config.max_score;
@@ -1144,7 +1031,6 @@ FilterConfig parse_filter_config(std::istringstream& is) {
         }
     }
 
-    // Default output path if not specified
     if (config.output_path.empty() && !config.input_path.empty()) {
         size_t dot_pos = config.input_path.rfind('.');
         if (dot_pos != std::string::npos) {

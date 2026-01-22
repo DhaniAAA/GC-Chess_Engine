@@ -34,23 +34,14 @@ enum WDLScore {
 };
 
 // ============================================================================
-// DTZ (Distance to Zero) Result
-// ============================================================================
-
-// DTZ = moves/plies until:
-// - Pawn move or capture (zeroing move)
-// - Checkmate
-// Negative values indicate drawing/losing positions
-
-// ============================================================================
 // Tablebase Configuration
 // ============================================================================
 
 struct TablebaseConfig {
-    std::string path;              // Path to tablebase files
-    int maxPieces = 6;             // Max pieces for probing (5, 6, or 7)
-    bool probeAtRoot = true;       // Probe at root for perfect play
-    bool probeInSearch = true;     // Probe during search for pruning
+    std::string path;
+    int maxPieces = 6;
+    bool probeAtRoot = true;
+    bool probeInSearch = true;
 };
 
 // ============================================================================
@@ -65,85 +56,58 @@ public:
     bool init(const std::string& path) {
         tbPath = path;
 
-        // In a full implementation, this would:
-        // 1. Open the directory
-        // 2. Scan for .rtbw and .rtbz files
-        // 3. Initialize Fathom library
-
-        // For now, just check if we can theoretically use TBs
         if (!path.empty()) {
             initialized = true;
-            maxPieces = 6;  // Assume 6-man tables
+            maxPieces = 6;
             return true;
         }
 
         return false;
     }
 
-    // Check if tablebases are available
     bool is_initialized() const { return initialized; }
 
-    // Get max piece count
     int max_pieces() const { return maxPieces; }
 
-    // Check if position can be probed
     bool can_probe(const Board& board) const {
         if (!initialized) return false;
 
         int pieceCount = popcount(board.pieces());
         if (pieceCount > maxPieces) return false;
 
-        // Can't probe if castling is still possible
         if (board.castling_rights() != NO_CASTLING) return false;
 
         return true;
     }
 
-    // Probe WDL (Win/Draw/Loss)
-    // Returns score from side to move's perspective
     WDLScore probe_wdl(const Board& board) const {
         if (!can_probe(board)) return WDL_NONE;
-
-        // In a full implementation, this would call:
-        // tb_probe_wdl(board position...)
-
-        // Placeholder: return NONE (no probe available)
         (void)board;
         return WDL_NONE;
     }
 
-    // Probe DTZ (Distance to Zero/mate)
-    // Returns DTZ value or 0 if not available
     int probe_dtz(const Board& board, Move& bestMove) const {
         if (!can_probe(board)) {
             bestMove = MOVE_NONE;
             return 0;
         }
 
-        // In a full implementation, this would call:
-        // tb_probe_root(board position, &results)
-        // Then return the best move and DTZ
-
-        // Placeholder
         (void)board;
         bestMove = MOVE_NONE;
         return 0;
     }
-
-    // Probe root for best move (perfect endgame play)
     Move probe_root(const Board& board) const {
         Move bestMove = MOVE_NONE;
         probe_dtz(board, bestMove);
         return bestMove;
     }
 
-    // Convert WDL to centipawn score for search
     static int wdl_to_score(WDLScore wdl, int ply) {
         switch (wdl) {
             case WDL_WIN:         return VALUE_MATE - ply - 100;
-            case WDL_CURSED_WIN:  return 1;  // Slight advantage
+            case WDL_CURSED_WIN:  return 1;
             case WDL_DRAW:        return 0;
-            case WDL_BLESSED_LOSS: return -1; // Slight disadvantage
+            case WDL_BLESSED_LOSS: return -1;
             case WDL_LOSS:        return -(VALUE_MATE - ply - 100);
             default:              return 0;
         }
@@ -214,30 +178,26 @@ inline bool is_known_draw(const Board& board) {
         bool whiteOnLight = ((file_of(wb) + rank_of(wb)) % 2) == 0;
         bool blackOnLight = ((file_of(bb) + rank_of(bb)) % 2) == 0;
         if (whiteOnLight != blackOnLight) {
-            return true;  // Opposite colored bishops = likely draw
+            return true;
         }
     }
 
     return false;
 }
 
-// Scale factor for endgame (0-128, where 128 = normal)
-// Lower values indicate more drawish positions
 inline int scale_factor(const Board& board) {
     int whitePawns = popcount(board.pieces(WHITE, PAWN));
     int blackPawns = popcount(board.pieces(BLACK, PAWN));
 
-    // No pawns = very drawish
     if (whitePawns == 0 && blackPawns == 0) {
-        return 32;  // 25% of normal
+        return 32;
     }
 
-    // One side has no pawns = harder to win
     if (whitePawns == 0 || blackPawns == 0) {
-        return 64;  // 50% of normal
+        return 64;
     }
 
-    return 128;  // Normal
+    return 128;
 }
 
 } // namespace EndgameRules
