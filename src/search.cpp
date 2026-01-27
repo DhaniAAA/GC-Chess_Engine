@@ -88,7 +88,11 @@ Search::Search() : stopped(false), searching(false), isPondering(false), rootBes
         stack[i].killers[1] = MOVE_NONE;
         stack[i].extensions = 0;
         stack[i].doubleExtensions = 0;
+        stack[i].tripleExtensions = 0;
+        stack[i].fractionalExt = 0;
         stack[i].nullMovePruned = false;
+        stack[i].inLMR = false;
+        stack[i].reduction = 0;
         stack[i].contHistory = nullptr;
     }
 }
@@ -873,27 +877,38 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     ss->correctedStaticEval = correctedStaticEval;
 
     bool improving = false;
-    bool improving4ply = false;
-    int improvementDelta = 0;
+
 
     if (!inCheck && ss->staticEval != VALUE_NONE) {
         if (ply >= 2 && stack[ply].staticEval != VALUE_NONE) {
             if (ss->staticEval >= stack[ply].staticEval) {
                 improving = true;
-                improvementDelta = ss->staticEval - stack[ply].staticEval;
             }
         } else {
             improving = true;
         }
-
-        if (ply >= 4 && stack[ply - 2].staticEval != VALUE_NONE) {
-            if (ss->staticEval >= stack[ply - 2].staticEval) {
-                improving4ply = true;
-            }
-        }
     }
 
     if (inCheck) improving = true;
+
+    // =========================================================================
+    // POST-LMR DEPTH ADJUSTMENTS (PlentyChess-style)
+    // If parent node was in LMR and our eval worsens opponent's position,
+    // we can reduce depth further since our move seems forcing
+    // =========================================================================
+    if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
+        int parentReduction = stack[ply + 1].reduction;
+        int parentEval = stack[ply + 1].staticEval;
+
+        // If parent had significant reduction and our eval worsens their position
+        if (parentReduction >= POST_LMR_WORSENING_THRESHOLD &&
+            parentEval != VALUE_NONE && ss->staticEval != VALUE_NONE &&
+            ss->staticEval <= -parentEval) {
+            // Apply additional reduction since opponent's move was forcing
+            depth -= POST_LMR_WORSENING_REDUCTION;
+            if (depth < 1) depth = 1;
+        }
+    }
 
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
@@ -923,7 +938,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     bool doubleNullMove = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].nullMovePruned);
     bool mateThreat = false;
 
-    if (!pvNode && !inCheck && correctedStaticEval >= beta && depth >= 3 &&
+    if (!pvNode && !inCheck && correctedStaticEval >= beta && depth >= NULL_MOVE_MIN_DEPTH &&
         hasNonPawnMaterial && !doubleNullMove) {
 
         int R = 3 + depth / 4 + std::min(3, (correctedStaticEval - beta) / 200);
@@ -960,7 +975,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && cutNode && ttMove != MOVE_NONE) {
+    // Multi-Cut: If multiple moves fail high, prune the rest
+    // Komodo-style: More aggressive (not just cutNode)
+    if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && ttMove != MOVE_NONE) {
         int multiCutCount = 0;
         int movesTried = 0;
 
@@ -1111,183 +1128,157 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         PieceType movedPt = type_of(movedPiece);
         Color us = board.side_to_move();
 
-        bool createsThreat = false;
-        bool createsFork = false;
-        bool escapesAttack = false;
-        bool threatDetectionDone = false;
 
-        auto computeThreatDetection = [&]() {
-            if (threatDetectionDone) return;
-            threatDetectionDone = true;
+        // =====================================================================
+        // PRUNING SECTION (Branch by move type)
+        // =====================================================================
 
-            Bitboard attackersToFrom = board.attackers_to(m.from(), board.pieces()) & board.pieces(~us);
-            if (attackersToFrom) {
-                int pieceValueMoving = PieceValue[movedPt];
-                int minAttackerValue = 20000;
-                for (Bitboard atk = attackersToFrom; atk; ) {
-                    Square atkSq = pop_lsb(atk);
-                    PieceType atkPt = type_of(board.piece_on(atkSq));
-                    minAttackerValue = std::min(minAttackerValue, PieceValue[atkPt]);
-                }
+        if (!pvNode && !inCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
-                if (movedPt == QUEEN || movedPt == ROOK || pieceValueMoving >= minAttackerValue) {
-                    escapesAttack = true;
-                }
-            }
+            if (isCapture || givesCheck) {
+                // === TACTICAL MOVES: Captures and Checks ===
 
-            if (!isCapture && !givesCheck) {
-                Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
-                Bitboard attacksAfter = attacks_bb(movedPt, m.to(), newOccupied);
-                Bitboard valuableEnemies = board.pieces(~us, QUEEN) | board.pieces(~us, ROOK);
-                if (attacksAfter & valuableEnemies) {
-                    createsThreat = true;
-                }
+                // SEE pruning for captures
+                if (isCapture && !givesCheck && depth <= SEE_CAPTURE_MAX_DEPTH) {
+                    Piece capturedPiece = board.piece_on(m.to());
+                    PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
+                                             (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
 
-                if (movedPt == KNIGHT || movedPt == BISHOP) {
-                    Bitboard allMinorsAndUp = valuableEnemies | board.pieces(~us, BISHOP) | board.pieces(~us, KNIGHT);
-                    if (popcount(attacksAfter & allMinorsAndUp) >= 2) {
-                        createsFork = true;
-                        createsThreat = true;
-                    }
-                }
-
-                if (movedPt == QUEEN || movedPt == ROOK) {
-                    Square enemyKingSq = board.king_square(~us);
-                    Bitboard kingZone = king_attacks_bb(enemyKingSq);
-
-                    if (attacksAfter & kingZone) {
-                        createsThreat = true;
+                    int seeThreshold;
+                    if (capturedType >= PAWN && capturedType <= QUEEN) {
+                        seeThreshold = improving ? -100 * depth : -80 * depth;
+                    } else {
+                        seeThreshold = improving ?
+                            -SEE_CAPTURE_IMPROVING_FACTOR * depth :
+                            -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
                     }
 
-                    if (attacksAfter & square_bb(enemyKingSq)) {
-                        createsThreat = true;
+                    if (!SEE::see_ge(board, m, seeThreshold)) {
+                        continue;
                     }
                 }
             }
-        };
+            else if (!isPromotion) {
+                // === QUIET MOVES: Non-captures, non-checks, non-promotions ===
 
-        if (!pvNode && !inCheck && depth <= 7 && !isCapture && !isPromotion &&
-            !givesCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
-            int lmpThresh = lmp_threshold(depth, improving);
-            if (moveCount > lmpThresh) {
-                if (!killers.is_killer(ply, m) && history.get(us, m) < 0) {
-                    continue;
+                // Late Move Pruning
+                if (depth <= LMP_MAX_DEPTH) {
+                    int lmpThresh = lmp_threshold(depth, improving);
+                    if (moveCount > lmpThresh) {
+                        if (!killers.is_killer(ply, m) && history.get(us, m) < 0) {
+                            continue;
+                        }
+                    }
+                }
+
+                // Futility Pruning
+                if (depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
+                    int futilMarg = futility_margin(depth, improving);
+                    if (correctedStaticEval + futilMarg <= alpha) {
+                        if (!killers.is_killer(ply, m) && !isTTMove) {
+                            continue;
+                        }
+                    }
+                }
+
+                // History Leaf Pruning
+                if (depth <= HISTORY_LEAF_PRUNING_DEPTH && moveCount > 4) {
+                    int histScore = history.get(board.side_to_move(), m);
+                    if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
+                        continue;
+                    }
+                }
+
+                // Counter History Pruning
+                if (depth <= COUNTER_HIST_PRUNING_DEPTH && contHist1ply && moveCount > 5) {
+                    PieceType pt = type_of(movedPiece);
+                    int cmHistScore = contHist1ply->get(pt, m.to());
+
+                    if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
+                        continue;
+                    }
+                }
+
+                // Followup History Pruning
+                if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
+                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                    PieceType pt = type_of(movedPiece);
+                    int followupScore = contHist4ply->get(pt, m.to());
+
+                    if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
+                        continue;
+                    }
+                }
+
+                // SEE Pruning for quiet moves
+                if (depth <= SEE_QUIET_MAX_DEPTH) {
+                    int seeThreshold = improving ?
+                        -SEE_QUIET_IMPROVING_FACTOR * depth :
+                        -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
+                    if (!SEE::see_ge(board, m, seeThreshold)) {
+                        continue;
+                    }
                 }
             }
         }
 
-        if (!pvNode && !inCheck && depth <= 6 && depth >= 1 && !isCapture && !isPromotion &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
-            int futilMarg = futility_margin(depth, improving);
-            if (correctedStaticEval + futilMarg <= alpha) {
-                if (!killers.is_killer(ply, m) && !isTTMove) {
-                    continue;
-                }
-            }
-        }
+        // =====================================================================
+        // FRACTIONAL EXTENSION SYSTEM
+        // Accumulates extensions in centiplies (100 = 1 ply)
+        // =====================================================================
 
-        if (!pvNode && depth <= 4 && isCapture && !givesCheck) {
-            Piece capturedPiece = board.piece_on(m.to());
-            PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
-                                     (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
-
-            int seeThreshold;
-            if (capturedType >= PAWN && capturedType <= QUEEN) {
-                seeThreshold = improving ? -100 * depth : -80 * depth;
-            } else {
-                seeThreshold = improving ?
-                    -SEE_CAPTURE_IMPROVING_FACTOR * depth :
-                    -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
-            }
-
-            if (!SEE::see_ge(board, m, seeThreshold)) {
-                continue;
-            }
-        }
-
-        if (!pvNode && !inCheck && depth <= 3 && !isCapture && !givesCheck) {
-            int seeThreshold = improving ?
-                -SEE_QUIET_IMPROVING_FACTOR * depth :
-                -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
-            if (!SEE::see_ge(board, m, seeThreshold)) {
-                continue;
-            }
-        }
-
-        if (!pvNode && !inCheck && depth <= HISTORY_LEAF_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > 4) {
-            int histScore = history.get(board.side_to_move(), m);
-            if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
-                continue;
-            }
-        }
-
-        if (!pvNode && !inCheck && depth <= COUNTER_HIST_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && contHist1ply && moveCount > 5) {
-
-            PieceType pt = type_of(movedPiece);
-            int cmHistScore = contHist1ply->get(pt, m.to());
-
-            if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
-                continue;
-            }
-        }
-
-        if (!pvNode && !inCheck && depth <= FOLLOWUP_HIST_PRUNING_DEPTH &&
-            !isCapture && !isPromotion && !givesCheck &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
-
-            const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-            PieceType pt = type_of(movedPiece);
-            int followupScore = contHist4ply->get(pt, m.to());
-
-            if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
-                continue;
-            }
-        }
-
-        int extension = 0;
         int currentExtensions = (ss->ply >= 2 && ply >= 2) ? stack[ply + 1].extensions : 0;
-
         int doubleExtensions = (ply >= 1) ? stack[ply + 1].doubleExtensions : 0;
+        int tripleExtensions = (ply >= 1) ? stack[ply + 1].tripleExtensions : 0;
 
-        if (givesCheck && currentExtensions < MAX_EXTENSIONS) {
+        int fractionalExt = 0;  // Accumulator for this move's extensions (in centiplies)
+        int inheritedFrac = (ply >= 1) ? stack[ply + 1].fractionalExt : 0;  // Carry from parent
+
+        // =====================================================================
+        // CHECK EXTENSION - 1.0 ply for safe checks, 0.5 for risky
+        // =====================================================================
+        if (givesCheck && currentExtensions < MAX_EXTENSIONS && depth >= 4) {
             if (SEE::see_ge(board, m, 0)) {
-                extension = 1;
+                fractionalExt += FRAC_EXT_CHECK;  // Full 1.0 ply for safe check
+            } else {
+                fractionalExt += FRAC_EXT_CHECK_PARTIAL;  // 0.5 ply for risky check
             }
         }
 
-        if (inCheck && currentExtensions < MAX_EXTENSIONS) {
-            extension = std::max(extension, 1);
+        // =====================================================================
+        // EVASION EXTENSION - First evasion 1.0 ply
+        // =====================================================================
+        if (inCheck && currentExtensions < MAX_EXTENSIONS && moveCount == 1) {
+            fractionalExt = std::max(fractionalExt, FRAC_EXT_SINGULAR);
         }
 
-        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS) {
+        // =====================================================================
+        // PASSED PAWN EXTENSION - 1.0 ply for 7th rank
+        // =====================================================================
+        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS && depth >= 6) {
             Rank toRank = relative_rank(us, m.to());
             if (toRank == RANK_7) {
-                extension = std::max(extension, 1);
+                fractionalExt = std::max(fractionalExt, FRAC_EXT_PASSED_PAWN);
             }
         }
 
         // =====================================================================
-        // MATE THREAT EXTENSION
+        // MATE THREAT EXTENSION - 0.75 ply
         // =====================================================================
-        if (mateThreat && currentExtensions < MAX_EXTENSIONS && extension == 0) {
-            extension = 1;
+        if (mateThreat && currentExtensions < MAX_EXTENSIONS && fractionalExt < FRAC_EXT_SCALE) {
+            fractionalExt = std::max(fractionalExt, FRAC_EXT_MATE_THREAT);
         }
 
         // =====================================================================
-        // PV EXTENSION
+        // PV EXTENSION - 0.5 ply for first PV move at depth
         // =====================================================================
         if (pvNode && moveCount == 1 && depth >= PV_EXT_MIN_DEPTH &&
-            currentExtensions < MAX_EXTENSIONS && extension == 0) {
-            extension = 1;
+            currentExtensions < MAX_EXTENSIONS && fractionalExt < FRAC_EXT_SCALE) {
+            fractionalExt = std::max(fractionalExt, FRAC_EXT_PV_MOVE);
         }
 
         // =====================================================================
-        // CAPTURE EXTENSION - Extend important tactical captures
-        // Optimized: single SEE call, only for important captures at high depth
+        // CAPTURE EXTENSION - 0.5 ply for important captures
         // =====================================================================
         if (isCapture && depth >= CAPTURE_EXT_MIN_DEPTH && currentExtensions < MAX_EXTENSIONS && !m.is_enpassant()) {
             Piece captured = board.piece_on(m.to());
@@ -1296,17 +1287,24 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             bool shouldExtend = (capturedPt == QUEEN) ||
                                (previousMove != MOVE_NONE && m.to() == previousMove.to());
 
-            if (shouldExtend && SEE::see_ge(board, m, 0)) {
-                extension = std::max(extension, 1);
+            if (shouldExtend && SEE::see_ge(board, m, CAPTURE_EXT_SEE_THRESHOLD)) {
+                fractionalExt = std::max(fractionalExt, FRAC_EXT_CAPTURE_IMPORTANT);
             }
         }
 
         // =====================================================================
-        // KING ATTACK EXTENSION - Extend Queen/Rook moves attacking king zone
-        // Only at high depths to reduce bitboard overhead
+        // RECAPTURE EXTENSION - 0.5 ply
+        // =====================================================================
+        if (isCapture && previousMove != MOVE_NONE && m.to() == previousMove.to() &&
+            currentExtensions < MAX_EXTENSIONS && fractionalExt < FRAC_EXT_SCALE) {
+            fractionalExt = std::max(fractionalExt, FRAC_EXT_RECAPTURE);
+        }
+
+        // =====================================================================
+        // KING ATTACK EXTENSION - 0.5 ply for Q/R attacking king zone
         // =====================================================================
         if (!isCapture && !givesCheck && currentExtensions < MAX_EXTENSIONS &&
-            extension == 0 && depth >= 8 && (movedPt == QUEEN || movedPt == ROOK)) {
+            fractionalExt < FRAC_EXT_SCALE && depth >= 8 && (movedPt == QUEEN || movedPt == ROOK)) {
 
             Square enemyKingSq = board.king_square(~us);
             Bitboard kingZone = king_attacks_bb(enemyKingSq);
@@ -1316,13 +1314,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (attacksAfter & (kingZone | square_bb(enemyKingSq))) {
                 int enemyMaterial = popcount(board.pieces(~us)) - 2;
                 if (enemyMaterial <= 4) {
-                    extension = 1;
+                    fractionalExt = std::max(fractionalExt, FRAC_EXT_CAPTURE_IMPORTANT);
                 }
             }
         }
 
         // =====================================================================
-        // SINGULAR EXTENSION - Enhanced with dynamic margins
+        // SINGULAR EXTENSION - 1.0-2.0 ply based on singularity margin
         // =====================================================================
         if (!singularSearched && depth >= SINGULAR_DEPTH && isTTMove &&
             ttHit && ttBound != BOUND_UPPER && ttDepth >= depth - 3 &&
@@ -1331,16 +1329,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             singularSearched = true;
 
             int singularMargin = SINGULAR_MARGIN;
-
             int depthDiff = depth - ttDepth;
             if (depthDiff > 0) {
                 singularMargin += depthDiff * SINGULAR_TT_DEPTH_PENALTY;
             }
-
             if (!improving) {
                 singularMargin -= SINGULAR_IMPROVING_BONUS;
             }
-
             if (pvNode) {
                 singularMargin -= 5;
             }
@@ -1353,34 +1348,78 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             ss->excludedMove = MOVE_NONE;
 
             if (singularScore < singularBeta) {
-                extension = 1;
+                int singularMarginDiff = singularBeta - singularScore;
 
-                int doubleExtThreshold = SINGULAR_DOUBLE_EXT_BASE + (depth / 4) * 10;
+                fractionalExt = FRAC_EXT_SINGULAR;  // Base 1.0 ply
 
-                if (!pvNode && singularScore < singularBeta - doubleExtThreshold &&
-                    doubleExtensions < DOUBLE_EXT_LIMIT) {
-                    extension = 2;
-                    ++doubleExtensions;
+                if (!pvNode) {
+                    // Double extension if margin big enough
+                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN &&
+                        doubleExtensions < DOUBLE_EXT_LIMIT) {
+                        fractionalExt = FRAC_EXT_SINGULAR_DOUBLE;  // 2.0 ply
+                        ++doubleExtensions;
+
+                        // Triple: add 0.5 more for quiet moves with very high margin
+                        if (!isCapture && singularMarginDiff > SINGULAR_TRIPLE_EXT_MARGIN &&
+                            tripleExtensions < TRIPLE_EXT_LIMIT) {
+                            fractionalExt += FRAC_EXT_PV_MOVE;  // Now 2.5 ply
+                            ++tripleExtensions;
+                        }
+                    }
+
+                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN && depth < SINGULAR_DEPTH_INCREASE) {
+                        searchDepth += 1;
+                    }
                 }
             } else if (singularBeta >= beta) {
-                return singularBeta;
+                return singularBeta;  // Multi-cut
             }
-
-            else if (cutNode && depth >= NEG_EXT_MIN_DEPTH &&
-                     singularScore < alpha - NEG_EXT_THRESHOLD) {
-                extension = 1;
+            else if (cutNode && depth >= NEG_EXT_MIN_DEPTH && singularScore < alpha - NEG_EXT_THRESHOLD) {
+                fractionalExt = -FRAC_EXT_SINGULAR;  // Negative 1.0 ply
+            }
+            else if (ttScore >= beta) {
+                fractionalExt = -FRAC_EXT_SINGULAR_DOUBLE;  // Negative 2.0 ply
             }
         }
 
+        // =====================================================================
+        // CONVERT FRACTIONAL TO INTEGER EXTENSION
+        // Add inherited fractional from parent, then extract full plies
+        // =====================================================================
+        int totalFrac = fractionalExt + inheritedFrac;
+        int extension = 0;
+        int remainingFrac = 0;
+
+        if (totalFrac >= 0) {
+            extension = totalFrac / FRAC_EXT_SCALE;  // Full plies (positive)
+            remainingFrac = totalFrac % FRAC_EXT_SCALE;  // Carry for child
+        } else {
+            // Negative extension (reduction from singular fail)
+            extension = (totalFrac - FRAC_EXT_SCALE + 1) / FRAC_EXT_SCALE;  // Round towards -inf
+            remainingFrac = 0;  // Don't carry negative fractions
+        }
+
+        // Clamp extension to reasonable bounds
+        extension = std::clamp(extension, -2, 3);
+
+        // Clamp extension based on ply depth
         if (extension > 0 && ply >= rootDepth * MAX_EXTENSION_PLY_RATIO) {
             extension = 0;
+            remainingFrac = 0;
         }
 
         int newDepth = searchDepth - 1 + extension;
 
+        // Ensure newDepth doesn't go too negative (prevent explosion)
+        if (newDepth < -2) {
+            newDepth = -2;  // Allow shallow qsearch only
+        }
+
         if (ss->ply >= 0 && ss->ply < MAX_PLY) {
-            stack[ply + 2].extensions = currentExtensions + extension;
+            stack[ply + 2].extensions = currentExtensions + std::max(0, extension);
             stack[ply + 2].doubleExtensions = doubleExtensions;
+            stack[ply + 2].tripleExtensions = tripleExtensions;
+            stack[ply + 2].fractionalExt = remainingFrac;  // Pass fraction to child
         }
 
         int reduction = 0;
@@ -1478,15 +1517,26 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (moveCount == 1) {
             score = -search(board, -beta, -alpha, newDepth, false);
         } else {
+            // Set LMR tracking for Post-LMR adjustments
+            ss->inLMR = (reduction > 0);
+            ss->reduction = reduction;
+
             score = -search(board, -alpha - 1, -alpha, newDepth - reduction, true);
 
             if (score > alpha && reduction > 0) {
+                // Research without reduction - clear LMR flag
+                ss->inLMR = false;
+                ss->reduction = 0;
                 score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
             }
 
             if (score > alpha && score < beta) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
+
+            // Reset LMR flags after search
+            ss->inLMR = false;
+            ss->reduction = 0;
         }
 
         board.undo_move(m);
@@ -1546,8 +1596,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     // Using stat_bonus/stat_malus formulas for better tuning
                     // =========================================================
 
-                    int statBonus = std::min(105 + 175 * depth + 11 * depth * depth, 2400);
-                    int statMalus = std::min(80 + 145 * depth + 8 * depth * depth, 1900);
+                    int statBonus = SearchParams::stat_bonus(depth);
+                    int statMalus = SearchParams::stat_malus(depth);
 
                     if (!isCapture) {
                         killers.store(ply, m);
@@ -1566,14 +1616,14 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         PieceType pt = type_of(movedPiece);
 
                         if (contHist1ply) {
-                            const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), statBonus * 2);
+                            const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), statBonus * CONT_HIST_1PLY_WEIGHT);
                         }
                         if (contHist2ply) {
-                            const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), statBonus);
+                            const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), statBonus * CONT_HIST_2PLY_WEIGHT);
                         }
                         if (ply >= 4 && stack[ply - 2].contHistory) {
                             const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                            const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(pt, m.to(), statBonus);
+                            const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(pt, m.to(), statBonus * CONT_HIST_4PLY_WEIGHT);
                         }
 
                         for (int i = 0; i < quietCount - 1; ++i) {
@@ -1585,10 +1635,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                 history.update(board.side_to_move(), quietsSearched[i], depth, false);
 
                                 if (contHist1ply) {
-                                    const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(qpt, qto, -statMalus * 2);
+                                    const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(qpt, qto, -statMalus * CONT_HIST_1PLY_WEIGHT);
                                 }
                                 if (contHist2ply) {
-                                    const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(qpt, qto, -statMalus);
+                                    const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(qpt, qto, -statMalus * CONT_HIST_2PLY_WEIGHT);
                                 }
                             }
                         }
@@ -1625,7 +1675,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 // =========================================================
                 {
                     // Use scaled stat_bonus for alpha improvement (1/4 of full bonus)
-                    int smallBonus = std::min((105 + 175 * depth + 11 * depth * depth) / 4, 600);
+                    int smallBonus = std::min(SearchParams::stat_bonus(depth) / 4, 600);
 
                     if (!isCapture) {
                         // Small bonus to best move history
@@ -1832,6 +1882,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 bestScore = score;
 
                 if (score > alpha) {
+                    if (ply + 1 < MAX_PLY) pvLines[ply].update(m, pvLines[ply + 1]);
+
                     if (score >= beta) {
                         return score;
                     }
@@ -1896,6 +1948,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 bestScore = score;
 
                 if (score > alpha) {
+                    if (ply + 1 < MAX_PLY) pvLines[ply].update(m, pvLines[ply + 1]);
+
                     if (score >= beta) {
                         return score;
                     }
@@ -1929,6 +1983,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 bestScore = score;
 
                 if (score > alpha) {
+                    if (ply + 1 < MAX_PLY) pvLines[ply].update(m, pvLines[ply + 1]);
+
                     if (score >= beta) {
                         return score;
                     }

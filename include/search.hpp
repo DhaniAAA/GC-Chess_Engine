@@ -111,10 +111,14 @@ struct SearchStack {
     int moveCount;
     int extensions;
     int doubleExtensions;
+    int tripleExtensions;     // Track triple extensions (PlentyChess-style)
+    int fractionalExt;        // Fractional extension accumulator (0-99, 100 = 1 ply)
     bool inCheck;
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
+    bool inLMR;               // Currently in LMR reduced search (for Post-LMR adjustments)
+    int reduction;            // Current LMR reduction amount
     int cutoffCnt;
     ContinuationHistoryEntry* contHistory;
 };

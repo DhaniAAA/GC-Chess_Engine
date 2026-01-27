@@ -4,6 +4,7 @@
 #include "board.hpp"
 #include "move.hpp"
 #include "tt.hpp"
+#include "search_constants.hpp"
 
 // ============================================================================
 // Move Ordering Scores (using int32_t for efficient range)
@@ -372,16 +373,16 @@ public:
                                int depth, bool causedCutoff) {
         int bonus;
         if (causedCutoff) {
-            bonus = std::min((105 + 175 * depth + 11 * depth * depth) * 7 / 10, 2400);
+            bonus = std::min((105 + 175 * depth + 11 * depth * depth) * SearchParams::CAPTURE_HIST_BONUS_SCALE / 10, 2400);
         } else {
-            bonus = -std::min((80 + 145 * depth + 8 * depth * depth) * 5 / 10, 1900);
+            bonus = -std::min((80 + 145 * depth + 8 * depth * depth) * SearchParams::CAPTURE_HIST_MALUS_SCALE / 10, 1900);
         }
         update(movingPiece, to, capturedType, bonus);
     }
 
     void update_failed_captures(Piece* pieces, Move* captures, PieceType* capturedTypes,
                                  int count, Move bestCapture, int depth) {
-        int malus = -std::min((80 + 145 * depth + 8 * depth * depth) * 5 / 10, 1900);
+        int malus = -std::min((80 + 145 * depth + 8 * depth * depth) * SearchParams::CAPTURE_HIST_MALUS_SCALE / 10, 1900);
         for (int i = 0; i < count; ++i) {
             if (captures[i] != bestCapture && capturedTypes[i] != NO_PIECE_TYPE) {
                 update(pieces[i], captures[i].to(), capturedTypes[i], malus);

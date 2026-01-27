@@ -129,10 +129,44 @@ constexpr int LMR_ALLNODE_SCALE = 1;
 // ============================================================================
 
 constexpr int DOUBLE_EXT_LIMIT = 3;
+constexpr int TRIPLE_EXT_LIMIT = 2;       // Limit for triple extensions
 constexpr int MAX_EXTENSION_PLY_RATIO = 2;
 
 constexpr int NEG_EXT_THRESHOLD = 100;
 constexpr int NEG_EXT_MIN_DEPTH = 6;
+
+// Triple Extension Parameters (PlentyChess-style)
+constexpr int SINGULAR_DOUBLE_EXT_MARGIN = 6;
+constexpr int SINGULAR_TRIPLE_EXT_MARGIN = 41;
+constexpr int SINGULAR_DEPTH_INCREASE = 10;
+
+// ============================================================================
+// Fractional Extension System
+// Uses 100-point scale: 100 = 1 full ply, 50 = 0.5 ply, etc.
+// Accumulates fractional extensions and converts to full when >= 100
+// ============================================================================
+
+constexpr int FRAC_EXT_SCALE = 100;           // 100 points = 1 full ply
+
+// Fractional extension values (in centiplies, 100 = 1 ply)
+constexpr int FRAC_EXT_CHECK = 100;           // Check extension: 1.0 ply (safe check at high depth)
+constexpr int FRAC_EXT_CHECK_PARTIAL = 50;    // Partial check extension: 0.5 ply
+constexpr int FRAC_EXT_PASSED_PAWN = 100;     // Passed pawn to 7th rank: 1.0 ply
+constexpr int FRAC_EXT_RECAPTURE = 50;        // Recapture: 0.5 ply
+constexpr int FRAC_EXT_SINGULAR = 100;        // Singular move: 1.0 ply
+constexpr int FRAC_EXT_SINGULAR_DOUBLE = 200; // Double singular: 2.0 ply
+constexpr int FRAC_EXT_PV_MOVE = 50;          // First PV move: 0.5 ply
+constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply
+constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 ply
+
+// ============================================================================
+// Post-LMR Adjustment Parameters
+// Uses STANDARD PLY system (1 = 1 ply) - NOT centiplie
+// ============================================================================
+
+constexpr int POST_LMR_WORSENING_THRESHOLD = 2;  // LMR reduction must be >= 2 ply
+constexpr int POST_LMR_WORSENING_REDUCTION = 1;  // Additional 1 ply reduction
+constexpr int POST_LMR_MIN_DEPTH = 3;            // Only apply at depth >= 3
 
 // ============================================================================
 // Dynamic SEE Thresholds
@@ -167,6 +201,7 @@ constexpr int CONT_HIST_4PLY_WEIGHT = 1;
 constexpr int CAPTURE_HIST_BONUS_SCALE = 7;
 constexpr int CAPTURE_HIST_MALUS_SCALE = 5;
 
+// stat_bonus/malus take depth in milli-ply
 inline int stat_bonus(int depth) {
     return std::min(HISTORY_BONUS_BASE + HISTORY_BONUS_LINEAR * depth + HISTORY_BONUS_QUADRATIC * depth * depth,
                     HISTORY_BONUS_MAX);
