@@ -125,6 +125,7 @@ public:
     // ========================================================================
 
     alignas(64) KillerTable killers;
+    alignas(64) MateKillerTable mateKillers;
     alignas(64) CounterMoveTable counterMoves;
     alignas(64) HistoryTable history;
 

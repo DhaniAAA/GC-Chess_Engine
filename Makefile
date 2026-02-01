@@ -67,11 +67,13 @@ LIBS		:= $(patsubst %,-L%, $(LIBDIRS:%/=%))
 SOURCES_ALL := $(wildcard $(patsubst %,%/*.cpp, $(SOURCEDIRS)))
 
 # Tentukan file yang ingin DIHAPUS dari build (exclude)
-EXCLUDES    := src/testing.cpp \
-               src/testing_benchmark.cpp \
-               src/testing_regression.cpp \
-               src/testing_tactical.cpp \
-               src/tests.cpp
+EXCLUDES    :=  tests/test_main.cpp \
+				tests/test_types.cpp \
+				tests/test_bitboard.cpp \
+				tests/test_move.cpp \
+				tests/test_board.cpp \
+				tests/test_movegen.cpp
+
 
 # Filter SOURCES_ALL untuk membuang file EXCLUDES
 SOURCES     := $(filter-out $(EXCLUDES), $(SOURCES_ALL))
@@ -207,3 +209,50 @@ tuner-clean:
 	$(RM) $(TUNER_OUTPUT)
 	$(RM) $(call FIXPATH,$(TUNER_OBJECTS))
 	@echo Tuner cleanup complete!
+
+# ============================================================================
+# Unit Tests Build
+# ============================================================================
+
+# Test directory
+TEST_DIR := tests
+
+# Only test_main.cpp is compiled (it #includes other test files)
+TEST_MAIN_SRC := $(TEST_DIR)/test_main.cpp
+
+# Engine source files needed for tests (excluding main.cpp)
+ENGINE_SOURCES_FOR_TESTS := src/board.cpp \
+                            src/magic.cpp \
+                            src/zobrist.cpp \
+                            src/bitboard.cpp \
+                            src/eval.cpp \
+                            src/movegen.cpp \
+                            src/moveorder.cpp \
+                            src/tuning.cpp
+
+ENGINE_TEST_OBJECTS := $(ENGINE_SOURCES_FOR_TESTS:.cpp=.o)
+
+ifeq ($(OS),Windows_NT)
+TEST_MAIN := run_tests.exe
+else
+TEST_MAIN := run_tests
+endif
+
+TEST_OUTPUT := $(call FIXPATH,$(OUTPUT)/$(TEST_MAIN))
+
+# Test build flags (debug mode for better error messages)
+TEST_CXXFLAGS := -std=c++17 -Wall -Wextra -g -O2 -I$(TEST_DIR) -DNDEBUG
+
+tests: $(OUTPUT) $(ENGINE_TEST_OBJECTS)
+	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) -I$(TEST_DIR) -o $(TEST_OUTPUT) $(TEST_MAIN_SRC) $(ENGINE_TEST_OBJECTS) $(LFLAGS) $(LIBS)
+	@echo Unit tests build complete!
+	@echo Run with: $(TEST_OUTPUT)
+
+run-tests: tests
+	./$(TEST_OUTPUT)
+
+tests-clean:
+	$(RM) $(TEST_OUTPUT)
+	$(RM) $(call FIXPATH,$(TEST_DIR)/*.o)
+	$(RM) $(call FIXPATH,$(TEST_DIR)/*.d)
+	@echo Test cleanup complete!

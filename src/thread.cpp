@@ -50,6 +50,7 @@ SearchThread::~SearchThread() {
 
 void SearchThread::clear_history() {
     killers.clear();
+    mateKillers.clear();
     counterMoves.clear();
     history.clear();
 }
@@ -436,6 +437,8 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     beta = std::min(beta, VALUE_MATE - ply - 1);
     if (alpha >= beta) return alpha;
 
+    const int alphaOrig = alpha;
+
     if (ply > 0 && board.is_draw(ply)) {
         return 0;
     }
@@ -584,8 +587,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     Move quietsSearched[64];
     int quietCount = 0;
 
-    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
-                  thread->history, thread->previousMove);
+    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->mateKillers, thread->counterMoves,
+                  thread->history, thread->previousMove,
+                  nullptr, nullptr, nullptr, nullptr);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
@@ -704,7 +708,7 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
 
     if (!Threads.stop_flag) {
         Bound bound = bestScore >= beta ? BOUND_LOWER :
-                      bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
+                      bestScore > alphaOrig ? BOUND_EXACT : BOUND_UPPER;
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
                   bound, depth, bestMove, TT.generation());
     }

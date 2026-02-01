@@ -46,11 +46,35 @@ struct SearchStats {
     int selDepth = 0;
     int hashfull = 0;
 
+    // Debug counters
+    U64 singularSearches = 0;
+    U64 singularExtensions = 0;
+    U64 singularFailHigh = 0;      // singularScore >= singularBeta
+    U64 singularMultiCut = 0;      // singularBeta >= beta
+    U64 singularNegExt = 0;        // Negative extension given
+    U64 doubleExtensions = 0;
+    U64 tripleExtensions = 0;
+    U64 lmrReSearches = 0;
+    U64 nullMoveCutoffs = 0;
+    U64 multiCutPrunes = 0;
+    U64 probCutPrunes = 0;
+
     void reset() {
         nodes = 0;
         tbHits = 0;
         selDepth = 0;
         hashfull = 0;
+        singularSearches = 0;
+        singularExtensions = 0;
+        singularFailHigh = 0;
+        singularMultiCut = 0;
+        singularNegExt = 0;
+        doubleExtensions = 0;
+        tripleExtensions = 0;
+        lmrReSearches = 0;
+        nullMoveCutoffs = 0;
+        multiCutPrunes = 0;
+        probCutPrunes = 0;
     }
 };
 

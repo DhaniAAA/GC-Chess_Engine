@@ -9,6 +9,8 @@
 *.obj
 *.pgn
 *.py
+*.binpack
+#.epd
 /engines
 # Precompiled Headers
 *.gch

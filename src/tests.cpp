@@ -138,6 +138,7 @@ void test_move_ordering() {
     Board board;
 
     KillerTable kt;
+    MateKillerTable mkt;
     CounterMoveTable cm;
     HistoryTable ht;
 
@@ -147,7 +148,8 @@ void test_move_ordering() {
 
     // Get moves in order
     Move ttMoves[3] = {MOVE_NONE, MOVE_NONE, MOVE_NONE};
-    MovePicker mp(board, ttMoves, 0, 0, kt, cm, ht, MOVE_NONE);
+    MovePicker mp(board, ttMoves, 0, 0, kt, mkt, cm, ht, MOVE_NONE,
+                  nullptr, nullptr, nullptr, nullptr);
 
     std::cout << "Moves in priority order (first 10):\n";
     Move m;

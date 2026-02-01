@@ -34,13 +34,15 @@ enum Bound : U8 {
 };
 
 struct alignas(16) TTEntry {
-    U16 key16;
+    U32 key32;    // Lower 32 bits of stored key (bits 16-47 of full key)
+    U16 key16;    // Upper 16 bits of stored key (bits 48-63 of full key)
     U16 move16;
     S16 score16;
     S16 eval16;
     U8  depth8;
     U8  genBound8;
-    U8  padding[6];
+    U8  isPv8;        // Whether this entry was stored from a PV node
+    U8  padding;      // 1 byte padding
 
     Move move() const { return Move(move16); }
     int score() const { return score16; }
@@ -48,17 +50,27 @@ struct alignas(16) TTEntry {
     int depth() const { return depth8; }
     Bound bound() const { return Bound(genBound8 & 0x3); }
     U8 generation() const { return genBound8 >> 2; }
+    bool is_pv() const { return isPv8 != 0; }
 
-    void save(Key k, int s, int e, Bound b, int d, Move m, U8 gen) {
-        if (m || (k >> 48) != key16) {
+    void save(Key k, int s, int e, Bound b, int d, Move m, U8 gen, bool pv = false) {
+        U16 k16 = static_cast<U16>(k >> 48);
+        U32 k32 = static_cast<U32>(k >> 16);
+
+        if (m || key16 != k16 || key32 != k32) {
             move16 = m.raw();
         }
-        if (b == BOUND_EXACT || (k >> 48) != key16 || d + 4 > depth8) {
-            key16 = static_cast<U16>(k >> 48);
+        if (b == BOUND_EXACT || key16 != k16 || key32 != k32 || d + 4 > depth8) {
+            key16 = k16;
+            key32 = k32;
             score16 = static_cast<S16>(s);
             eval16 = static_cast<S16>(e);
             depth8 = static_cast<U8>(d);
             genBound8 = static_cast<U8>((gen << 2) | b);
+            isPv8 = pv ? 1 : 0;
+        }
+        // Always update isPv if we're from a PV node (even if not replacing entry)
+        else if (pv) {
+            isPv8 = 1;
         }
     }
 };
@@ -133,7 +145,7 @@ private:
 // ============================================================================
 
 constexpr int VALUE_MATE = 32000;
-constexpr int VALUE_MATE_IN_MAX_PLY = VALUE_MATE - 100;
+constexpr int VALUE_MATE_IN_MAX_PLY = VALUE_MATE - 128;
 constexpr int VALUE_MATED_IN_MAX_PLY = -VALUE_MATE_IN_MAX_PLY;
 constexpr int VALUE_TB_WIN = VALUE_MATE_IN_MAX_PLY - 1;
 constexpr int VALUE_TB_LOSS = -VALUE_TB_WIN;

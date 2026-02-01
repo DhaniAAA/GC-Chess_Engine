@@ -5,6 +5,8 @@
 #include "move.hpp"
 #include "tt.hpp"
 #include "search_constants.hpp"
+#include <iostream>
+#include <cstdint>
 
 // ============================================================================
 // Move Ordering Scores (using int32_t for efficient range)
@@ -63,6 +65,118 @@ private:
     static PieceType min_attacker(const Board& board, Color side, Square sq,
                                   Bitboard occupied, Bitboard& attackers);
 };
+
+// ============================================================================
+// Threat-Based Scoring Debug
+//
+// Prints detailed information about which squares are threatened by lesser
+// pieces. Useful for understanding and tuning the threat-based move ordering.
+// ============================================================================
+
+void debug_threats(const Board& board);
+void debug_move_threat_score(const Board& board, Move m);
+void debug_quiet_split(const Board& board);
+
+// ============================================================================
+// Killer Move Statistics (Debug)
+//
+// Tracks hit/miss rates for killer moves to determine if they should be
+// integrated into quiet scoring like Stockfish does for NNUE.
+// ============================================================================
+
+struct KillerStats {
+    // Tracking counters
+    uint64_t killer1_attempts = 0;   // Times we tried killer1
+    uint64_t killer1_legal = 0;      // Times killer1 was pseudo-legal and quiet
+    uint64_t killer1_hits = 0;       // Times killer1 caused cutoff (returned by MovePicker)
+
+    uint64_t killer2_attempts = 0;
+    uint64_t killer2_legal = 0;
+    uint64_t killer2_hits = 0;
+
+    uint64_t counter_attempts = 0;
+    uint64_t counter_legal = 0;
+    uint64_t counter_hits = 0;
+
+    // Debug: prevMove tracking
+    uint64_t prevMove_valid = 0;     // Times prevMove was not MOVE_NONE
+    uint64_t prevMove_none = 0;      // Times prevMove was MOVE_NONE
+    uint64_t counterMove_found = 0;  // Times we found a counter move in table
+
+    void clear() {
+        killer1_attempts = killer1_legal = killer1_hits = 0;
+        killer2_attempts = killer2_legal = killer2_hits = 0;
+        counter_attempts = counter_legal = counter_hits = 0;
+        prevMove_valid = prevMove_none = counterMove_found = 0;
+    }
+
+    void print() const {
+        std::cout << "\n========== KILLER MOVE STATISTICS ==========\n";
+
+        double k1_legal_rate = killer1_attempts > 0 ?
+            100.0 * killer1_legal / killer1_attempts : 0;
+        double k1_hit_rate = killer1_legal > 0 ?
+            100.0 * killer1_hits / killer1_legal : 0;
+
+        double k2_legal_rate = killer2_attempts > 0 ?
+            100.0 * killer2_legal / killer2_attempts : 0;
+        double k2_hit_rate = killer2_legal > 0 ?
+            100.0 * killer2_hits / killer2_legal : 0;
+
+        double cm_legal_rate = counter_attempts > 0 ?
+            100.0 * counter_legal / counter_attempts : 0;
+        double cm_hit_rate = counter_legal > 0 ?
+            100.0 * counter_hits / counter_legal : 0;
+
+        std::cout << "Killer 1:\n";
+        std::cout << "  Attempts: " << killer1_attempts << "\n";
+        std::cout << "  Legal:    " << killer1_legal << " (" << k1_legal_rate << "%)\n";
+        std::cout << "  Hits:     " << killer1_hits << " (" << k1_hit_rate << "% of legal)\n\n";
+
+        std::cout << "Killer 2:\n";
+        std::cout << "  Attempts: " << killer2_attempts << "\n";
+        std::cout << "  Legal:    " << killer2_legal << " (" << k2_legal_rate << "%)\n";
+        std::cout << "  Hits:     " << killer2_hits << " (" << k2_hit_rate << "% of legal)\n\n";
+
+        std::cout << "Counter Move:\n";
+        std::cout << "  Attempts: " << counter_attempts << "\n";
+        std::cout << "  Legal:    " << counter_legal << " (" << cm_legal_rate << "%)\n";
+        std::cout << "  Hits:     " << counter_hits << " (" << cm_hit_rate << "% of legal)\n\n";
+
+        // Debug: prevMove tracking
+        std::cout << "PrevMove Debug:\n";
+        std::cout << "  prevMove valid: " << prevMove_valid << "\n";
+        std::cout << "  prevMove none:  " << prevMove_none << "\n";
+        std::cout << "  counterMove found: " << counterMove_found << "\n\n";
+
+        // Overall assessment
+        double overall_legal = (killer1_legal + killer2_legal + counter_legal);
+        double overall_attempts = (killer1_attempts + killer2_attempts + counter_attempts);
+        double overall_hits = (killer1_hits + killer2_hits + counter_hits);
+
+        double legal_rate = overall_attempts > 0 ? 100.0 * overall_legal / overall_attempts : 0;
+        double hit_rate = overall_legal > 0 ? 100.0 * overall_hits / overall_legal : 0;
+
+        std::cout << "OVERALL:\n";
+        std::cout << "  Legal rate: " << legal_rate << "%\n";
+        std::cout << "  Hit rate:   " << hit_rate << "% (of legal moves)\n\n";
+
+        if (legal_rate < 50.0) {
+            std::cout << "RECOMMENDATION: Legal rate is LOW (<50%).\n";
+            std::cout << "Consider integrating killers into quiet scoring.\n";
+        } else if (hit_rate < 30.0) {
+            std::cout << "RECOMMENDATION: Hit rate is LOW (<30%).\n";
+            std::cout << "Killers may not be very effective at this position.\n";
+        } else {
+            std::cout << "ASSESSMENT: Killer moves are working well.\n";
+        }
+
+        std::cout << "=============================================\n\n";
+    }
+};
+
+// Global killer stats (for debugging)
+extern KillerStats g_killerStats;
 
 // ============================================================================
 // MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
@@ -509,15 +623,19 @@ enum MovePickStage {
     STAGE_COUNTER_MOVE,
     STAGE_GENERATE_QUIETS,
     STAGE_EQUAL_CAPTURES,
-    STAGE_QUIETS,
+    STAGE_GOOD_QUIETS,         // Quiet moves with score > threshold (searched before bad captures)
     STAGE_BAD_CAPTURES,
+    STAGE_BAD_QUIETS,          // Quiet moves with score <= threshold (searched last)
     STAGE_DONE,
-
     STAGE_QS_TT_MOVE,
     STAGE_QS_GENERATE_CAPTURES,
     STAGE_QS_CAPTURES,
     STAGE_QS_DONE
 };
+
+// Good/Bad quiet threshold (Stockfish uses -14000)
+// Quiets with score > threshold are considered "good"
+constexpr int GOOD_QUIET_THRESHOLD = -14000;
 
 inline MovePickStage& operator++(MovePickStage& s) {
     return s = MovePickStage(int(s) + 1);
@@ -526,10 +644,11 @@ inline MovePickStage& operator++(MovePickStage& s) {
 class MovePicker {
 public:
     MovePicker(const Board& b, const Move* ttMoves, int ttMoveCount, int ply,
-               const KillerTable& kt, const CounterMoveTable& cm,
+               const KillerTable& kt, const MateKillerTable& mkt, const CounterMoveTable& cm,
                const HistoryTable& ht, Move prevMove,
                const ContinuationHistoryEntry* contHist1 = nullptr,
                const ContinuationHistoryEntry* contHist2 = nullptr,
+               const ContinuationHistoryEntry* contHist4 = nullptr,
                const CaptureHistory* captHist = nullptr);
 
     MovePicker(const Board& b, const Move* ttMoves, int ttMoveCount, const HistoryTable& ht);
@@ -543,9 +662,11 @@ private:
     const Board& board;
     const HistoryTable& history;
     const KillerTable* killers;
+    const MateKillerTable* mateKillers;
     const CounterMoveTable* counterMoves;
     const ContinuationHistoryEntry* contHist1ply;
     const ContinuationHistoryEntry* contHist2ply;
+    const ContinuationHistoryEntry* contHist4ply;
     const CaptureHistory* captureHist;
 
     Move ttMoves[3];
@@ -553,6 +674,7 @@ private:
     int ttMoveIdx;
 
     Move killer1, killer2;
+    Move mateKiller;
     Move counterMove;
 
     MoveList moves;
@@ -568,6 +690,7 @@ private:
     int equalCaptureIdx;
     int quietCheckIdx;
     int badCaptureIdx;
+    int endGoodQuiets;  // Index marking end of good quiets (for good/bad split)
     int ply;
 
     MovePickStage stage;

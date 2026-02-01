@@ -250,6 +250,7 @@ void Search::check_time() {
     );
 
     if (elapsed >= maximumTime) {
+        std::cout << "info string TIME STOP: elapsed=" << elapsed << " >= maximumTime=" << maximumTime << std::endl;
         stopped = true;
         return;
     }
@@ -319,7 +320,7 @@ void Search::iterative_deepening(Board& board) {
     for (size_t i = 0; i < legalMoves.size(); ++i) {
         rootMoves.push_back(RootMove(legalMoves[i].move));
     }
-    rootBestMove = rootMoves[0].move;
+    // NOTE: Don't set rootBestMove here - let the first iteration find it
 
     if (rootMoves.size() == 1 && !limits.infinite) {
         pvIdx = 0;
@@ -365,6 +366,29 @@ void Search::iterative_deepening(Board& board) {
     overallBestPV.clear();
 
     for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
+        // Clear TT between iterations to prevent stale/corrupted entries
+        // from affecting deeper searches (prevents fake mate bugs)
+        if (rootDepth > 1) {
+            std::cout << "info string Clearing TT before depth " << (rootDepth + 1) << std::endl;
+            TT.clear();
+            std::cout << "info string TT cleared, starting depth " << (rootDepth + 1) << std::endl;
+        }
+
+        // =========================================================================
+        // PV MOVE PRIORITIZATION + SORTING (Critical for move ordering!)
+        // After each iteration, sort rootMoves by score so best move is first.
+        // This ensures alpha-beta can prune maximally on subsequent moves.
+        // =========================================================================
+        if (rootDepth > 1 && !rootMoves.empty()) {
+            // STEP 1: Sort rootMoves by score from previous iteration
+            // This naturally puts the best move first
+            std::stable_sort(rootMoves.begin(), rootMoves.end());
+
+            // STEP 2: If rootBestMove was set and differs from sorted best,
+            // we trust the sorted order (based on actual scores)
+            // rootBestMove is updated at end of each iteration anyway
+        }
+
         for (auto& rm : rootMoves) {
             rm.previousScore = rm.score;
             rm.prevSubtreeNodes = rm.subtreeNodes;
@@ -372,6 +396,8 @@ void Search::iterative_deepening(Board& board) {
         }
 
         std::vector<RootMove> rootMovesBackup = rootMoves;
+
+        std::cout << "info string Starting depth " << rootDepth << ", multiPV=" << multiPV << std::endl;
 
         for (pvIdx = 0; pvIdx < multiPV && !stopped; ++pvIdx) {
             Move analyzedMove = rootMoves[pvIdx].move;
@@ -382,6 +408,10 @@ void Search::iterative_deepening(Board& board) {
             int beta = VALUE_INFINITE;
             int delta = ASPIRATION_INITIAL_DELTA;
             int score = rootMoves[pvIdx].previousScore;
+
+            std::cout << "info string Depth " << rootDepth << " pvIdx=" << pvIdx
+                      << " alpha=" << alpha << " beta=" << beta
+                      << " prevScore=" << score << std::endl;
 
             if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE) {
                 alpha = std::max(score - delta, -VALUE_INFINITE);
@@ -395,13 +425,19 @@ void Search::iterative_deepening(Board& board) {
             }
 
             while (true) {
+                std::cout << "info string Depth " << rootDepth << " asp-window alpha=" << alpha
+                          << " beta=" << beta << " delta=" << delta << std::endl;
                 score = search(board, alpha, beta, rootDepth, false);
 
-                if (stopped) break;
+                if (stopped) {
+                    std::cout << "info string Depth " << rootDepth << " stopped after search" << std::endl;
+                    break;
+                }
 
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
                 if (score <= alpha) {
+                    std::cout << "info string Depth " << rootDepth << " fail LOW, score=" << score << std::endl;
                     beta = (alpha + beta) / 2;
                     delta *= 3;
 
@@ -411,6 +447,7 @@ void Search::iterative_deepening(Board& board) {
                         alpha = std::max(score - delta, -VALUE_INFINITE);
                     }
                 } else if (score >= beta) {
+                    std::cout << "info string Depth " << rootDepth << " fail HIGH, score=" << score << std::endl;
                     delta *= 3;
 
                     if (delta > 500) {
@@ -419,6 +456,7 @@ void Search::iterative_deepening(Board& board) {
                         beta = std::min(score + delta, VALUE_INFINITE);
                     }
                 } else {
+                    std::cout << "info string Depth " << rootDepth << " score within window, score=" << score << std::endl;
                     break;
                 }
             }
@@ -757,7 +795,16 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     int ply = board.game_ply() - rootPly;
 
+    // Debug: Track deep recursion
+    static int maxPlySeen = 0;
+    if (ply > maxPlySeen && ply > 50) {
+        maxPlySeen = ply;
+        std::cout << "info string WARNING: Deep ply reached: " << ply
+                  << " depth=" << depth << " alpha=" << alpha << " beta=" << beta << std::endl;
+    }
+
     if (UNLIKELY(ply >= MAX_PLY)) {
+        std::cout << "info string MAX_PLY reached at ply=" << ply << std::endl;
         return evaluate(board);
     }
     if (ply > searchStats.selDepth) {
@@ -795,6 +842,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         return alpha;
     }
 
+    const int alphaOrig = alpha;
+
     if (ply + 1 < MAX_PLY) {
         pvLines[ply + 1].clear();
     }
@@ -818,29 +867,29 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     int ttDepth = ttHit ? tte->depth() : 0;
     Bound ttBound = ttHit ? tte->bound() : BOUND_NONE;
 
+    // Stockfish-style: track if TT entry was from PV and if TT move is capture
+    bool ttPv = pvNode || (ttHit && tte->is_pv());
+    bool ttCapture = ttMove != MOVE_NONE && (!board.empty(ttMove.to()) || ttMove.is_enpassant());
+    ss->ttPv = ttPv;
+    ss->ttHit = ttHit;
+
     if (ttHit && ttMove == MOVE_NONE && std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY) {
+        // Completely invalidate TT entry with mate score but no move
         ttHit = false;
         ttScore = VALUE_NONE;
+        ttBound = BOUND_NONE;
+        ttDepth = 0;
+        tte = nullptr;  // Ensure we don't use this entry's eval either
     }
 
     bool ttMateScore = std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY;
-    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth;
+    // Don't allow TT cutoff during singular search (when we're testing alternatives)
+    bool inSingularSearch = ss->excludedMove != MOVE_NONE;
+    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth && !inSingularSearch;
 
+    // Never allow TT cutoff with mate scores to prevent mate fake bugs
     if (allowTTCutoff && ttMateScore) {
-        if (ttMove == MOVE_NONE) {
-            allowTTCutoff = false;
-        } else {
-            int mateDistance = std::abs(VALUE_MATE - std::abs(ttScore));
-            if (ttDepth < mateDistance * 2) {
-                allowTTCutoff = false;
-            }
-            if (ttDepth < mateDistance * 2) {
-                allowTTCutoff = false;
-            }
-            if (mateDistance < 1 || (ply > 0 && mateDistance > ply + depth)) {
-                allowTTCutoff = false;
-            }
-        }
+        allowTTCutoff = false;
     }
 
     if (allowTTCutoff) {
@@ -967,6 +1016,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     return nullScore;
                 }
             } else {
+                ++searchStats.nullMoveCutoffs;
                 return nullScore;
             }
         }
@@ -981,8 +1031,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         int multiCutCount = 0;
         int movesTried = 0;
 
-        MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                            nullptr, nullptr, &captureHist);
+        Move mcParentMove = (ply >= 0 && ply < MAX_PLY + 4) ? stack[ply].currentMove : MOVE_NONE;
+        MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, mateKillers, counterMoves, history, mcParentMove,
+                            nullptr, nullptr, nullptr, &captureHist);
         Move m;
 
         while ((m = mcPicker.next_move()) != MOVE_NONE && movesTried < MULTI_CUT_COUNT + 2) {
@@ -1005,6 +1056,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (mcScore >= beta) {
                 ++multiCutCount;
                 if (multiCutCount >= MULTI_CUT_REQUIRED) {
+                    ++searchStats.multiCutPrunes;
                     return beta;
                 }
             }
@@ -1084,24 +1136,50 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     const bool rootNode = (ply == 0);
 
+    // Debug: Track root node searches at higher depths
+    if (rootNode && rootDepth >= 6) {
+        std::cout << "info string Root search depth=" << depth << " alpha=" << alpha << " beta=" << beta << std::endl;
+    }
+
     const ContinuationHistoryEntry* contHist1ply = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].contHistory) ?
                                                     stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
                                                     stack[ply].contHistory : nullptr;
+    const ContinuationHistoryEntry* contHist4ply = (ply >= 4 && ply - 2 >= 0 && stack[ply - 2].contHistory) ?
+                                                    stack[ply - 2].contHistory : nullptr;
 
-    MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                  contHist1ply, contHist2ply, &captureHist);
+    // Parent's move is at stack[ply + 1] due to +2 offset in stack indexing
+    // (stack[ply + 2] = current node, stack[ply + 1] = parent, stack[ply] = grandparent)
+    Move parentMove = (ply >= 0 && ply + 1 < MAX_PLY + 4) ? stack[ply + 1].currentMove : MOVE_NONE;
+    MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, mateKillers, counterMoves, history, parentMove,
+                  contHist1ply, contHist2ply, contHist4ply, &captureHist);
 
     size_t rootMoveIdx = 0;
     Move m;
 
+    // Debug: Track root node move loop progress
+    int movesSinceLastDebug = 0;
+
     while (true) {
         if (rootNode) {
             if (rootMoveIdx + pvIdx >= rootMoves.size()) {
+                if (rootDepth >= 6) {
+                    std::cout << "info string Root move loop done, total moves=" << moveCount << std::endl;
+                }
                 break;
             }
             m = rootMoves[rootMoveIdx + pvIdx].move;
             ++rootMoveIdx;
+
+            // Debug progress every 10 moves at depth 6+
+            if (rootDepth >= 6) {
+                movesSinceLastDebug++;
+                if (movesSinceLastDebug >= 10) {
+                    std::cout << "info string Root move progress: " << moveCount << "/" << rootMoves.size()
+                              << " current=" << move_to_string(m) << std::endl;
+                    movesSinceLastDebug = 0;
+                }
+            }
         } else {
             m = mp.next_move();
             if (m == MOVE_NONE) {
@@ -1320,65 +1398,83 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
 
         // =====================================================================
-        // SINGULAR EXTENSION - 1.0-2.0 ply based on singularity margin
+        // SINGULAR EXTENSION - Dynamic Margins (Hybrid Approach)
+        // Extension = 1 + (double check) + (triple check), 1-3 ply total
         // =====================================================================
         if (!singularSearched && depth >= SINGULAR_DEPTH && isTTMove &&
-            ttHit && ttBound != BOUND_UPPER && ttDepth >= depth - 3 &&
+            ttHit && (ttBound & BOUND_LOWER) && ttDepth >= depth - 3 &&
             std::abs(ttScore) < VALUE_MATE_IN_MAX_PLY && currentExtensions < MAX_EXTENSIONS) {
 
             singularSearched = true;
+            ++searchStats.singularSearches;
 
-            int singularMargin = SINGULAR_MARGIN;
-            int depthDiff = depth - ttDepth;
-            if (depthDiff > 0) {
-                singularMargin += depthDiff * SINGULAR_TT_DEPTH_PENALTY;
-            }
-            if (!improving) {
-                singularMargin -= SINGULAR_IMPROVING_BONUS;
-            }
-            if (pvNode) {
-                singularMargin -= 5;
+            // Debug: Track singular extension at depth 6+
+            if (rootDepth >= 6) {
+                std::cout << "info string Singular search at rootDepth=" << rootDepth
+                          << " ply=" << ply << " depth=" << depth << " ttScore=" << ttScore << std::endl;
             }
 
-            int singularBeta = std::max(ttScore - singularMargin * depth / 8, -VALUE_MATE);
+            // Dynamic singularBeta - wider margin for better singular detection
+            int sBeta = singular_beta(ttScore, depth, ttPv, pvNode);
             int singularDepth = (depth - 1) / 2;
 
             ss->excludedMove = m;
-            int singularScore = search(board, singularBeta - 1, singularBeta, singularDepth, cutNode);
+            int singularScore = search(board, sBeta - 1, sBeta, singularDepth, cutNode);
             ss->excludedMove = MOVE_NONE;
 
-            if (singularScore < singularBeta) {
-                int singularMarginDiff = singularBeta - singularScore;
+            if (rootDepth >= 6) {
+                std::cout << "info string Singular done score=" << singularScore << " sBeta=" << sBeta << std::endl;
+            }
 
-                fractionalExt = FRAC_EXT_SINGULAR;  // Base 1.0 ply
+            if (singularScore < sBeta) {
+                // Move is singular! Compute dynamic extension margins
+                int corrValue = correctedStaticEval - staticEval;  // Correction history contribution
+                int doubleMargin = double_ext_margin(pvNode, ttCapture, corrValue, ply, rootDepth);
+                int tripleMargin = triple_ext_margin(pvNode, ttCapture, ttPv, corrValue, ply, rootDepth);
 
-                if (!pvNode) {
-                    // Double extension if margin big enough
-                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN &&
-                        doubleExtensions < DOUBLE_EXT_LIMIT) {
-                        fractionalExt = FRAC_EXT_SINGULAR_DOUBLE;  // 2.0 ply
-                        ++doubleExtensions;
-
-                        // Triple: add 0.5 more for quiet moves with very high margin
-                        if (!isCapture && singularMarginDiff > SINGULAR_TRIPLE_EXT_MARGIN &&
-                            tripleExtensions < TRIPLE_EXT_LIMIT) {
-                            fractionalExt += FRAC_EXT_PV_MOVE;  // Now 2.5 ply
-                            ++tripleExtensions;
-                        }
-                    }
-
-                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN && depth < SINGULAR_DEPTH_INCREASE) {
-                        searchDepth += 1;
-                    }
+                // Extension = 1 + whether double + whether triple
+                int extLevel = 1;
+                if (singularScore < sBeta - doubleMargin && doubleExtensions < DOUBLE_EXT_LIMIT) {
+                    extLevel++;
+                    ++doubleExtensions;
+                    ++searchStats.doubleExtensions;
                 }
-            } else if (singularBeta >= beta) {
-                return singularBeta;  // Multi-cut
+                if (singularScore < sBeta - tripleMargin && tripleExtensions < TRIPLE_EXT_LIMIT) {
+                    extLevel++;
+                    ++tripleExtensions;
+                    ++searchStats.tripleExtensions;
+                }
+
+                // Convert extension level to fractional (100 = 1 ply)
+                fractionalExt = extLevel * FRAC_EXT_SCALE;
+                ++searchStats.singularExtensions;
+
+                // Also increase depth for positions near depth threshold
+                if (extLevel >= 2 && depth < SINGULAR_DEPTH_INCREASE) {
+                    searchDepth += 1;
+                }
             }
-            else if (cutNode && depth >= NEG_EXT_MIN_DEPTH && singularScore < alpha - NEG_EXT_THRESHOLD) {
-                fractionalExt = -FRAC_EXT_SINGULAR;  // Negative 1.0 ply
+            // Multi-cut pruning: singular search failed high over beta
+            else if (singularScore >= beta) {
+                // Don't use multi-cut with mate scores to prevent fake mate bugs
+                if (std::abs(singularScore) < VALUE_MATE_IN_MAX_PLY) {
+                    ++searchStats.singularMultiCut;
+                    return singularScore;  // Multi-cut only for non-mate scores
+                }
+                // Fall through to normal search if singularScore is mate (prevent fake mate)
             }
+            // Negative extensions based on search results
             else if (ttScore >= beta) {
-                fractionalExt = -FRAC_EXT_SINGULAR_DOUBLE;  // Negative 2.0 ply
+                // TT value >= beta means ttMove expected to fail high, reduce it
+                fractionalExt = NEG_EXT_TTVALUE_GE_BETA * FRAC_EXT_SCALE;  // -2 ply
+            }
+            else if (cutNode) {
+                // CutNode but ttMove not expected to fail high, light reduction
+                fractionalExt = NEG_EXT_CUTNODE * FRAC_EXT_SCALE;  // -1 ply
+                ++searchStats.singularNegExt;
+            }
+            else {
+                ++searchStats.singularFailHigh;
             }
         }
 
@@ -1425,22 +1521,34 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         int reduction = 0;
         if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
             reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
+
+            // Narrow window bonus
             int delta = beta - alpha;
             if (delta < 20) {
                 reduction += 1;
             }
 
+            // Cut node adjustments
             if (cutNode) {
                 reduction += LMR_CUTNODE_BONUS;
                 if (!ttMove) {
                     reduction += 1;
                 }
+                // Extra reduction at deep cut nodes
+                if (depth >= LMR_DEEP_CUTNODE_DEPTH) {
+                    reduction += reduction / (depth + 1);
+                }
+            } else {
+                // All-node: reduce less
+                reduction -= LMR_ALLNODE_PENALTY;
             }
 
+            // Improving heuristic
             if (!improving) {
                 reduction += 1;
             }
 
+            // Child cutoff count
             if (ply + 2 < MAX_PLY + 4) {
                 int childCutoffs = stack[ply + 2].cutoffCnt;
                 if (childCutoffs > 1) {
@@ -1451,30 +1559,36 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
             }
 
-            if (moveCount > 10) {
-                reduction += 1;
+            // Move count tiers
+            if (moveCount > LMR_MOVECOUNT_TIER1) {
+                reduction += LMR_MOVECOUNT_BONUS;
             }
-            if (moveCount > 18) {
-                reduction += 1;
+            if (moveCount > LMR_MOVECOUNT_TIER2) {
+                reduction += LMR_MOVECOUNT_BONUS;
             }
 
+            // PV node: reduce less
             if (pvNode) {
-                reduction -= 2;
+                reduction -= LMR_PV_REDUCTION;
             }
 
+            // In check: reduce less
             if (inCheck) {
-                reduction -= 1;
+                reduction -= LMR_CHECK_REDUCTION;
             }
 
+            // Killer/counter moves: reduce less
             if (killers.is_killer(ply, m) ||
                 (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
-                reduction -= 2;
+                reduction -= LMR_KILLER_REDUCTION;
             }
 
+            // TT move: reduce less
             if (isTTMove) {
-                reduction -= 2;
+                reduction -= LMR_TT_REDUCTION;
             }
 
+            // History-based adjustment
             int statScore = 2 * history.get(board.side_to_move(), m);
 
             PieceType pt = type_of(movedPiece);
@@ -1489,17 +1603,21 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 statScore += contHist4ply->get(pt, m.to());
             }
 
-            reduction -= statScore / 4096;
+            int histAdj = std::clamp(statScore / HISTORY_LMR_DIVISOR, -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
+            reduction -= histAdj;
 
-            if (cutNode && !ttMove && depth >= 6) {
-                reduction += reduction / (depth + 1);
-            }
-
+            // Clamp final reduction
+            reduction = std::clamp(reduction, 0, newDepth - 1);
+        }
+        // LMR for captures (less aggressive)
+        else if (depth >= 3 && moveCount > 2 && isCapture && !isPromotion && !givesCheck) {
+            reduction = lmr_capture_reduction(depth, moveCount, improving);
             reduction = std::clamp(reduction, 0, newDepth - 1);
         }
 
         if (ply + 2 < MAX_PLY + 4) {
             stack[ply + 2].contHistory = contHistory.get_entry(movedPiece, m.to());
+            stack[ply + 2].currentMove = m;  // Track for counter move lookup
         }
 
         StateInfo si;
@@ -1525,6 +1643,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
             if (score > alpha && reduction > 0) {
                 // Research without reduction - clear LMR flag
+                ++searchStats.lmrReSearches;
                 ss->inLMR = false;
                 ss->reduction = 0;
                 score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
@@ -1606,8 +1725,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                             mateKillers.store(ply, m);
                         }
 
-                        if (previousMove) {
-                            counterMoves.store(board.piece_on(m.from()), m.to(), m);
+                        // Store counter move using parent's move from stack (not class member)
+                        if (parentMove) {
+                            counterMoves.store(board.piece_on(parentMove.to()), parentMove.to(), m);
                         }
 
                         history.update_quiet_stats(board.side_to_move(), m,
@@ -1748,11 +1868,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     }
 
     Bound bound = bestScore >= beta ? BOUND_LOWER :
-                  bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
+                  bestScore > alphaOrig ? BOUND_EXACT : BOUND_UPPER;
 
-    if (!stopped && tte) {
+    // Don't store mate scores in TT to prevent fake mate bugs
+    if (!stopped && tte && std::abs(bestScore) < VALUE_MATE_IN_MAX_PLY) {
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
-                  bound, depth, bestMove, TT.generation());
+                  bound, depth, bestMove, TT.generation(), ttPv);
     }
 
     if (!inCheck && staticEval != VALUE_NONE && depth >= 3 &&
@@ -1765,6 +1886,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             (bound == BOUND_LOWER && bestScore >= beta)) {
             corrHistory.update(us, board.pawn_key(), diff, depth);
         }
+    }
+
+    if (rootNode && rootDepth >= 6) {
+        std::cout << "info string Search returning at rootDepth=" << rootDepth
+                  << " bestScore=" << bestScore << " moveCount=" << moveCount << std::endl;
     }
 
     return bestScore;
@@ -2114,6 +2240,17 @@ void Search::report_info(Board& board, int depth, int score, const PVLine& pv, i
 
     std::cout << std::endl;
     std::cout.flush();
+
+    // Debug output - show search statistics for this depth
+    std::cout << "info string d" << depth
+              << " sing=" << searchStats.singularSearches
+              << " singExt=" << searchStats.singularExtensions
+              << " singFH=" << searchStats.singularFailHigh
+              << " singMC=" << searchStats.singularMultiCut
+              << " singNeg=" << searchStats.singularNegExt
+              << " dblExt=" << searchStats.doubleExtensions
+              << " triExt=" << searchStats.tripleExtensions
+              << std::endl;
 
     if (infoCallback) {
         SearchInfo info;

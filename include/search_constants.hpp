@@ -5,25 +5,40 @@
 namespace SearchParams {
 
 // ============================================================================
-// DYNAMIC PARAMETER FUNCTIONS (Stockfish-style)
-// These functions compute parameters based on position characteristics
+// DYNAMIC PARAMETER FUNCTIONS (Adjusted for HCE Engines)
+// HCE evaluation is noisier than NNUE, so we use LARGER margins
 // ============================================================================
 
+// Futility Pruning Margin (Move Loop Pruning)
+// For HCE: Use larger margin (200 per depth) to avoid pruning good moves
+// Formula: base * depth - improving_bonus
 inline int futility_margin(int depth, bool improving) {
-    return 150 * depth - (improving ? 50 : 0);
+    constexpr int BASE_MARGIN = 200;      // Was 150, increased for HCE noise
+    constexpr int IMPROVING_BONUS = 75;   // Was 50, slightly larger
+    return BASE_MARGIN * depth - (improving ? IMPROVING_BONUS : 0);
 }
 
+// Late Move Pruning threshold
+// For HCE: Slightly more conservative to not prune too aggressively
 inline int lmp_threshold(int depth, bool improving) {
-    int base = 2 + depth * 2;
+    int base = 3 + depth * depth;  // Changed from 2 + depth * 2 to depth²
     return improving ? base : base + 2;
 }
 
+// Razoring Margin
+// For HCE: Larger base margin to account for eval noise
 inline int razoring_margin(int depth) {
-    return 400 + 150 * depth;
+    constexpr int BASE = 500;       // Was 400
+    constexpr int PER_DEPTH = 175;  // Was 150
+    return BASE + PER_DEPTH * depth;
 }
 
+// Reverse Futility Pruning (Static Null Move) Margin
+// For HCE: Larger margin for safety
 inline int rfp_margin(int depth, bool improving) {
-    return 95 * depth - (improving ? 50 : 0);
+    constexpr int BASE_MARGIN = 120;      // Was 95
+    constexpr int IMPROVING_BONUS = 60;   // Was 50
+    return BASE_MARGIN * depth - (improving ? IMPROVING_BONUS : 0);
 }
 
 // ============================================================================
@@ -55,11 +70,58 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 constexpr int MAX_EXTENSIONS = 5;
 
-constexpr int SINGULAR_DEPTH = 4;
-constexpr int SINGULAR_MARGIN = 64;
+// Base singular depth threshold (Stockfish uses 6 + ttPv)
+constexpr int SINGULAR_DEPTH = 6;
+
+// Legacy constants (kept for reference, now dynamic)
+constexpr int SINGULAR_MARGIN_LEGACY = 64;
 constexpr int SINGULAR_TT_DEPTH_PENALTY = 8;
 constexpr int SINGULAR_IMPROVING_BONUS = 10;
 constexpr int SINGULAR_DOUBLE_EXT_BASE = 60;
+
+// ============================================================================
+// Dynamic Singular Extension Functions (Stockfish-style)
+// These compute margins based on search context for better accuracy
+// ============================================================================
+
+// Compute singularBeta: the threshold below which a move is considered singular
+// Adjusted for HCE: Uses wider margin (~2.5x Stockfish) to filter eval noise
+// Formula: ttValue - (128 + 64*ttPvBonus) * depth / 64 ≈ ttValue - depth * (2..3)
+inline int singular_beta(int ttValue, int depth, bool ttPv, bool pvNode) {
+    int baseMargin = 160;   // Wider base margin (was 53 in SF)
+    int ttPvBonus = (ttPv && !pvNode) ? 64 : 0;
+    // Resulting margin is larger, making sBeta LOWER.
+    // This makes it HARDER for singularScore < sBeta, thus fewer extensions.
+    int margin = (baseMargin + ttPvBonus) * depth / 64;
+    return ttValue - margin;
+}
+
+// Compute double extension margin
+// For HCE: Requires much stronger evidence of singularity
+inline int double_ext_margin(bool pvNode, bool /* ttCapture */, int /* correctionValue */,
+                              int /* ply */, int /* rootDepth */) {
+    // Require score to be ~30cp worse than sBeta
+    int margin = 60;
+    if (pvNode) margin += 10;
+    return margin;
+}
+
+// Compute triple extension margin
+// For HCE: Very strict
+inline int triple_ext_margin(bool pvNode, bool /* ttCapture */, bool ttPv,
+                              int /* correctionValue */, int /* ply */, int /* rootDepth */) {
+    // Require score to be ~70cp worse than sBeta
+    int margin = 70;
+    if (pvNode) margin += 15;
+    if (ttPv) margin += 10;
+    return margin;
+}
+
+// Negative extension values
+// Since we have wider margins, we can be a bit more aggressive with pruning
+// if the condition is NOT met.
+constexpr int NEG_EXT_TTVALUE_GE_BETA = -3;  // Strong pruning (reduce 3 ply)
+constexpr int NEG_EXT_CUTNODE = -2;          // Reduced 2 ply on cut nodes
 
 constexpr int CAPTURE_EXT_MIN_DEPTH = 8;
 constexpr int CAPTURE_EXT_SEE_THRESHOLD = 0;
@@ -114,15 +176,39 @@ constexpr int QSEARCH_CHECK_DEPTH = -2;
 constexpr int DELTA_PRUNING_MARGIN = 550;
 
 // ============================================================================
-// LMR Tuning Parameters (Stockfish-style)
+// LMR Tuning Parameters (Adjusted for HCE Engines)
+// HCE engine needs slightly less aggressive reductions due to eval noise
 // ============================================================================
 
-constexpr double LMR_BASE = 0.85;
-constexpr double LMR_DIVISOR = 1.5;
+// Base LMR table generation parameters
+constexpr double LMR_BASE = 0.75;           // Slightly lower base (was 0.85)
+constexpr double LMR_DIVISOR = 1.75;        // Slightly less aggressive (was 1.5)
 
-constexpr int LMR_CUTNODE_BONUS = 3;
-constexpr int LMR_CUTOFF_CNT_BONUS = 1;
-constexpr int LMR_ALLNODE_SCALE = 1;
+// LMR adjustment constants
+constexpr int LMR_CUTNODE_BONUS = 2;        // Extra reduction on cut nodes (was 3)
+constexpr int LMR_CUTOFF_CNT_BONUS = 1;     // Bonus per child cutoff
+constexpr int LMR_ALLNODE_PENALTY = 1;      // Reduce less on all-nodes (renamed from SCALE)
+constexpr int LMR_PV_REDUCTION = 2;         // PV nodes reduce less
+constexpr int LMR_CHECK_REDUCTION = 1;      // Reduce less when in check
+constexpr int LMR_KILLER_REDUCTION = 2;     // Reduce less for killers
+constexpr int LMR_TT_REDUCTION = 2;         // Reduce less for TT moves
+
+// Move count thresholds for extra reductions
+constexpr int LMR_MOVECOUNT_TIER1 = 8;      // First tier threshold (was hardcoded 10)
+constexpr int LMR_MOVECOUNT_TIER2 = 15;     // Second tier threshold (was hardcoded 18)
+constexpr int LMR_MOVECOUNT_BONUS = 1;      // Extra reduction per tier
+
+// Depth-based adjustments
+constexpr int LMR_DEEP_CUTNODE_DEPTH = 6;   // Depth threshold for extra cutnode reduction
+
+// Dynamic LMR reduction function for captures (HCE-tuned)
+// Captures need careful handling - reduce less than quiets
+inline int lmr_capture_reduction(int depth, int moveCount, bool improving) {
+    if (depth < 3 || moveCount < 3) return 0;
+    int reduction = depth / 4 + moveCount / 6;
+    if (improving) reduction -= 1;
+    return std::max(0, reduction);
+}
 
 // ============================================================================
 // Extension Control Parameters
@@ -132,12 +218,14 @@ constexpr int DOUBLE_EXT_LIMIT = 3;
 constexpr int TRIPLE_EXT_LIMIT = 2;       // Limit for triple extensions
 constexpr int MAX_EXTENSION_PLY_RATIO = 2;
 
-constexpr int NEG_EXT_THRESHOLD = 100;
+// Negative extension parameters (legacy, now computed dynamically)
+constexpr int NEG_EXT_THRESHOLD_LEGACY = 100;
 constexpr int NEG_EXT_MIN_DEPTH = 6;
 
-// Triple Extension Parameters (PlentyChess-style)
-constexpr int SINGULAR_DOUBLE_EXT_MARGIN = 6;
-constexpr int SINGULAR_TRIPLE_EXT_MARGIN = 41;
+// Triple Extension Parameters (legacy, now computed dynamically)
+// Left here for reference; prefer singular_beta(), double_ext_margin(), triple_ext_margin()
+constexpr int SINGULAR_DOUBLE_EXT_MARGIN_LEGACY = 6;
+constexpr int SINGULAR_TRIPLE_EXT_MARGIN_LEGACY = 41;
 constexpr int SINGULAR_DEPTH_INCREASE = 10;
 
 // ============================================================================

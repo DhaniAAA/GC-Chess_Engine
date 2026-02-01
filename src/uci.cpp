@@ -4,6 +4,7 @@
 #include "thread.hpp"
 #include "profiler.hpp"
 #include "datagen.hpp"
+#include "moveorder.hpp"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -89,6 +90,26 @@ void UCIHandler::loop() {
                 cmd_bench(is);
             } else if (token == "datagen") {
                 cmd_datagen(is);
+            } else if (token == "threats") {
+                // Debug threat-based scoring for current position
+                debug_threats(board);
+            } else if (token == "threatmove") {
+                // Debug threat score for a specific move
+                std::string moveStr;
+                if (is >> moveStr) {
+                    Move m = string_to_move(moveStr);
+                    debug_move_threat_score(board, m);
+                }
+            } else if (token == "quietsplit") {
+                // Debug good/bad quiet move split
+                debug_quiet_split(board);
+            } else if (token == "killerstats") {
+                // Show killer move statistics
+                g_killerStats.print();
+            } else if (token == "clearstats") {
+                // Clear killer stats
+                g_killerStats.clear();
+                std::cout << "Killer statistics cleared.\n";
             }
         }
     } catch (const std::exception& e) {

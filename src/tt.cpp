@@ -71,14 +71,15 @@ TTEntry* TranspositionTable::probe(Key key, bool& found) {
 
     TTEntry* entry = first_entry(key);
     U16 key16 = static_cast<U16>(key >> 48);
+    U32 key32 = static_cast<U32>(key >> 16);
 
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
-        if (entry[i].key16 == key16) {
+        if (entry[i].key16 == key16 && entry[i].key32 == key32) {
             found = true;
             return &entry[i];
         }
 
-        if (entry[i].key16 == 0) {
+        if (entry[i].key16 == 0 && entry[i].key32 == 0) {
             found = false;
             return &entry[i];
         }
@@ -107,9 +108,10 @@ void TranspositionTable::get_moves(Key key, Move* moves, int& count) {
 
     TTEntry* entry = first_entry(key);
     U16 key16 = static_cast<U16>(key >> 48);
+    U32 key32 = static_cast<U32>(key >> 16);
 
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
-        if (entry[i].key16 == key16) {
+        if (entry[i].key16 == key16 && entry[i].key32 == key32) {
             Move m = entry[i].move();
             if (m != MOVE_NONE) {
                 bool duplicate = false;
@@ -137,7 +139,7 @@ int TranspositionTable::hashfull() const {
     for (int i = 0; i < samples && i < static_cast<int>(clusterCount); ++i) {
         const TTEntry* entry = &table[i].entries[0];
         for (int j = 0; j < TTCluster::ENTRIES_PER_CLUSTER; ++j) {
-            if (entry[j].key16 != 0) {
+            if (entry[j].key16 != 0 || entry[j].key32 != 0) {
                 ++count;
             }
         }
