@@ -1,12 +1,3 @@
-// ============================================================================
-// profiler.hpp - Internal Performance Profiler for Chess Engine
-// ============================================================================
-// Usage:
-//   1. Build with -DPROFILING to enable profiling (or define PROFILING below)
-//   2. Use PROFILE_SCOPE("name") at start of functions to measure
-//   3. Call Profiler::print_results() to see the breakdown
-// ============================================================================
-
 #ifndef PROFILER_HPP
 #define PROFILER_HPP
 
@@ -20,12 +11,6 @@
 #include <vector>
 #include <atomic>
 
-// ============================================================================
-// Enable/Disable Profiling
-// ============================================================================
-// Uncomment the line below to enable profiling, or build with -DPROFILING
-// #define PROFILING
-
 #ifdef PROFILING
     #define PROFILE_SCOPE(name) ProfilerScope __profiler_scope__(name)
     #define PROFILE_FUNCTION() ProfilerScope __profiler_scope__(__FUNCTION__)
@@ -34,20 +19,12 @@
     #define PROFILE_FUNCTION()
 #endif
 
-// ============================================================================
-// Profiler Data Structures
-// ============================================================================
-
 struct ProfileData {
-    std::atomic<uint64_t> totalTimeNs{0};   // Total time in nanoseconds
-    std::atomic<uint64_t> callCount{0};      // Number of calls
-    std::atomic<uint64_t> maxTimeNs{0};      // Maximum single call time
-    std::atomic<uint64_t> minTimeNs{UINT64_MAX}; // Minimum single call time
+    std::atomic<uint64_t> totalTimeNs{0};
+    std::atomic<uint64_t> callCount{0};
+    std::atomic<uint64_t> maxTimeNs{0};
+    std::atomic<uint64_t> minTimeNs{UINT64_MAX};
 };
-
-// ============================================================================
-// Profiler Class (Singleton)
-// ============================================================================
 
 class Profiler {
 public:
@@ -56,7 +33,6 @@ public:
         return profiler;
     }
 
-    // Record a profile entry
     void record(const std::string& name, uint64_t durationNs) {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -64,20 +40,16 @@ public:
         data.totalTimeNs.fetch_add(durationNs, std::memory_order_relaxed);
         data.callCount.fetch_add(1, std::memory_order_relaxed);
 
-        // Update max (atomic compare-exchange loop)
         uint64_t currentMax = data.maxTimeNs.load(std::memory_order_relaxed);
         while (durationNs > currentMax &&
                !data.maxTimeNs.compare_exchange_weak(currentMax, durationNs,
                    std::memory_order_relaxed, std::memory_order_relaxed)) {}
-
-        // Update min (atomic compare-exchange loop)
         uint64_t currentMin = data.minTimeNs.load(std::memory_order_relaxed);
         while (durationNs < currentMin &&
                !data.minTimeNs.compare_exchange_weak(currentMin, durationNs,
                    std::memory_order_relaxed, std::memory_order_relaxed)) {}
     }
 
-    // Print profiling results
     static void print_results() {
         auto& profiler = instance();
         std::lock_guard<std::mutex> lock(profiler.mutex_);
@@ -88,13 +60,11 @@ public:
             return;
         }
 
-        // Calculate total time
         uint64_t totalTime = 0;
         for (const auto& [name, data] : profiler.profiles_) {
             totalTime += data.totalTimeNs.load();
         }
 
-        // Sort by total time (descending)
         std::vector<std::pair<std::string, ProfileData*>> sorted;
         for (auto& [name, data] : profiler.profiles_) {
             sorted.push_back({name, &data});
@@ -104,7 +74,6 @@ public:
                 return a.second->totalTimeNs.load() > b.second->totalTimeNs.load();
             });
 
-        // Print header
         std::cout << "\n";
         std::cout << "================================================================================\n";
         std::cout << "                           PROFILING RESULTS\n";
@@ -118,7 +87,6 @@ public:
                   << "\n";
         std::cout << "--------------------------------------------------------------------------------\n";
 
-        // Print data
         for (const auto& [name, dataPtr] : sorted) {
             uint64_t total = dataPtr->totalTimeNs.load();
             uint64_t calls = dataPtr->callCount.load();
@@ -129,7 +97,6 @@ public:
             double avgUs = calls > 0 ? (total / 1000.0 / calls) : 0.0;
             double maxUs = maxNs / 1000.0;
 
-            // Truncate long names
             std::string displayName = name;
             if (displayName.length() > 28) {
                 displayName = displayName.substr(0, 25) + "...";
@@ -151,7 +118,6 @@ public:
         std::cout << "================================================================================\n\n";
     }
 
-    // Reset all profiling data
     static void reset() {
         auto& profiler = instance();
         std::lock_guard<std::mutex> lock(profiler.mutex_);
@@ -163,10 +129,6 @@ private:
     std::unordered_map<std::string, ProfileData> profiles_;
     std::mutex mutex_;
 };
-
-// ============================================================================
-// RAII Scope Timer
-// ============================================================================
 
 class ProfilerScope {
 public:
@@ -184,10 +146,6 @@ private:
     const char* name_;
     std::chrono::high_resolution_clock::time_point start_;
 };
-
-// ============================================================================
-// Bottleneck Analysis Helper
-// ============================================================================
 
 namespace ProfilerAnalysis {
 
@@ -231,6 +189,6 @@ inline void analyze_bottlenecks() {
     std::cout << "================================================================================\n";
 }
 
-} // namespace ProfilerAnalysis
+}
 
-#endif // PROFILER_HPP
+#endif

@@ -1,10 +1,3 @@
-// ============================================================================
-// datagen.hpp - Data Generation for NNUE Training
-// ============================================================================
-// This module generates training data for NNUE by playing self-games using
-// the current engine's evaluation and search.
-// ============================================================================
-
 #ifndef DATAGEN_HPP
 #define DATAGEN_HPP
 
@@ -21,9 +14,6 @@
 
 namespace DataGen {
 
-// ============================================================================
-// Training Data Entry
-// ============================================================================
 #pragma pack(push, 1)
 struct TrainingEntry {
     uint8_t packed_board[32];
@@ -42,10 +32,6 @@ static_assert(sizeof(TrainingEntry) == 40, "TrainingEntry should be 40 bytes");
 constexpr uint8_t PTYPE_EMPTY = 0;
 constexpr uint8_t PTYPE_WP = 1, PTYPE_WN = 2, PTYPE_WB = 3, PTYPE_WR = 4, PTYPE_WQ = 5, PTYPE_WK = 6;
 constexpr uint8_t PTYPE_BP = 7, PTYPE_BN = 8, PTYPE_BB = 9, PTYPE_BR = 10, PTYPE_BQ = 11, PTYPE_BK = 12;
-
-// ============================================================================
-// Data Generator Configuration
-// ============================================================================
 
 struct DataGenConfig {
     int threads = 2;
@@ -84,10 +70,6 @@ struct DataGenConfig {
     int random_multi_pv = 2;
 };
 
-// ============================================================================
-// Statistics
-// ============================================================================
-
 struct DataGenStats {
     std::atomic<uint64_t> games_started{0};
     std::atomic<uint64_t> games_completed{0};
@@ -112,20 +94,12 @@ struct DataGenStats {
     void print() const;
 };
 
-// ============================================================================
-// Game Result
-// ============================================================================
-
 enum class GameResult {
     ongoing = 0,
     white_wins = 1,
     black_wins = 2,
     draw = 3
 };
-
-// ============================================================================
-// Data Generator Class
-// ============================================================================
 
 class DataGenerator {
 public:
@@ -167,15 +141,7 @@ private:
     std::vector<std::unique_ptr<Search>> m_searchers;
 };
 
-// ============================================================================
-// Marlinformat Conversion (for Bullet trainer compatibility)
-// ============================================================================
-
 void to_marlinformat(const TrainingEntry& entry, std::vector<uint8_t>& output);
-
-// ============================================================================
-// Global Interface (used by UCI)
-// ============================================================================
 
 void start(const DataGenConfig& config);
 void stop();
@@ -183,10 +149,6 @@ bool is_running();
 const DataGenStats& get_stats();
 
 DataGenConfig parse_config(std::istringstream& is);
-
-// ============================================================================
-// Binpack File Reading & Conversion
-// ============================================================================
 
 bool read_binpack_file(const std::string& path, std::vector<TrainingEntry>& entries, size_t max_entries = 0);
 void view_binpack_file(const std::string& path, size_t count = 10, size_t offset = 0);
@@ -206,10 +168,6 @@ bool get_file_stats(const std::string& path, FileStats& stats);
 std::string entry_to_string(const TrainingEntry& entry);
 std::string entry_to_fen(const TrainingEntry& entry);
 bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si);
-
-// ============================================================================
-// Filter Existing Data (Quiet Position Detection)
-// ============================================================================
 
 struct FilterConfig {
     std::string input_path;
@@ -239,6 +197,6 @@ struct FilterStats {
 bool filter_binpack(const FilterConfig& config, FilterStats& stats);
 FilterConfig parse_filter_config(std::istringstream& is);
 
-} // namespace DataGen
+}
 
-#endif // DATAGEN_HPP
+#endif

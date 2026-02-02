@@ -1,10 +1,6 @@
 #ifndef OPTIMIZE_HPP
 #define OPTIMIZE_HPP
 
-// ============================================================================
-// Compiler Optimization Hints
-// ============================================================================
-
 #if defined(__GNUC__) || defined(__clang__)
     #define LIKELY(x)   __builtin_expect(!!(x), 1)
     #define UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -61,10 +57,6 @@
     #define ASSUME(cond) ((void)0)
 #endif
 
-// ============================================================================
-// Memory Access Pattern Optimization
-// ============================================================================
-
 constexpr size_t CACHE_LINE_SIZE_OPT = 64;
 
 constexpr int PREFETCH_STRIDE = 4;
@@ -75,10 +67,6 @@ constexpr int PREFETCH_STRIDE = 4;
 #define PREFETCH_TT_ENTRY(addr) PREFETCH_READ(addr)
 #define PREFETCH_HISTORY(addr) PREFETCH_READ_T1(addr)
 #define PREFETCH_MOVELIST(addr) PREFETCH_READ(addr)
-
-// ============================================================================
-// Loop Optimization Hints
-// ============================================================================
 
 #if defined(__GNUC__) || defined(__clang__)
     #define LOOP_EXPECT_ITERATIONS(n)
@@ -93,10 +81,6 @@ constexpr int PREFETCH_STRIDE = 4;
     #define LOOP_UNROLL(n)
 #endif
 
-// ============================================================================
-// Memory Barriers (for SMP correctness)
-// ============================================================================
-
 #if defined(__GNUC__) || defined(__clang__)
     #define COMPILER_BARRIER() __asm__ volatile("" ::: "memory")
 #elif defined(_MSC_VER)
@@ -104,10 +88,6 @@ constexpr int PREFETCH_STRIDE = 4;
 #else
     #define COMPILER_BARRIER()
 #endif
-
-// ============================================================================
-// Restrict pointer hint (no aliasing)
-// ============================================================================
 
 #if defined(__GNUC__) || defined(__clang__)
     #define RESTRICT __restrict__
@@ -117,10 +97,6 @@ constexpr int PREFETCH_STRIDE = 4;
     #define RESTRICT
 #endif
 
-// ============================================================================
-// Data Locality Helpers
-// ============================================================================
-
 #define CACHE_ALIGNED alignas(64)
 #define PAD_TO_CACHE_LINE(bytes_used) \
     char _padding[CACHE_LINE_SIZE_OPT - ((bytes_used) % CACHE_LINE_SIZE_OPT)]
@@ -129,29 +105,14 @@ constexpr size_t padding_for_cache_line(size_t size) {
     return (CACHE_LINE_SIZE_OPT - (size % CACHE_LINE_SIZE_OPT)) % CACHE_LINE_SIZE_OPT;
 }
 
-// ============================================================================
-// Memory Access Pattern Hints for Arrays
-// ============================================================================
-
 #if defined(__GNUC__) || defined(__clang__)
     #define ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
 #else
     #define ASSUME_ALIGNED(ptr, align) (ptr)
 #endif
 
-// ============================================================================
-// Hot Data Grouping
-//
-// Group frequently accessed data together to maximize cache efficiency.
-// Use these markers to document hot vs cold data in structures.
-// ============================================================================
-
 #define HOT_DATA_BEGIN
 #define HOT_DATA_END
-
-// ============================================================================
-// Software Prefetching Patterns
-// ============================================================================
 
 template<typename T>
 inline void prefetch_next_iteration(const T* RESTRICT arr, int current_idx, int max_idx, int distance = 2) {

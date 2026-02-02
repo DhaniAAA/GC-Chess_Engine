@@ -4,6 +4,7 @@
 #include "thread.hpp"
 #include "profiler.hpp"
 #include "datagen.hpp"
+#include "moveorder.hpp"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -14,34 +15,20 @@
 
 namespace UCI {
 
-// ============================================================================
-// Global Instances
-// ============================================================================
-
 EngineOptions options;
 TimeManager timeMgr;
-
-// ============================================================================
-// Engine Info
-// ============================================================================
 
 const std::string ENGINE_NAME = "GC-Engine";
 const std::string ENGINE_AUTHOR = "Dhani";
 const std::string ENGINE_VERSION = "1.2";
 
-// ============================================================================
-// UCI Handler Implementation
-// ============================================================================
-
-// StateInfo stack for moves
 static StateInfo stateInfoStack[512];
 static int stateStackIdx = 0;
 
 UCIHandler::UCIHandler() : searching(false) {
-    // Gunakan stateInfoStack untuk inisialisasi aman
     stateStackIdx = 0;
     board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
-    stateStackIdx++; // [PERBAIKAN]
+    stateStackIdx++;
 }
 
 UCIHandler::~UCIHandler() {
@@ -89,6 +76,21 @@ void UCIHandler::loop() {
                 cmd_bench(is);
             } else if (token == "datagen") {
                 cmd_datagen(is);
+            } else if (token == "threats") {
+                debug_threats(board);
+            } else if (token == "threatmove") {
+                std::string moveStr;
+                if (is >> moveStr) {
+                    Move m = string_to_move(moveStr);
+                    debug_move_threat_score(board, m);
+                }
+            } else if (token == "quietsplit") {
+                debug_quiet_split(board);
+            } else if (token == "killerstats") {
+                g_killerStats.print();
+            } else if (token == "clearstats") {
+                g_killerStats.clear();
+                std::cout << "Killer statistics cleared.\n";
             }
         }
     } catch (const std::exception& e) {
@@ -97,10 +99,6 @@ void UCIHandler::loop() {
         std::cerr << "Engine Error: Unknown exception" << std::endl;
     }
 }
-
-// ============================================================================
-// Command Handlers
-// ============================================================================
 
 void UCIHandler::cmd_uci() {
     std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << std::endl;
@@ -117,11 +115,9 @@ void UCIHandler::cmd_uci() {
     std::cout << "option name Book File type string default book.bin" << std::endl;
     std::cout << "option name SyzygyPath type string default <empty>" << std::endl;
 
-    // Contempt and Pondering Options
     std::cout << "option name Contempt type spin default 20 min -100 max 100" << std::endl;
     std::cout << "option name Dynamic Contempt type check default true" << std::endl;
 
-    // Tuning Options (SPSA)
     std::cout << "option name PawnValueMG type spin default " << Tuning::PawnValue.mg << " min 0 max 2000" << std::endl;
     std::cout << "option name PawnValueEG type spin default " << Tuning::PawnValue.eg << " min 0 max 2000" << std::endl;
     std::cout << "option name KnightValueMG type spin default " << Tuning::KnightValue.mg << " min 0 max 2000" << std::endl;
@@ -138,12 +134,12 @@ void UCIHandler::cmd_uci() {
     std::cout << std::endl;
 
     std::cout << "uciok" << std::endl;
-    std::cout.flush();  // [PERBAIKAN] Force flush untuk memastikan uciok terkirim
+    std::cout.flush();
 }
 
 void UCIHandler::cmd_isready() {
     std::cout << "readyok" << std::endl;
-    std::cout.flush();  // [PERBAIKAN] Force flush untuk memastikan readyok terkirim
+    std::cout.flush();
 }
 
 void UCIHandler::cmd_ucinewgame() {
@@ -151,9 +147,9 @@ void UCIHandler::cmd_ucinewgame() {
     TT.clear();
     stateStackIdx = 0;
     board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
-    stateStackIdx++; // [PERBAIKAN] Increment index
+    stateStackIdx++;
     Searcher.clear_history();
-    Threads.clear_all_history();  // Clear all thread histories
+    Threads.clear_all_history();
 }
 
 void UCIHandler::cmd_position(std::istringstream& is) {
@@ -162,22 +158,21 @@ void UCIHandler::cmd_position(std::istringstream& is) {
     std::string token;
     is >> token;
 
-    stateStackIdx = 0;  // Reset state stack
+    stateStackIdx = 0;
 
     if (token == "startpos") {
         board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
-        stateStackIdx++; // [PERBAIKAN] Increment index
-        is >> token;  // Consume "moves" if present
+        stateStackIdx++;
+        is >> token;
     } else if (token == "fen") {
         std::string fen;
         while (is >> token && token != "moves") {
             fen += token + " ";
         }
         board.set(fen, &stateInfoStack[stateStackIdx]);
-        stateStackIdx++; // [PERBAIKAN] Increment index
+        stateStackIdx++;
     }
 
-    // Parse moves
     if (token == "moves") {
         parse_moves(is);
     }
@@ -188,29 +183,22 @@ void UCIHandler::parse_moves(std::istringstream& is) {
     while (is >> token) {
         Move m = string_to_move(token);
 
-        // Need to determine move type from position
         if (m != MOVE_NONE) {
             Square from = m.from();
             Square to = m.to();
             Piece pc = board.piece_on(from);
 
-            // [PERBAIKAN] Safety check: skip if no piece on from square
             if (pc == NO_PIECE) {
                 continue;
             }
-
-            // Fix move type based on position context
             if (type_of(pc) == KING) {
-                // Check for castling
                 if (std::abs(file_of(from) - file_of(to)) > 1) {
                     m = Move::make_castling(from, to);
                 }
             } else if (type_of(pc) == PAWN) {
-                // Check for en passant
                 if (to == board.en_passant_square()) {
                     m = Move::make_enpassant(from, to);
                 }
-                // Check for promotion (already handled by string_to_move if present)
             }
 
             if (MoveGen::is_legal(board, m) && stateStackIdx < 511) {
@@ -252,12 +240,9 @@ void UCIHandler::cmd_go(std::istringstream& is) {
         }
     }
 
-    // Set time limits based on side to move
     Color us = board.side_to_move();
     int timeLeft = (us == WHITE) ? wtime : btime;
     int increment = (us == WHITE) ? winc : binc;
-
-    // Initialize time management
     if (timeLeft > 0 && !limits.infinite && limits.movetime == 0) {
         timeMgr.init(us, timeLeft, increment, movestogo, 0);
         limits.time[us] = timeLeft;
@@ -272,40 +257,26 @@ void UCIHandler::start_search(const SearchLimits& limits) {
     searching = true;
     isPondering = limits.ponder;
 
-    // Save the FEN before search starts - this is a safe string copy
-    // that doesn't have StateInfo pointer issues
     std::string searchFen = board.fen();
 
-    // Set ponder mode in searcher
     Searcher.set_pondering(limits.ponder);
 
-    // Track ponder attempt if pondering is enabled
     if (limits.ponder) {
         options.ponderAttempts++;
     }
-
-    // Start search in separate thread
     searchThread = std::thread([this, limits, searchFen]() {
-        // Reconstruct board from FEN for search - this creates fresh StateInfo
         StateInfo searchSi;
         Board searchBoard;
         searchBoard.set(searchFen, &searchSi);
 
         Searcher.start(searchBoard, limits);
 
-        // Output best move
         Move bestMove = Searcher.best_move();
 
-        // [PERBAIKAN] Final validation using fresh board from FEN
-        // The searchBoard StateInfo may be corrupted after search
-        // So we create a new board from the original FEN for validation
         StateInfo validationSi;
         Board validationBoard;
         validationBoard.set(searchFen, &validationSi);
 
-        // Generate ALL legal moves and verify bestMove is in the list
-        // This is the most robust validation - if the move isn't in the
-        // legal move list, it's definitely illegal
         MoveList legalMoves;
         MoveGen::generate_legal(validationBoard, legalMoves);
 
@@ -316,18 +287,14 @@ void UCIHandler::start_search(const SearchLimits& limits) {
             if (legalMove.from() == bestMove.from() &&
                 legalMove.to() == bestMove.to()) {
 
-                // [PERBAIKAN] Validasi tipe promosi untuk mencegah ambiguitas
                 if (legalMove.is_promotion()) {
                     if (bestMove.is_promotion()) {
-                        // Jika bestMove punya flag promosi (misal a7a8n), pastikan tipenya cocok
                         if (legalMove.promotion_type() == bestMove.promotion_type()) {
                             bestMove = legalMove;
                             moveFound = true;
                             break;
                         }
                     } else {
-                        // Jika bestMove tidak punya flag (misal dari GUI 'a7a8' tanpa suffix),
-                        // asumsikan promosi ke Queen (standar UCI)
                         if (legalMove.promotion_type() == QUEEN) {
                             bestMove = legalMove;
                             moveFound = true;
@@ -335,7 +302,6 @@ void UCIHandler::start_search(const SearchLimits& limits) {
                         }
                     }
                 } else {
-                    // Bukan langkah promosi, cukup cocokkan koordinat
                     bestMove = legalMove;
                     moveFound = true;
                     break;
@@ -344,21 +310,17 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         }
 
         if (bestMove == MOVE_NONE || !moveFound) {
-            // BestMove is illegal or none! Use first legal move as fallback
             if (!legalMoves.empty()) {
                 bestMove = legalMoves[0].move;
             } else {
-                bestMove = MOVE_NONE;  // No legal moves (checkmate or stalemate)
+                bestMove = MOVE_NONE;
             }
         }
 
         std::cout << "bestmove " << move_to_string(bestMove);
 
-        // Output ponder move if available and valid
-        // [PERBAIKAN] Ponder move harus dari PV yang sama dengan bestmove
         Move ponderMove = Searcher.ponder_move();
         if (ponderMove != MOVE_NONE && bestMove != MOVE_NONE && options.ponder) {
-            // Final validation: make best move and check if ponder is legal
             StateInfo si;
             validationBoard.do_move(bestMove, si);
 
@@ -366,7 +328,6 @@ void UCIHandler::start_search(const SearchLimits& limits) {
                 MoveGen::is_legal(validationBoard, ponderMove)) {
                 std::cout << " ponder " << move_to_string(ponderMove);
 
-                // Store ponder state for ponderhit verification
                 expectedPonderMove = ponderMove;
                 ponderFen = validationBoard.fen();
                 options.lastPonderMove = ponderMove;
@@ -380,7 +341,7 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         }
 
         std::cout << std::endl;
-        std::cout.flush();  // Force flush bestmove
+        std::cout.flush();
 
         isPondering = false;
         Searcher.set_pondering(false);
@@ -403,21 +364,8 @@ void UCIHandler::cmd_stop() {
 }
 
 void UCIHandler::cmd_ponderhit() {
-    // Called when opponent played the move we were pondering on
-    // Transition from ponder mode to normal search
-
     if (isPondering && Searcher.is_pondering()) {
-        // Record ponder hit for statistics
         options.ponderHits++;
-
-        // Log ponder hit (optional debug info)
-        // std::cout << "info string Ponder hit! Rate: "
-        //           << (options.ponderHits * 100 / options.ponderAttempts) << "%" << std::endl;
-
-        // Transition to normal search - this will:
-        // 1. Disable ponder mode (time checking becomes active)
-        // 2. Reset time management with actual time
-        // 3. Continue searching from current depth (NOT restart!)
         Searcher.on_ponderhit();
         isPondering = false;
     }
@@ -430,20 +378,15 @@ void UCIHandler::cmd_quit() {
 void UCIHandler::cmd_setoption(std::istringstream& is) {
     std::string token, name, value;
 
-    // Parse "name <id> [value <x>]"
-    is >> token;  // "name"
+    is >> token;
 
-    // Get name (could be multiple words)
     while (is >> token && token != "value") {
         name += (name.empty() ? "" : " ") + token;
     }
 
-    // Get value
     while (is >> token) {
         value += (value.empty() ? "" : " ") + token;
     }
-
-    // Apply option
     if (name == "Hash") {
         options.hash = std::stoi(value);
         TT.resize(options.hash);
@@ -463,7 +406,6 @@ void UCIHandler::cmd_setoption(std::istringstream& is) {
         options.syzygyPath = value;
         Tablebase::TB.init(value);
     }
-    // Tuning Options (SPSA)
     else if (name == "PawnValueMG") Tuning::PawnValue.mg = std::stoi(value);
     else if (name == "PawnValueEG") Tuning::PawnValue.eg = std::stoi(value);
     else if (name == "KnightValueMG") Tuning::KnightValue.mg = std::stoi(value);
@@ -477,7 +419,6 @@ void UCIHandler::cmd_setoption(std::istringstream& is) {
     else if (name == "RookOpenFileBonusMG") Tuning::RookOpenFileBonus.mg = std::stoi(value);
     else if (name == "RookOpenFileBonusEG") Tuning::RookOpenFileBonus.eg = std::stoi(value);
     else if (name == "KingSafetyWeight") Tuning::KingSafetyWeight = std::stoi(value);
-    // Contempt Options
     else if (name == "Contempt") options.contempt = std::stoi(value);
     else if (name == "Dynamic Contempt") options.dynamicContempt = (value == "true");
 }
@@ -486,7 +427,6 @@ void UCIHandler::cmd_perft(std::istringstream& is) {
     int depth = 6;
     is >> depth;
 
-    // Perft implementation
     std::function<U64(Board&, int)> perft = [&](Board& b, int d) -> U64 {
         if (d == 0) return 1;
 
@@ -531,7 +471,6 @@ void UCIHandler::cmd_divide(std::istringstream& is) {
     MoveList moves;
     MoveGen::generate_all(board, moves);
 
-    // Reuse perft lambda logic (re-defined here for simplicity)
     std::function<U64(Board&, int)> perft_recursive = [&](Board& b, int d) -> U64 {
         if (d == 0) return 1;
         U64 nodes = 0;
@@ -580,23 +519,17 @@ void UCIHandler::cmd_eval() {
 }
 
 void UCIHandler::cmd_bench(std::istringstream& is) {
-    // Default parameters
     int depth = 13;
     int numThreads = 1;
     int hashMB = 16;
-
-    // Parse optional arguments: bench [depth] [threads] [hash]
     std::string token;
     if (is >> token) depth = std::stoi(token);
     if (is >> token) numThreads = std::stoi(token);
     if (is >> token) hashMB = std::stoi(token);
 
-    // Clamp values
     depth = std::max(1, std::min(depth, 40));
     numThreads = std::max(1, std::min(numThreads, 128));
     hashMB = std::max(1, std::min(hashMB, 4096));
-
-    // Apply settings temporarily
     int oldHash = options.hash;
     int oldThreads = options.threads;
     TT.resize(hashMB);
@@ -610,32 +543,18 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
     std::cout << "Hash: " << hashMB << " MB" << std::endl;
     std::cout << "===============================================\n" << std::endl;
 
-    // Standard benchmark positions (diverse set for testing)
-    // NOTE: Avoiding extremely complex endgame positions that can explode in nodes
     const char* positions[] = {
-        // Starting position
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        // Kiwipete (complex middlegame)
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        // Position 3 (Italian Game)
         "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
-        // Position 4 (Sicilian Defense)
         "r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-        // Position 5 (middlegame with promotion)
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-        // Position 6 (Sicilian-like)
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-        // Position 7 (Queen's Gambit)
         "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
-        // Position 8 (Scholar's Mate defense)
         "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
-        // Position 9 (Ruy Lopez)
         "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
-        // Position 10 (Simple King Pawn endgame)
         "8/8/4k3/3p4/3P1K2/8/8/8 w - - 0 1",
-        // Position 11 (Queen vs pieces)
         "r1bqr1k1/pp1nbppp/2p2n2/3p2B1/3P4/2NBP3/PPQ1NPPP/R3K2R w KQ - 3 10",
-        // Position 12 (King's Indian Attack)
         "r1bq1rk1/ppppbppp/2n2n2/4p3/2P5/5NP1/PP1PPPBP/RNBQ1RK1 w - - 5 6"
     };
 
@@ -648,7 +567,6 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
 
     auto startTotal = std::chrono::steady_clock::now();
 
-    // Clear TT and history before benchmark
     TT.clear();
     Searcher.clear_history();
     Threads.clear_all_history();
@@ -663,7 +581,6 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
 
         SearchLimits benchLimits;
         benchLimits.depth = depth;
-        // Add node limit as safety stop (50M nodes per position max)
         benchLimits.nodes = 100000000;
 
         auto posStart = std::chrono::steady_clock::now();
@@ -705,14 +622,10 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
     std::cout << "===============================================" << std::endl;
     std::cout << std::endl;
 
-    // Signature (for comparing between different builds)
     std::cout << totalNodes << " nodes " << avgNps << " nps" << std::endl;
 
-    // Print profiling results if enabled
     Profiler::print_results();
     ProfilerAnalysis::analyze_bottlenecks();
-
-    // Restore settings
     TT.resize(oldHash);
     Threads.set_thread_count(oldThreads);
 }
@@ -722,7 +635,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     is >> subcommand;
 
     if (subcommand == "stop") {
-        // Stop data generation
         if (DataGen::is_running()) {
             DataGen::stop();
             std::cout << "Data generation stopped." << std::endl;
@@ -733,7 +645,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "status") {
-        // Show status
         if (DataGen::is_running()) {
             std::cout << "Data generation is running." << std::endl;
             DataGen::get_stats().print();
@@ -744,7 +655,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "view") {
-        // View binpack file contents
         std::string path = "data/training.binpack";
         size_t count = 10;
         size_t offset = 0;
@@ -758,7 +668,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
             } else if (token == "offset" || token == "skip") {
                 is >> offset;
             } else {
-                // First unnamed arg is path
                 path = token;
             }
         }
@@ -768,7 +677,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "convert") {
-        // Convert binpack to EPD
         std::string binpack_path = "data/training.binpack";
         std::string epd_path = "data/training.epd";
         size_t max_entries = 0;
@@ -791,7 +699,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "stats") {
-        // Show file statistics
         std::string path = "data/training.binpack";
         std::string token;
         if (is >> token) {
@@ -819,7 +726,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "filter") {
-        // Filter existing binpack file to keep only quiet positions
         DataGen::FilterConfig config = DataGen::parse_filter_config(is);
 
         if (config.input_path.empty()) {
@@ -895,13 +801,10 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     if (subcommand == "start" || !subcommand.empty()) {
-        // Check if already running
         if (DataGen::is_running()) {
             std::cout << "Data generation already running. Use 'datagen stop' first." << std::endl;
             return;
         }
-
-        // Parse config - if subcommand wasn't "start", put it back for parsing
         std::string remaining;
         if (subcommand != "start") {
             remaining = subcommand + " ";
@@ -914,7 +817,6 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         std::istringstream config_stream(remaining);
         DataGen::DataGenConfig config = DataGen::parse_config(config_stream);
 
-        // Start generation
         DataGen::start(config);
         std::cout << "Data generation started in background." << std::endl;
         std::cout << "Format: binpack" << std::endl;
@@ -923,48 +825,36 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
         return;
     }
 
-    // Default: show help
     std::cout << "Unknown datagen command. Use 'datagen help' for usage." << std::endl;
 }
-
-// ============================================================================
-// Time Management Implementation
-// ============================================================================
 
 TimeManager::TimeManager()
     : optimalTime(0), maximumTime(0), startTime(0),
       incrementTime(0), movesToGo(0), stability(1.0) {}
 
 void TimeManager::init(Color us, int timeLeft, int increment, int mtg, int moveTime) {
-    (void)us;  // Not used currently
+    (void)us;
 
     incrementTime = increment;
-    movesToGo = mtg > 0 ? mtg : 40;  // Default to 40 moves to go
+    movesToGo = mtg > 0 ? mtg : 40;
 
     if (moveTime > 0) {
-        // Fixed time per move
         optimalTime = moveTime - UCI::options.moveOverhead;
         maximumTime = moveTime - UCI::options.moveOverhead;
         return;
     }
 
-    // Calculate time based on remaining time and moves to go
     int overhead = UCI::options.moveOverhead;
     int safeTime = std::max(1, timeLeft - overhead);
 
-    // Base allocation
     int baseTime = safeTime / movesToGo;
 
-    // Add a portion of increment
     baseTime += increment * 3 / 4;
 
-    // Optimal time: time we aim to use
     optimalTime = std::min(baseTime, safeTime / 2);
 
-    // Maximum time: absolute limit
     maximumTime = std::min(safeTime * 3 / 4, baseTime * 3);
 
-    // Ensure minimum time
     optimalTime = std::max(10, optimalTime);
     maximumTime = std::max(50, maximumTime);
 
@@ -972,21 +862,16 @@ void TimeManager::init(Color us, int timeLeft, int increment, int mtg, int moveT
 }
 
 bool TimeManager::should_stop(int elapsed, int depth, bool bestMoveStable) {
-    // Always search at least depth 1
     if (depth < 1) return false;
 
-    // Hard time limit
     if (elapsed >= maximumTime) return true;
 
-    // Adjust by stability
     int adjustedOptimal = static_cast<int>(optimalTime * stability);
 
-    // If best move is stable and we've used enough time, stop
     if (bestMoveStable && elapsed >= adjustedOptimal / 2) {
         return true;
     }
 
-    // Normal time check
     if (elapsed >= adjustedOptimal) {
         return true;
     }
@@ -995,18 +880,15 @@ bool TimeManager::should_stop(int elapsed, int depth, bool bestMoveStable) {
 }
 
 void TimeManager::adjust(bool scoreDropped, bool bestMoveChanged) {
-    // Increase time if score dropped significantly
     if (scoreDropped) {
         stability = std::min(2.0, stability * 1.2);
     }
 
-    // Increase time if best move keeps changing
     if (bestMoveChanged) {
         stability = std::min(2.0, stability * 1.1);
     } else {
-        // Decrease time if best move is stable
         stability = std::max(0.5, stability * 0.95);
     }
 }
 
-} // namespace UCI
+}

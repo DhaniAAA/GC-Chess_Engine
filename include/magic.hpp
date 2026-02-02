@@ -3,18 +3,9 @@
 
 #include "bitboard.hpp"
 
-// Optional: Include PEXT for BMI2 support
 #ifdef USE_PEXT
 #include "pext.hpp"
 #endif
-
-// ============================================================================
-// Magic Bitboard Structure
-// Each entry contains pre-computed magic for O(1) attack lookup
-//
-// When USE_PEXT is defined, we use the PEXT instruction for index calculation.
-// PEXT provides faster lookups on CPUs with BMI2 (Intel Haswell+, AMD Zen 3+).
-// ============================================================================
 
 struct Magic {
     Bitboard  mask;
@@ -33,10 +24,6 @@ struct Magic {
 
 extern Magic BishopMagics[SQUARE_NB];
 extern Magic RookMagics[SQUARE_NB];
-
-// ============================================================================
-// Sliding Piece Attack Functions
-// ============================================================================
 
 inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
     return BishopMagics[s].attacks[BishopMagics[s].index(occupied)];
@@ -61,12 +48,8 @@ inline Bitboard attacks_bb(PieceType pt, Square s, Bitboard occupied) {
     }
 }
 
-// ============================================================================
-// Initialization
-// ============================================================================
-
 namespace Magics {
     void init();
 }
 
-#endif // MAGIC_HPP
+#endif

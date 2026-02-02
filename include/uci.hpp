@@ -10,26 +10,7 @@
 #include <thread>
 #include <atomic>
 
-// ============================================================================
-// Universal Chess Interface (UCI) Protocol Implementation (TAHAP 6)
-//
-// UCI is the standard protocol for chess engine communication.
-// Commands:
-//   - uci: Engine identification
-//   - isready: Synchronization
-//   - ucinewgame: Reset for new game
-//   - position: Set up position
-//   - go: Start searching
-//   - stop: Stop searching
-//   - quit: Exit engine
-//   - setoption: Configure engine options
-// ============================================================================
-
 namespace UCI {
-
-// ============================================================================
-// Engine Options
-// ============================================================================
 
 struct EngineOptions {
     int hash = 256;
@@ -40,29 +21,20 @@ struct EngineOptions {
     std::string syzygyPath = "";
     int moveOverhead = 10;
 
-    // Contempt Factor
     int contempt = 20;
     bool dynamicContempt = true;
 
-    // Ponder Statistics (for tracking hit rate)
     U64 ponderHits = 0;
     U64 ponderAttempts = 0;
     Move lastPonderMove = MOVE_NONE;
 };
-
-// Global options
 extern EngineOptions options;
-
-// ============================================================================
-// UCI Main Loop
-// ============================================================================
 
 class UCIHandler {
 public:
     UCIHandler();
     ~UCIHandler();
 
-    // Main loop - processes UCI commands
     void loop();
 
 private:
@@ -70,12 +42,9 @@ private:
     std::thread searchThread;
     std::atomic<bool> searching;
 
-    // Ponder state
     std::string ponderFen;
     Move expectedPonderMove;
     bool isPondering = false;
-
-    // Command handlers
     void cmd_uci();
     void cmd_isready();
     void cmd_ucinewgame();
@@ -92,15 +61,10 @@ private:
     void cmd_bench(std::istringstream& is);
     void cmd_datagen(std::istringstream& is);
 
-    // Helper functions
     void parse_moves(std::istringstream& is);
     void start_search(const SearchLimits& limits);
     void wait_for_search();
 };
-
-// ============================================================================
-// Time Management
-// ============================================================================
 
 class TimeManager {
 public:
@@ -124,6 +88,6 @@ private:
 
 extern TimeManager timeMgr;
 
-} // namespace UCI
+}
 
-#endif // UCI_HPP
+#endif

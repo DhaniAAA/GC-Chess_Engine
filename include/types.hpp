@@ -4,10 +4,6 @@
 #include <cstdint>
 #include <string>
 
-// ============================================================================
-// Basic Types
-// ============================================================================
-
 using U64 = uint64_t;
 using U32 = uint32_t;
 using U16 = uint16_t;
@@ -17,10 +13,6 @@ using S64 = int64_t;
 using S32 = int32_t;
 using S16 = int16_t;
 using S8  = int8_t;
-
-// ============================================================================
-// Chess Types
-// ============================================================================
 
 enum Color : int {
     WHITE = 0,
@@ -83,10 +75,10 @@ enum Direction : int {
 
 enum CastlingRights : int {
     NO_CASTLING = 0,
-    WHITE_OO = 1,       // White kingside
-    WHITE_OOO = 2,      // White queenside
-    BLACK_OO = 4,       // Black kingside
-    BLACK_OOO = 8,      // Black queenside
+    WHITE_OO = 1,
+    WHITE_OOO = 2,
+    BLACK_OO = 4,
+    BLACK_OOO = 8,
 
     WHITE_CASTLING = WHITE_OO | WHITE_OOO,
     BLACK_CASTLING = BLACK_OO | BLACK_OOO,
@@ -94,10 +86,6 @@ enum CastlingRights : int {
 
     CASTLING_RIGHT_NB = 16
 };
-
-// ============================================================================
-// Inline Operators and Utility Functions
-// ============================================================================
 
 constexpr Color operator~(Color c) {
     return Color(c ^ BLACK);
@@ -167,10 +155,6 @@ constexpr CastlingRights operator~(CastlingRights cr) {
     return CastlingRights(~int(cr));
 }
 
-// ============================================================================
-// Square/File/Rank Utility Functions
-// ============================================================================
-
 constexpr Square make_square(File f, Rank r) {
     return Square((r << 3) + f);
 }
@@ -199,10 +183,6 @@ constexpr Direction pawn_push(Color c) {
     return c == WHITE ? NORTH : SOUTH;
 }
 
-// ============================================================================
-// Piece Utility Functions
-// ============================================================================
-
 constexpr Piece make_piece(Color c, PieceType pt) {
     return Piece((c << 3) + pt);
 }
@@ -219,10 +199,6 @@ constexpr bool is_valid_square(Square s) {
     return s >= SQ_A1 && s <= SQ_H8;
 }
 
-// ============================================================================
-// String Conversion
-// ============================================================================
-
 inline std::string square_to_string(Square s) {
     return std::string{char('a' + file_of(s)), char('1' + rank_of(s))};
 }
@@ -235,13 +211,9 @@ inline Square string_to_square(const std::string& str) {
     return make_square(f, r);
 }
 
-// ============================================================================
-// Evaluation Score
-// ============================================================================
-
 struct EvalScore {
-    int mg;  // Middlegame score
-    int eg;  // Endgame score
+    int mg;
+    int eg;
 
     constexpr EvalScore() : mg(0), eg(0) {}
     constexpr EvalScore(int m, int e) : mg(m), eg(e) {}
@@ -270,7 +242,6 @@ struct EvalScore {
     }
 };
 
-// Shorthand for creating scores
 constexpr EvalScore S(int mg, int eg) { return EvalScore(mg, eg); }
 
-#endif // TYPES_HPP
+#endif

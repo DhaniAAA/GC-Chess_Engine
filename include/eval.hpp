@@ -9,25 +9,20 @@
 
 namespace Eval {
 
-// ============================================================================
-// EvalContext (CPW Attack and Defend Maps)
-// Caches attack information to avoid redundant calculations during evaluation.
-// ============================================================================
-
 constexpr int ATTACK_PIECE_TYPES = PIECE_TYPE_NB + 1;
 constexpr int ALL_PIECES = PIECE_TYPE_NB;
 
 struct EvalContext {
     Bitboard attackedBy[COLOR_NB][ATTACK_PIECE_TYPES];
-    Bitboard attackedBy2[COLOR_NB];  // Double attacks
+    Bitboard attackedBy2[COLOR_NB];
     Bitboard kingRing[COLOR_NB];
-    Bitboard innerKingRing[COLOR_NB];  // Immediately adjacent squares (8 max)
-    Bitboard outerKingRing[COLOR_NB];  // Two squares away from king (16 max)
+    Bitboard innerKingRing[COLOR_NB];
+    Bitboard outerKingRing[COLOR_NB];
     Square kingSquare[COLOR_NB];
     int kingAttackersCount[COLOR_NB];
     int kingAttackersWeight[COLOR_NB];
-    int innerRingAttacks[COLOR_NB];  // Attacks on inner ring
-    int outerRingAttacks[COLOR_NB];  // Attacks on outer ring
+    int innerRingAttacks[COLOR_NB];
+    int outerRingAttacks[COLOR_NB];
     Bitboard mobilityArea[COLOR_NB];
     bool initialized;
 
@@ -58,55 +53,32 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
 EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext& ctx);
 EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ctx);
 
-
-// ============================================================================
-// Material Values (from Tuning)
-// ============================================================================
-
 using Tuning::PawnValue;
 using Tuning::KnightValue;
 using Tuning::BishopValue;
 using Tuning::RookValue;
 using Tuning::QueenValue;
 
-// ============================================================================
-// Game Phase Constants
-// More granular phase values for smoother tapering between MG and EG
-// ============================================================================
-
-// Phase values per piece type - higher = more middlegame character
-// Total phase = sum of all non-pawn, non-king pieces at game start
 constexpr int PhaseValue[PIECE_TYPE_NB] = {
-    0,   // NO_PIECE_TYPE
-    0,   // PAWN (pawns don't affect phase)
-    1,   // KNIGHT
-    1,   // BISHOP
-    2,   // ROOK
-    4,   // QUEEN
-    0    // KING
+    0,
+    0,
+    1,
+    1,
+    2,
+    4,
+    0
 };
 
-// Total phase at game start: 4*1 (knights) + 4*1 (bishops) + 4*2 (rooks) + 2*4 (queens) = 24
 constexpr int TotalPhase = 24;
 
-// Phase thresholds for special evaluations
-constexpr int MiddlegamePhase = 18;  // Phase >= 18 is clearly middlegame
-constexpr int EndgamePhase = 6;       // Phase <= 6 is clearly endgame
+constexpr int MiddlegamePhase = 18;
+constexpr int EndgamePhase = 6;
 
-// Helper to interpolate with non-linear scaling for smoother transition
-// Returns 0-256 scale (for fixed-point arithmetic)
 inline int phase_weight(int phase) {
-    // Clamp phase to valid range
     phase = std::max(0, std::min(phase, TotalPhase));
-    // Linear interpolation: 0 (pure endgame) to 256 (pure middlegame)
     return (phase * 256 + TotalPhase / 2) / TotalPhase;
 }
 
-// ============================================================================
-// Piece-Square Tables (Middlegame and Endgame)
-// ============================================================================
-
-// Pawn PST (from white's perspective)
 constexpr EvalScore PawnPST[SQUARE_NB] = {
     S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0),
     S( -1,  0), S(  4,  0), S( -8,  0), S(-24,  0), S(-24,  0), S( -8,  0), S(  4,  0), S( -1,  0),
@@ -118,7 +90,6 @@ constexpr EvalScore PawnPST[SQUARE_NB] = {
     S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0)
 };
 
-// Knight PST
 constexpr EvalScore KnightPST[SQUARE_NB] = {
     S(-50,-50), S(-40,-40), S(-30,-30), S(-30,-30), S(-30,-30), S(-30,-30), S(-40,-40), S(-50,-50),
     S(-40,-40), S(-20,-20), S(  0,  0), S(  5,  5), S(  5,  5), S(  0,  0), S(-20,-20), S(-40,-40),
@@ -130,7 +101,6 @@ constexpr EvalScore KnightPST[SQUARE_NB] = {
     S(-50,-50), S(-40,-40), S(-30,-30), S(-30,-30), S(-30,-30), S(-30,-30), S(-40,-40), S(-50,-50)
 };
 
-// Bishop PST
 constexpr EvalScore BishopPST[SQUARE_NB] = {
     S(-20,-20), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-20,-20),
     S(-10,-10), S( 10,  5), S(  0,  0), S(  5,  5), S(  5,  5), S(  0,  0), S( 10,  5), S(-10,-10),
@@ -142,7 +112,6 @@ constexpr EvalScore BishopPST[SQUARE_NB] = {
     S(-20,-20), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-10,-10), S(-20,-20)
 };
 
-// Rook PST
 constexpr EvalScore RookPST[SQUARE_NB] = {
     S(  0, -5), S(  0, -5), S(  5,  0), S( 10,  5), S( 10,  5), S(  5,  0), S(  0, -5), S(  0, -5),
     S( -5, -5), S(  0,  0), S(  0,  0), S(  0,  5), S(  0,  5), S(  0,  0), S(  0,  0), S( -5, -5),
@@ -154,7 +123,6 @@ constexpr EvalScore RookPST[SQUARE_NB] = {
     S(  0,  0), S(  0,  0), S(  0,  0), S(  5,  5), S(  5,  5), S(  0,  0), S(  0,  0), S(  0,  0)
 };
 
-// Queen PST
 constexpr EvalScore QueenPST[SQUARE_NB] = {
     S(-20,-20), S(-10,-10), S(-10,-10), S( -5,-10), S( -5,-10), S(-10,-10), S(-10,-10), S(-20,-20),
     S(-10,-10), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(-10,-10),
@@ -166,7 +134,6 @@ constexpr EvalScore QueenPST[SQUARE_NB] = {
     S(-20,-20), S(-10,-10), S(-10,-10), S( -5,-10), S( -5,-10), S(-10,-10), S(-10,-10), S(-20,-20)
 };
 
-// King PST Middlegame (prefer castled position)
 constexpr int KingPSTMG[SQUARE_NB] = {
      20,  30,  10,   0,   0,  10,  30,  20,
      20,  20,   0, -10, -10,   0,  20,  20,
@@ -178,7 +145,6 @@ constexpr int KingPSTMG[SQUARE_NB] = {
     -40, -50, -50, -60, -60, -50, -50, -40
 };
 
-// King PST Endgame (prefer centralized king)
 constexpr int KingPSTEG[SQUARE_NB] = {
     -50, -30, -20, -20, -20, -20, -30, -50,
     -30, -10,   0,  10,  10,   0, -10, -30,
@@ -190,11 +156,6 @@ constexpr int KingPSTEG[SQUARE_NB] = {
     -50, -30, -20, -20, -20, -20, -30, -50
 };
 
-// ============================================================================
-// Evaluation Bonuses and Penalties
-// ============================================================================
-
-// Pawn structure
 constexpr EvalScore PassedPawnBonus[8] = {
     S(  0,   0), S(  5,  10), S( 10,  20), S( 20,  40),
     S( 40,  75), S( 70, 120), S(100, 180), S(  0,   0)
@@ -211,72 +172,43 @@ using Tuning::BackwardPawnPenalty;
 using Tuning::ConnectedPawnBonus;
 using Tuning::PhalanxBonus;
 
-// Candidate Passed Pawn - pawn that can become passed with a single pawn move/exchange
-// Bonus scaled by rank (closer to promotion = more valuable)
 constexpr EvalScore CandidatePassedBonus[8] = {
     S(  0,   0), S(  3,   5), S(  5,  10), S( 10,  20),
     S( 20,  40), S( 35,  60), S( 50,  90), S(  0,   0)
 };
 
-// Rule of the Square bonus (endgame only): bonus for passed pawn that king can't catch
-constexpr int RuleOfSquareBonus = 150;  // Significant endgame bonus
+constexpr int RuleOfSquareBonus = 150;
 
-// ============================================================================
-// Advanced Pawn Structure Constants
-// ============================================================================
-
-// Protected passed pawn - a passed pawn defended by another pawn
-// Much more dangerous because it's harder to blockade
 constexpr EvalScore ProtectedPassedBonus[8] = {
     S(  0,   0), S(  8,  15), S( 15,  30), S( 25,  50),
     S( 45,  90), S( 75, 140), S(110, 200), S(  0,   0)
 };
 
-// Pawn island penalty - more islands = weaker structure
-// Each island beyond the first incurs a penalty
 constexpr EvalScore PawnIslandPenalty = S(-5, -8);
 
-// Pawn chain bonus - pawns protecting each other diagonally
-// A strong pawn chain provides both attack and defense
 constexpr EvalScore PawnChainBonus = S(5, 3);
-constexpr EvalScore PawnChainBaseBonus = S(8, 5);  // Extra for base of chain
-
-// Central pawn presence bonus (d4/e4 or d5/e5)
-// Central pawns control key squares
+constexpr EvalScore PawnChainBaseBonus = S(8, 5);
 constexpr EvalScore CentralPawnBonus = S(15, 5);
 
-// Pawn duo bonus - two pawns side by side on same rank (neither attacks/defends other)
-// Different from phalanx which can attack together
 constexpr EvalScore PawnDuoBonus = S(5, 8);
 
-// Lever - pawn that can capture an enemy pawn
-// Already exists but adding file-specific weighing
-constexpr EvalScore CentralLeverBonus = S(8, 4);  // Lever on central files (c-f)
+constexpr EvalScore CentralLeverBonus = S(8, 4);
 
-// Outpost hole penalty - weak squares in our camp that enemy can use
-// A hole is a square that cannot be defended by our pawns
 constexpr EvalScore OutpostHolePenalty = S(-12, -8);
 
-// Hanging pawn penalty - two isolated pawns on adjacent open files
-// They can be targets but also can advance to create threats
 constexpr EvalScore HangingPawnPenalty = S(-8, -10);
-constexpr EvalScore HangingPawnWithThreat = S(5, 0);  // Bonus if they threaten to advance
+constexpr EvalScore HangingPawnWithThreat = S(5, 0);
 
-// Backward on half-open file - extra penalty when file is semi-open
 constexpr EvalScore BackwardOnHalfOpen = S(-10, -5);
-
-// King safety - semi-open file near enemy king
 constexpr EvalScore KingSemiOpenFilePenalty = S( 15, 0);
 constexpr EvalScore KingOpenFilePenalty     = S( 25, 0);
 
-// Piece activity
 using Tuning::BishopPairBonus;
 using Tuning::RookOpenFileBonus;
 using Tuning::RookSemiOpenFileBonus;
 using Tuning::RookOnSeventhBonus;
 using Tuning::KnightOutpostBonus;
 
-// Mobility bonus per square
 constexpr EvalScore KnightMobility[9] = {
     S(-30, -40), S(-15, -20), S( -5, -10), S(  0,  0),
     S(  5,   5), S( 10,  10), S( 15,  15), S( 18, 18),
@@ -304,13 +236,11 @@ constexpr EvalScore QueenMobility[28] = {
     S( 16,  18), S( 16,  19), S( 16,  19), S( 17, 20)
 };
 
-// King safety (attack unit weights)
 constexpr int KnightAttackWeight = 2;
 constexpr int BishopAttackWeight = 2;
 constexpr int RookAttackWeight   = 3;
 constexpr int QueenAttackWeight  = 5;
 
-// King safety lookup table
 constexpr int KingSafetyTable[100] = {
     0,   0,   1,   2,   3,   5,   7,  10,  13,  16,
    20,  25,  30,  36,  42,  49,  56,  64,  72,  81,
@@ -324,221 +254,139 @@ constexpr int KingSafetyTable[100] = {
   600, 600, 600, 600, 600, 600, 600, 600, 600, 600
 };
 
-// Pawn shield bonus (MG only)
 constexpr int PawnShieldBonus[4] = { 0, 10, 20, 30 };
 
-// ============================================================================
-// Material Imbalance Table
-// Bonuses/penalties for piece combinations (from CPW)
-// ============================================================================
-
-// Rook pair vs Bishop+Knight imbalance
-// Having two rooks is often better than bishop+knight in open positions
 constexpr EvalScore RookPairBonus = S(15, 25);
 
-// Bishop+Knight imbalance bonus (against rook pair in closed positions)
 constexpr EvalScore BishopKnightCombo = S(10, 5);
 
-// Redundancy penalties (multiple pieces of same type)
-// Two knights are less effective together (no complementary mobility)
 constexpr EvalScore KnightPairPenalty = S(-8, -10);
 
-// Rooks without queens bonus (endgame rooks are stronger)
 constexpr EvalScore RooksWithoutQueens = S(5, 20);
 
-// Queen without rooks penalty (queen alone is weaker in endgame)
 constexpr EvalScore QueenWithoutRooks = S(-5, -15);
 
-// Imbalance: extra minor vs rooks deficit
-// Having minor pieces vs missing rooks can be compensation
-constexpr EvalScore MinorForExchange = S(0, 10);  // When down exchange but have extra minor
+constexpr EvalScore MinorForExchange = S(0, 10);
 
-// ============================================================================
-// King Ring Expansion - Inner vs Outer Ring
-// Inner ring: immediately adjacent (8 squares max)
-// Outer ring: two squares away (16 squares max)
-// ============================================================================
+constexpr int InnerRingAttackWeight = 3;
+constexpr int OuterRingAttackWeight = 1;
 
-// Attack weight multipliers for inner vs outer ring
-constexpr int InnerRingAttackWeight = 3;  // Attacks on inner ring are 3x as dangerous
-constexpr int OuterRingAttackWeight = 1;  // Attacks on outer ring are baseline
+constexpr int InnerRingWeakSquarePenalty = 15;
+constexpr int OuterRingWeakSquarePenalty = 5;
 
-// King zone weak square penalties (undefended squares near king)
-constexpr int InnerRingWeakSquarePenalty = 15;  // MG penalty per weak inner ring square
-constexpr int OuterRingWeakSquarePenalty = 5;   // MG penalty per weak outer ring square
+constexpr EvalScore PawnLeverBonus = S(20, 5);
+constexpr EvalScore PawnLeverOnKingFile = S(30, 8);
 
-// ============================================================================
-// Pawn Lever Detection
-// A pawn lever is when our pawn can attack enemy pawn to open file near king
-// ============================================================================
-
-// Bonus for having a pawn lever against enemy king position
-constexpr EvalScore PawnLeverBonus = S(20, 5);   // Attacking pawn storm threat
-constexpr EvalScore PawnLeverOnKingFile = S(30, 8);  // Lever on file near enemy king
-
-// ============================================================================
-// Minor Piece Coordination
-// Bonuses for piece combinations that work well together
-// ============================================================================
-
-// Queen + Knight is often stronger than Queen + Bishop (fork potential)
 constexpr EvalScore QueenKnightSynergy = S(15, 10);
 
-// Bishop + Knight controlling same color complex
 constexpr EvalScore BishopKnightCoordination = S(12, 8);
-
-// Knights close together (can defend each other, create threats)
 constexpr EvalScore KnightProximityBonus = S(8, 5);
 
-// Bishops on opposite colors with both rooks (battery potential)
 constexpr EvalScore BishopColorComplex = S(5, 10);
 
-// ============================================================================
-// Piece Activity & Mobility Constants
-// Comprehensive evaluation of piece placement and control
-// ============================================================================
-
-// Centralization bonus tables - pieces in center are more active
-// Knight centralization (knights love the center)
 constexpr EvalScore KnightCentralization[4] = {
-    S(  0,   0),  // Edge/corner
-    S(  5,   3),  // Outer ring (b2-g7 area)
-    S( 12,   8),  // Inner ring (c3-f6 area)
-    S( 20,  12)   // Center (d4-e5)
+    S(  0,   0),
+    S(  5,   3),
+    S( 12,   8),
+    S( 20,  12)
 };
 
-// Bishop centralization (less important than knight)
 constexpr EvalScore BishopCentralization[4] = {
-    S(  0,   0),  // Edge
-    S(  3,   2),  // Outer ring
-    S(  8,   5),  // Inner ring
-    S( 12,   8)   // Center
+    S(  0,   0),
+    S(  3,   2),
+    S(  8,   5),
+    S( 12,   8)
 };
-
-// Rook centralization (file control matters more)
 constexpr EvalScore RookCentralization[4] = {
-    S(  0,   0),  // Edge file (a/h)
-    S(  3,   2),  // b/g files
-    S(  6,   4),  // c/f files
-    S( 10,   6)   // d/e files (central)
+    S(  0,   0),
+    S(  3,   2),
+    S(  6,   4),
+    S( 10,   6)
 };
 
-// Queen centralization (modest bonus, early queen out is bad)
 constexpr EvalScore QueenCentralization[4] = {
-    S( -5,   0),  // Edge (bad in middlegame)
+    S( -5,   0),
     S(  0,   2),
     S(  3,   5),
-    S(  5,   8)   // Center
+    S(  5,   8)
 };
 
-// Piece activity bonuses - pieces controlling many squares
-constexpr EvalScore HighMobilityBonus = S(10, 15);     // For pieces with very high mobility
-constexpr EvalScore LowMobilityPenalty = S(-15, -20);  // For pieces with very low mobility
+constexpr EvalScore HighMobilityBonus = S(10, 15);
+constexpr EvalScore LowMobilityPenalty = S(-15, -20);
 
-// Piece placement bonuses
-constexpr EvalScore KnightOnRim = S(-10, -8);          // "Knight on the rim is dim"
-constexpr EvalScore BishopLongDiagonal = S(15, 10);    // Bishop on long diagonal (a1-h8, h1-a8)
-constexpr EvalScore RookBehindPasser = S(20, 30);      // Rook behind passed pawn
-constexpr EvalScore RookOnQueenFile = S(8, 5);         // Rook on same file as enemy queen
-constexpr EvalScore QueenEarlyDevelopment = S(-15, 0); // Queen out before minor pieces
+constexpr EvalScore KnightOnRim = S(-10, -8);
+constexpr EvalScore BishopLongDiagonal = S(15, 10);
+constexpr EvalScore RookBehindPasser = S(20, 30);
+constexpr EvalScore RookOnQueenFile = S(8, 5);
+constexpr EvalScore QueenEarlyDevelopment = S(-15, 0);
 
-// Fianchetto bonus - bishop on g2/b2/g7/b7 with pawns protecting
 constexpr EvalScore FianchettoBonus = S(12, 8);
-constexpr EvalScore FianchettoBroken = S(-10, -5);     // Fianchetto pawn missing
+constexpr EvalScore FianchettoBroken = S(-10, -5);
+constexpr EvalScore TrappedBishopPenalty = S(-100, -80);
+constexpr EvalScore TrappedRookPenalty = S(-50, -30);
+constexpr EvalScore TrappedKnightPenalty = S(-40, -30);
 
-// Trapped piece penalties
-constexpr EvalScore TrappedBishopPenalty = S(-100, -80);  // Bishop trapped on a7/h7
-constexpr EvalScore TrappedRookPenalty = S(-50, -30);     // Rook trapped by uncastled king
-constexpr EvalScore TrappedKnightPenalty = S(-40, -30);   // Knight trapped on edge
-
-// ============================================================================
-// Advanced King Safety Constants
-// Comprehensive king safety evaluation
-// ============================================================================
-
-// Pawn shield quality - detailed analysis of pawns protecting king
-// Based on distance from king and advancement
 constexpr int PawnShieldQuality[5][4] = {
-    //  No pawn  1 sq away  2 sq away  3+ sq away
-    {  -35,       0,        -10,       -20  },  // File -2 from king (far)
-    {  -25,      10,          0,       -10  },  // File -1 from king
-    {  -30,      15,          5,       -15  },  // King's file (most important)
-    {  -25,      10,          0,       -10  },  // File +1 from king
-    {  -35,       0,        -10,       -20  },  // File +2 from king (far)
+    {  -35,       0,        -10,       -20  },
+    {  -25,      10,          0,       -10  },
+    {  -30,      15,          5,       -15  },
+    {  -25,      10,          0,       -10  },
+    {  -35,       0,        -10,       -20  },
 };
 
-// Pawn storm evaluation - enemy pawns advancing toward our king
 constexpr int PawnStormDanger[5][4] = {
-    //  No pawn  Far (r2-r3)  Mid (r4-r5)  Close (r6-r7)
-    {    0,         5,           15,          30   },  // File -2 from king
-    {    0,        10,           25,          45   },  // File -1 from king
-    {    0,        15,           35,          60   },  // King's file (most dangerous)
-    {    0,        10,           25,          45   },  // File +1 from king
-    {    0,         5,           15,          30   },  // File +2 from king
+    {    0,         5,           15,          30   },
+    {    0,        10,           25,          45   },
+    {    0,        15,           35,          60   },
+    {    0,        10,           25,          45   },
+    {    0,         5,           15,          30   },
 };
 
-// King zone attack weights (refined)
 constexpr int AttackWeightByPiece[PIECE_TYPE_NB] = {
-    0,   // NO_PIECE_TYPE
-    0,   // PAWN (handled separately)
-    3,   // KNIGHT
-    2,   // BISHOP
-    4,   // ROOK
-    6,   // QUEEN
-    0    // KING
+    0,
+    0,
+    3,
+    2,
+    4,
+    6,
+    0
 };
 
-// Attack count thresholds for king safety
-constexpr int MinAttackersForDanger = 2;    // Need at least 2 attackers
-constexpr int MaxKingSafetyPenalty = 800;   // Cap on king safety penalty
-
-// King exposure penalties
-constexpr int KingExposedOnFile = 20;       // Open file near king
-constexpr int KingExposedOnDiagonal = 15;   // Open diagonal toward king
-constexpr int KingNoQueensideCastle = 25;   // Lost queenside castle rights
-constexpr int KingNoKingsideCastle = 30;    // Lost kingside castle rights (usually preferred)
-
-// Shelter weakness
+constexpr int MinAttackersForDanger = 2;
+constexpr int MaxKingSafetyPenalty = 800;
+constexpr int KingExposedOnFile = 20;
+constexpr int KingExposedOnDiagonal = 15;
+constexpr int KingNoQueensideCastle = 25;
+constexpr int KingNoKingsideCastle = 30;
 constexpr EvalScore ShelterWeakness[4] = {
-    S(  0,   0),  // Fully sheltered
-    S(-10,  -3),  // One pawn missing
-    S(-25,  -8),  // Two pawns missing
-    S(-50, -15)   // No shelter
+    S(  0,   0),
+    S(-10,  -3),
+    S(-25,  -8),
+    S(-50, -15)
 };
-
-// Check threat bonuses for attackers
 constexpr int SafeCheckBonus[PIECE_TYPE_NB] = {
-    0,   // NO_PIECE_TYPE
-    0,   // PAWN
-    45,  // KNIGHT (knight checks are very dangerous)
-    35,  // BISHOP
-    50,  // ROOK (rook checks often lead to mate)
-    60,  // QUEEN (queen checks are devastating)
-    0    // KING
+    0,
+    0,
+    45,
+    35,
+    50,
+    60,
+    0
 };
 
-// Contact check (piece directly attacking adjacent king square)
 constexpr int ContactCheckBonus = 40;
 
-// King tropism (piece proximity to enemy king)
 constexpr int KingTropismWeight[PIECE_TYPE_NB] = {
-    0,   // NO_PIECE_TYPE
-    0,   // PAWN
-    5,   // KNIGHT
-    3,   // BISHOP
-    4,   // ROOK
-    2,   // QUEEN (queen tropism less important as it's mobile)
-    0    // KING
+    0,
+    0,
+    5,
+    3,
+    4,
+    2,
+    0
 };
-
-// Virtual mobility - potential slider attacks through the king
 constexpr int VirtualMobilityWeight = 3;
 
-// ============================================================================
-// Function Declarations
-// ============================================================================
-
-// Helper Functions
 Square flip_square(Square sq);
 Bitboard file_bb(File f);
 Bitboard adjacent_files_bb(File f);
@@ -548,34 +396,27 @@ Bitboard passed_pawn_mask(Color c, Square s);
 Square pawn_push(Color c, Square s);
 bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns);
 
-// Evaluation Components
 EvalScore eval_material_pst(const Board& board, Color c);
 EvalScore eval_pawn_structure(const Board& board, Color c);
 EvalScore eval_pieces(const Board& board, Color c);
 EvalScore eval_king_safety(const Board& board, Color c);
 EvalScore eval_space(const Board& board, Color c);
 
-// New evaluation components
 EvalScore eval_material_imbalance(const Board& board, Color c);
 EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx);
 EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx);
 
-// Piece Activity & Mobility evaluation
 EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx);
 
-// Advanced King Safety evaluation
 EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ctx);
 
-// Helper functions for centralization
 int get_centralization_index(Square sq);
 int get_file_centralization(File f);
 
-// Incremental PST helper - returns material + PST score for a single piece
-// Used by Board::do_move/undo_move for incremental updates
 inline EvalScore piece_pst_score(Piece pc, Square sq) {
     Color c = color_of(pc);
     PieceType pt = type_of(pc);
-    Square psq = c == WHITE ? sq : Square(sq ^ 56);  // flip for black
+    Square psq = c == WHITE ? sq : Square(sq ^ 56);
 
     switch (pt) {
         case PAWN:   return PawnValue + PawnPST[psq];
@@ -588,21 +429,16 @@ inline EvalScore piece_pst_score(Piece pc, Square sq) {
     }
 }
 
-// ============================================================================
-// Pawn Hash Table
-// ============================================================================
-
 struct PawnEntry {
     Key key;
     EvalScore score;
 
-    // Check if the entry matches the key
     bool match(Key k) const { return key == k; }
 };
 
 class PawnTable {
 public:
-    static constexpr int SIZE = 16384;  // 16K entries, adjustable
+    static constexpr int SIZE = 16384;
     static constexpr int MASK = SIZE - 1;
 
     void clear() {
@@ -622,17 +458,11 @@ private:
 
 extern PawnTable pawnTable;
 
-// Main Evaluation Functions
-// Version with alpha/beta enables lazy evaluation (skips expensive calcs if far from window)
 int evaluate(const Board& board, int alpha, int beta);
-int evaluate(const Board& board);  // Compatibility version (no lazy eval)
-
-// Thread-safe version without pawn hash table (for Texel Tuner multi-threading)
+int evaluate(const Board& board);
 int evaluate_no_cache(const Board& board);
-
-// Material balance for contempt (positive = white ahead, negative = black ahead)
 int material_balance(const Board& board);
 
-} // namespace Eval
+}
 
-#endif // EVAL_HPP
+#endif

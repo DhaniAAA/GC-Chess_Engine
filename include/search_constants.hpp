@@ -114,7 +114,8 @@ constexpr int QSEARCH_CHECK_DEPTH = -2;
 constexpr int DELTA_PRUNING_MARGIN = 550;
 
 // ============================================================================
-// LMR Tuning Parameters (Stockfish-style)
+// LMR Tuning Parameters (Adjusted for HCE Engines)
+// HCE engine needs slightly less aggressive reductions due to eval noise
 // ============================================================================
 
 constexpr double LMR_BASE = 0.85;

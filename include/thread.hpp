@@ -1,7 +1,7 @@
 #ifndef THREAD_HPP
 #define THREAD_HPP
 
-#include "search.hpp"  // For SearchLimits, MAX_PLY, MAX_MOVES, score functions
+#include "search.hpp"
 #include "board.hpp"
 #include "move.hpp"
 #include "moveorder.hpp"
@@ -14,21 +14,11 @@
 #include <thread>
 #include <vector>
 
-// Forward declaration
 class ThreadPool;
-
-// ============================================================================
-// Thread Constants
-// ============================================================================
 
 constexpr int MAX_THREADS = 256;
 
 
-// ============================================================================
-// Per-Thread Search Stack
-// ============================================================================
-
-// Cache-line aligned ThreadStack to prevent false sharing
 struct alignas(64) ThreadStack {
     int ply;
     Move currentMove;
@@ -41,12 +31,8 @@ struct alignas(64) ThreadStack {
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
-    char padding[20];  // Pad to prevent false sharing
+    char padding[20];
 };
-
-// ============================================================================
-// PV Line for each thread
-// ============================================================================
 
 struct ThreadPVLine {
     int length = 0;
@@ -80,11 +66,6 @@ struct ThreadPVLine {
     }
 };
 
-// ============================================================================
-// Thread Class - Each thread runs its own search
-// ============================================================================
-
-// Cache-line aligned SearchThread to prevent false sharing between threads
 class alignas(64) SearchThread {
 public:
     explicit SearchThread(int id);
@@ -95,10 +76,6 @@ public:
 
     int id() const { return threadId; }
     bool is_main() const { return threadId == 0; }
-
-    // ========================================================================
-    // HOT DATA - Frequently accessed during search (keep in first cache lines)
-    // ========================================================================
 
     alignas(64) std::atomic<bool> searching{false};
     std::atomic<bool> exit{false};
@@ -111,20 +88,13 @@ public:
     Move bestMove = MOVE_NONE;
     Move ponderMove = MOVE_NONE;
 
-    // ========================================================================
-    // WARM DATA - Accessed often but less frequently
-    // ========================================================================
-
     alignas(64) Board* rootBoard = nullptr;
     int rootDepth = 0;
     Move previousMove = MOVE_NONE;
     U64 rand_seed;
 
-    // ========================================================================
-    // LARGE DATA STRUCTURES - Cache-aligned for efficiency
-    // ========================================================================
-
     alignas(64) KillerTable killers;
+    alignas(64) MateKillerTable mateKillers;
     alignas(64) CounterMoveTable counterMoves;
     alignas(64) HistoryTable history;
 
@@ -142,10 +112,6 @@ private:
 
     void idle_loop();
 };
-
-// ============================================================================
-// Thread Pool - Manages all search threads
-// ============================================================================
 
 class ThreadPool {
 public:
@@ -186,15 +152,7 @@ private:
     void init_time_management(Color us);
 };
 
-// ============================================================================
-// Global Thread Pool Instance
-// ============================================================================
-
 extern ThreadPool Threads;
-
-// ============================================================================
-// Lazy SMP Search Functions (implemented in thread.cpp)
-// ============================================================================
 
 namespace LazySMP {
 

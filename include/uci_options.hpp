@@ -1,13 +1,6 @@
 #ifndef UCI_OPTIONS_HPP
 #define UCI_OPTIONS_HPP
 
-// ============================================================================
-// UCI Options Manager
-// ============================================================================
-// Provides a cleaner, type-safe way to manage UCI options using a map pattern
-// instead of long if-else chains.
-// ============================================================================
-
 #include <string>
 #include <functional>
 #include <map>
@@ -16,21 +9,13 @@
 
 namespace UCI {
 
-// ============================================================================
-// Option Types
-// ============================================================================
-
 enum class OptionType {
-    SPIN,    // Integer with min/max
-    CHECK,   // Boolean
-    STRING,  // String value
-    BUTTON,  // Action trigger (no value)
-    COMBO    // Dropdown (not implemented yet)
+    SPIN,
+    CHECK,
+    STRING,
+    BUTTON,
+    COMBO
 };
-
-// ============================================================================
-// Option Definition
-// ============================================================================
 
 struct OptionDef {
     OptionType type;
@@ -39,7 +24,6 @@ struct OptionDef {
     int maxVal = 0;
     std::function<void(const std::string&)> onChange;
 
-    // Constructors for different option types
     static OptionDef Spin(int defaultVal, int min, int max,
                           std::function<void(const std::string&)> callback = nullptr) {
         OptionDef opt;
@@ -77,28 +61,21 @@ struct OptionDef {
     }
 };
 
-// ============================================================================
-// Options Manager
-// ============================================================================
-
 class OptionsManager {
 public:
-    // Register an option
     void add(const std::string& name, OptionDef option) {
         options_[name] = option;
         values_[name] = option.defaultValue;
     }
 
-    // Set option value (called by setoption command)
     bool set(const std::string& name, const std::string& value) {
         auto it = options_.find(name);
         if (it == options_.end()) {
-            return false;  // Unknown option
+            return false;
         }
 
         OptionDef& opt = it->second;
 
-        // Validate and set
         switch (opt.type) {
             case OptionType::SPIN: {
                 int val = std::stoi(value);
@@ -113,13 +90,10 @@ public:
                 values_[name] = value;
                 break;
             case OptionType::BUTTON:
-                // Buttons don't store values, just trigger callback
                 break;
             default:
                 values_[name] = value;
         }
-
-        // Call onChange callback if defined
         if (opt.onChange) {
             opt.onChange(values_[name]);
         }
@@ -127,7 +101,6 @@ public:
         return true;
     }
 
-    // Get option value as int
     int getInt(const std::string& name) const {
         auto it = values_.find(name);
         if (it != values_.end()) {
@@ -136,7 +109,6 @@ public:
         return 0;
     }
 
-    // Get option value as bool
     bool getBool(const std::string& name) const {
         auto it = values_.find(name);
         if (it != values_.end()) {
@@ -145,7 +117,6 @@ public:
         return false;
     }
 
-    // Get option value as string
     std::string getString(const std::string& name) const {
         auto it = values_.find(name);
         if (it != values_.end()) {
@@ -154,7 +125,6 @@ public:
         return "";
     }
 
-    // Print all options in UCI format
     void printAll() const {
         for (const auto& [name, opt] : options_) {
             std::cout << "option name " << name << " type ";
@@ -187,6 +157,6 @@ private:
     std::map<std::string, std::string> values_;
 };
 
-} // namespace UCI
+}
 
-#endif // UCI_OPTIONS_HPP
+#endif

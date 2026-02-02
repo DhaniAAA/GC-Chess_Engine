@@ -5,15 +5,11 @@
 #include "book.hpp"
 #include "tablebase.hpp"
 #include "search_constants.hpp"
-#include "optimize.hpp"  // Branch prediction hints
+#include "optimize.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <random>
-
-// ============================================================================
-// Global Thread Pool Instance
-// ============================================================================
 
 ThreadPool Threads;
 
@@ -21,12 +17,7 @@ extern int LMRTable[64][64];
 
 using namespace SearchParams;
 
-// ============================================================================
-// SearchThread Implementation
-// ============================================================================
-
 SearchThread::SearchThread(int id) : rand_seed(id + 1), threadId(id) {
-    // Initialize search stack
     for (int i = 0; i < MAX_PLY + 4; ++i) {
         stack[i].ply = i - 2;
         stack[i].currentMove = MOVE_NONE;
@@ -50,12 +41,12 @@ SearchThread::~SearchThread() {
 
 void SearchThread::clear_history() {
     killers.clear();
+    mateKillers.clear();
     counterMoves.clear();
     history.clear();
 }
 
 int SearchThread::rand_int(int max) {
-    // Simple xorshift random
     rand_seed ^= rand_seed << 13;
     rand_seed ^= rand_seed >> 7;
     rand_seed ^= rand_seed << 17;
@@ -77,7 +68,7 @@ void SearchThread::idle_loop() {
     while (!exit) {
         std::unique_lock<std::mutex> lock(mutex);
         searching = false;
-        cv.notify_one();  // Notify waiting threads we're done
+        cv.notify_one();
         cv.wait(lock, [this] { return searching || exit; });
         lock.unlock();
 
@@ -89,10 +80,6 @@ void SearchThread::idle_loop() {
         }
     }
 }
-
-// ============================================================================
-// ThreadPool Implementation
-// ============================================================================
 
 ThreadPool::ThreadPool() {
     set_thread_count(1);
@@ -270,10 +257,6 @@ void ThreadPool::init_time_management(Color us) {
     }
 }
 
-// ============================================================================
-// Lazy SMP Search Implementation
-// ============================================================================
-
 namespace LazySMP {
 
 bool should_stop(SearchThread* thread) {
@@ -436,6 +419,8 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     beta = std::min(beta, VALUE_MATE - ply - 1);
     if (alpha >= beta) return alpha;
 
+    const int alphaOrig = alpha;
+
     if (ply > 0 && board.is_draw(ply)) {
         return 0;
     }
@@ -565,16 +550,16 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     if (!ttMove && depth >= 6 && (pvNode || cutNode)) {
         alpha_beta(thread, board, alpha, beta, depth - 2, cutNode, ply);
         tte = TT.probe(board.key(), ttHit);
-        ttMove = ttHit ? tte->move() : MOVE_NONE; // Re-probe single move for IID
+        ttMove = ttHit ? tte->move() : MOVE_NONE;
     }
 
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
-            searchDepth -= IIR_PV_REDUCTION;
+            searchDepth -= 1;
         } else if (cutNode) {
-            searchDepth -= IIR_CUT_REDUCTION;
+            searchDepth -= 2;
         } else {
-            searchDepth -= IIR_REDUCTION;
+            searchDepth -= 1;
         }
     }
 
@@ -584,8 +569,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     Move quietsSearched[64];
     int quietCount = 0;
 
-    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
-                  thread->history, thread->previousMove);
+    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->mateKillers, thread->counterMoves,
+                  thread->history, thread->previousMove,
+                  nullptr, nullptr, nullptr, nullptr);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
@@ -702,9 +688,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         return inCheck ? -VALUE_MATE + ply : 0;
     }
 
-    if (!Threads.stop_flag) {
+    if (!Threads.stop_flag && std::abs(bestScore) < VALUE_MATE_IN_MAX_PLY) {
         Bound bound = bestScore >= beta ? BOUND_LOWER :
-                      bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
+                      bestScore > alphaOrig ? BOUND_EXACT : BOUND_UPPER;
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
                   bound, depth, bestMove, TT.generation());
     }

@@ -1,10 +1,3 @@
-// ============================================================================
-// eval.cpp - Evaluation Function Implementation
-// ============================================================================
-// This file contains the implementation of evaluation components.
-// The header (eval.hpp) contains declarations and constant tables.
-// ============================================================================
-
 #include "eval.hpp"
 #include "tuning.hpp"
 #include "profiler.hpp"
@@ -12,10 +5,6 @@
 namespace Eval {
 
 PawnTable pawnTable;
-
-// ============================================================================
-// Helper Functions Implementation
-// ============================================================================
 
 Square flip_square(Square sq) {
     return Square(sq ^ 56);
@@ -84,10 +73,6 @@ bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns)
     return (stopAttacks & theirPawns) != 0;
 }
 
-// ============================================================================
-// Centralization Helper Functions
-// ============================================================================
-
 int get_centralization_index(Square sq) {
     File f = file_of(sq);
     Rank r = rank_of(sq);
@@ -109,13 +94,8 @@ int get_file_centralization(File f) {
     return 0;
 }
 
-// Long diagonal masks
 constexpr Bitboard LONG_DIAGONAL_A1H8 = 0x8040201008040201ULL;
 constexpr Bitboard LONG_DIAGONAL_H1A8 = 0x0102040810204080ULL;
-
-// ============================================================================
-// EvalContext Initialization (CPW Attack and Defend Maps)
-// ============================================================================
 
 static Bitboard compute_outer_ring(Square kingSq) {
     Bitboard inner = king_attacks_bb(kingSq) | square_bb(kingSq);
@@ -183,7 +163,6 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
         }
         ctx.attackedBy[c][KNIGHT] = knightAttacks;
 
-        // Bishops
         Bitboard bishops = board.pieces(c, BISHOP);
         Bitboard bishopAttacks = EMPTY_BB;
         while (bishops) {
@@ -205,7 +184,6 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
         }
         ctx.attackedBy[c][BISHOP] = bishopAttacks;
 
-        // Rooks
         Bitboard rooks = board.pieces(c, ROOK);
         Bitboard rookAttacks = EMPTY_BB;
         while (rooks) {
@@ -227,7 +205,6 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
         }
         ctx.attackedBy[c][ROOK] = rookAttacks;
 
-        // Queens
         Bitboard queens = board.pieces(c, QUEEN);
         Bitboard queenAttacks = EMPTY_BB;
         while (queens) {
@@ -252,15 +229,10 @@ void init_eval_context(EvalContext& ctx, const Board& board) {
     ctx.initialized = true;
 }
 
-// ============================================================================
-// Evaluation Components Implementation
-// ============================================================================
-
 EvalScore eval_material_pst(const Board& board, Color c) {
     EvalScore score;
     Bitboard bb;
 
-    // Pawns
     bb = board.pieces(c, PAWN);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -268,7 +240,6 @@ EvalScore eval_material_pst(const Board& board, Color c) {
         score += PawnValue + PawnPST[psq];
     }
 
-    // Knights
     bb = board.pieces(c, KNIGHT);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -276,7 +247,6 @@ EvalScore eval_material_pst(const Board& board, Color c) {
         score += KnightValue + KnightPST[psq];
     }
 
-    // Bishops
     bb = board.pieces(c, BISHOP);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -284,7 +254,6 @@ EvalScore eval_material_pst(const Board& board, Color c) {
         score += BishopValue + BishopPST[psq];
     }
 
-    // Rooks
     bb = board.pieces(c, ROOK);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -292,7 +261,6 @@ EvalScore eval_material_pst(const Board& board, Color c) {
         score += RookValue + RookPST[psq];
     }
 
-    // Queens
     bb = board.pieces(c, QUEEN);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -300,7 +268,6 @@ EvalScore eval_material_pst(const Board& board, Color c) {
         score += QueenValue + QueenPST[psq];
     }
 
-    // King
     Square kingSq = board.king_square(c);
     Square kingPsq = c == WHITE ? kingSq : flip_square(kingSq);
     score.mg += KingPSTMG[kingPsq];
@@ -361,20 +328,12 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
     Square ourKingSq = board.king_square(c);
     Square enemyKingSq = board.king_square(enemy);
 
-    // =========================================================================
-    // Pawn Islands Evaluation
-    // More islands = weaker structure (harder to defend)
-    // =========================================================================
     int islands = count_pawn_islands(ourPawns);
     if (islands > 1) {
         score.mg += PawnIslandPenalty.mg * (islands - 1);
         score.eg += PawnIslandPenalty.eg * (islands - 1);
     }
 
-    // =========================================================================
-    // Central Pawn Bonus
-    // Pawns on d4/e4 (for white) or d5/e5 (for black) are strong
-    // =========================================================================
     constexpr Bitboard WhiteCentralSquares = (1ULL << SQ_D4) | (1ULL << SQ_E4);
     constexpr Bitboard BlackCentralSquares = (1ULL << SQ_D5) | (1ULL << SQ_E5);
     Bitboard centralSquares = c == WHITE ? WhiteCentralSquares : BlackCentralSquares;
@@ -413,9 +372,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 }
             }
 
-            // =================================================================
-            // PROTECTED PASSED PAWN
-            // =================================================================
             Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
             if (square_bb(sq) & pawnDefenders) {
                 score += ProtectedPassedBonus[r];
@@ -445,11 +401,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 }
             }
 
-            // =================================================================
-            // RULE OF THE SQUARE (Endgame Only)
-            // A passed pawn that the enemy king cannot catch is virtually unstoppable
-            // The "square" is the area the enemy king must be in to catch the pawn
-            // =================================================================
             {
                 Rank promoRank = c == WHITE ? RANK_8 : RANK_1;
                 int squaresToPromo = std::abs(promoRank - rank_of(sq));
@@ -480,11 +431,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 }
             }
         }
-        // =================================================================
-        // CANDIDATE PASSED PAWN
-        // A pawn that could become passed if we advance it and exchange
-        // or if enemy pawn blocking it leaves. Has potential but needs work.
-        // =================================================================
         else {
             Bitboard stoppers = passed_pawn_mask(c, sq) & theirPawns;
             int stopperCount = popcount(stoppers);
@@ -538,10 +484,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 score += ConnectedPawnBonus;
             }
 
-            // =================================================================
-            // PAWN CHAIN DETECTION
-            // A pawn is part of a chain if it's defended by another pawn
-            // =================================================================
             Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
             if (square_bb(sq) & pawnDefenders) {
                 score += PawnChainBonus;
@@ -553,10 +495,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
             }
         }
 
-        // =================================================================
-        // HANGING PAWNS DETECTION
-        // Two pawns on adjacent semi-open files, no pawn support on either side
-        // =================================================================
         if (!isIsolated && !isPassed) {
             Bitboard leftFile = (f > FILE_A) ? file_bb(File(f - 1)) : 0;
             Bitboard rightFile = (f < FILE_H) ? file_bb(File(f + 1)) : 0;
@@ -592,15 +530,10 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
         }
     }
 
-    // =========================================================================
-    // OUTPOST HOLES EVALUATION
-    // Check for weak squares on ranks 4-6 that enemy pieces can occupy
-    // =========================================================================
     constexpr Bitboard OutpostZoneWhite = 0x00FFFFFF00000000ULL;
     constexpr Bitboard OutpostZoneBlack = 0x00000000FFFFFF00ULL;
     Bitboard outpostZone = c == WHITE ? OutpostZoneWhite : OutpostZoneBlack;
 
-    // Check central files (c-f) for holes
     for (File f = FILE_C; f <= FILE_F; ++f) {
         Bitboard fileZone = file_bb(f) & outpostZone;
         Bitboard temp = fileZone;
@@ -717,12 +650,6 @@ EvalScore eval_pieces(const Board& board, Color c) {
 
     return score;
 }
-
-// ============================================================================
-// Space Evaluation
-// Evaluates control of central squares behind pawns.
-// More space = more room for pieces to maneuver.
-// ============================================================================
 
 EvalScore eval_space(const Board& board, Color c) {
     EvalScore score;
@@ -850,15 +777,10 @@ EvalScore eval_king_safety(const Board& board, Color c) {
     return score;
 }
 
-// ============================================================================
-// EvalContext-based Evaluation Functions
-// ============================================================================
-
 EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ctx) {
     EvalScore score;
     Color enemy = ~c;
 
-    // Hanging pieces
     Bitboard attacked = ctx.attackedBy[c][ALL_PIECES];
     Bitboard enemyPieces = board.pieces(enemy);
     Bitboard defended = ctx.attackedBy[enemy][ALL_PIECES];
@@ -866,19 +788,15 @@ EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ct
     score.mg += popcount(hanging) * 25;
     score.eg += popcount(hanging) * 20;
 
-    // Minors attacked by pawns
     Bitboard attackedByPawn = ctx.attackedBy[c][PAWN];
     Bitboard minorsAttacked = (board.pieces(enemy, KNIGHT) | board.pieces(enemy, BISHOP)) & attackedByPawn;
     score.mg += popcount(minorsAttacked) * 40;
     score.eg += popcount(minorsAttacked) * 30;
-
-    // Rooks attacked by minors
     Bitboard rooksAttacked = board.pieces(enemy, ROOK) &
         (ctx.attackedBy[c][KNIGHT] | ctx.attackedBy[c][BISHOP]);
     score.mg += popcount(rooksAttacked) * 35;
     score.eg += popcount(rooksAttacked) * 25;
 
-    // Double attack advantage
     Bitboard contested = ctx.attackedBy[c][ALL_PIECES] & ctx.attackedBy[enemy][ALL_PIECES];
     Bitboard ourDouble = contested & ctx.attackedBy2[c];
     Bitboard theirSingle = contested & ~ctx.attackedBy2[enemy];
@@ -886,10 +804,6 @@ EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ct
     score.mg += popcount(advantage) * 8;
     score.eg += popcount(advantage) * 5;
 
-    // =========================================================================
-    // PIECE CONNECTIVITY - Bonus for pieces defended by other pieces
-    // Well-connected pieces are harder to attack and provide mutual support
-    // =========================================================================
     Bitboard ourPieces = board.pieces(c) & ~board.pieces(c, PAWN) & ~square_bb(board.king_square(c));
     Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
 
@@ -920,7 +834,6 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
     Bitboard ourPawns = board.pieces(c, PAWN);
     Bitboard theirPawns = board.pieces(enemy, PAWN);
 
-    // Knights
     Bitboard bb = board.pieces(c, KNIGHT);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -940,7 +853,6 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
         score.mg += std::max(0, (5 - kingDist) * 3);
     }
 
-    // Bishops
     bb = board.pieces(c, BISHOP);
     int bishopCount = 0;
     while (bb) {
@@ -960,7 +872,6 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
     }
     if (bishopCount >= 2) score += BishopPairBonus;
 
-    // Rooks
     bb = board.pieces(c, ROOK);
     Square rookSquares[2] = {SQ_NONE, SQ_NONE};
     int rookCount = 0;
@@ -995,7 +906,6 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
         }
     }
 
-    // Queens
     bb = board.pieces(c, QUEEN);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -1004,7 +914,6 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
         score += QueenMobility[std::min(mobility, 27)];
     }
 
-    // Trapped pieces
     bb = board.pieces(c, BISHOP);
     while (bb) {
         Square sq = pop_lsb(bb);
@@ -1034,12 +943,9 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
     int attackUnits = ctx.kingAttackersWeight[enemy];
     int attackCount = ctx.kingAttackersCount[enemy];
 
-    // Virtual mobility
     Bitboard virtualQ = queen_attacks_bb(kingSq, board.pieces());
     Bitboard enemySliders = board.pieces(enemy, BISHOP, QUEEN) | board.pieces(enemy, ROOK);
     attackUnits += popcount(virtualQ & enemySliders);
-
-    // Safe checks
     Bitboard unsafeFor = ctx.attackedBy[c][ALL_PIECES];
     Bitboard safeSquares = ~unsafeFor & ~board.pieces(enemy);
 
@@ -1064,7 +970,6 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
     score.mg -= innerWeakCount * InnerRingWeakSquarePenalty;
     score.mg -= outerWeakCount * OuterRingWeakSquarePenalty;
 
-    // Pawn shield
     Rank kingRank = c == WHITE ? rank_of(kingSq) : Rank(RANK_8 - rank_of(kingSq));
     if (kingRank <= RANK_2) {
         File kf = file_of(kingSq);
@@ -1090,7 +995,6 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
         }
     }
 
-    // Pawn storm
     Square enemyKingSq = ctx.kingSquare[enemy];
     File enemyKingFile = file_of(enemyKingSq);
     Rank enemyKingRank = enemy == WHITE ? rank_of(enemyKingSq) : Rank(RANK_8 - rank_of(enemyKingSq));
@@ -1111,11 +1015,6 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
 
     return score;
 }
-
-// ============================================================================
-// Material Imbalance Evaluation
-// Evaluates bonuses/penalties for specific piece combinations
-// ============================================================================
 
 EvalScore eval_material_imbalance(const Board& board, Color c) {
     EvalScore score;
@@ -1164,11 +1063,6 @@ EvalScore eval_material_imbalance(const Board& board, Color c) {
     return score;
 }
 
-// ============================================================================
-// Pawn Lever Evaluation
-// Detects pawns that can attack enemy pawns to open files near enemy king
-// ============================================================================
-
 EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx) {
     EvalScore score;
     Color enemy = ~c;
@@ -1215,11 +1109,6 @@ EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx) {
 
     return score;
 }
-
-// ============================================================================
-// Minor Piece Coordination Evaluation
-// Evaluates synergy between minor pieces and with major pieces
-// ============================================================================
 
 EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx) {
     EvalScore score;
@@ -1301,11 +1190,6 @@ EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx)
     return score;
 }
 
-// ============================================================================
-// Piece Activity & Mobility Evaluation
-// Comprehensive evaluation of piece placement, centralization, and mobility
-// ============================================================================
-
 EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
     EvalScore score;
     Color enemy = ~c;
@@ -1318,9 +1202,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
 
     int developedMinors = 0;
 
-    // =========================================================================
-    // Knight Activity Evaluation
-    // =========================================================================
     Bitboard knights = board.pieces(c, KNIGHT);
     while (knights) {
         Square sq = pop_lsb(knights);
@@ -1345,7 +1226,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
             score += LowMobilityPenalty;
         }
 
-        // King tropism
         int kingDist = std::max(std::abs(file_of(sq) - file_of(enemyKingSq)),
                                 std::abs(rank_of(sq) - rank_of(enemyKingSq)));
         score.mg += (7 - kingDist) * KingTropismWeight[KNIGHT];
@@ -1353,9 +1233,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
         developedMinors++;
     }
 
-    // =========================================================================
-    // Bishop Activity Evaluation
-    // =========================================================================
     Bitboard bishops = board.pieces(c, BISHOP);
     while (bishops) {
         Square sq = pop_lsb(bishops);
@@ -1415,9 +1292,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
         developedMinors++;
     }
 
-    // =========================================================================
-    // Rook Activity Evaluation
-    // =========================================================================
     Bitboard rooks = board.pieces(c, ROOK);
     Bitboard passedPawns = 0;
 
@@ -1481,9 +1355,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
         score.mg += (7 - kingDist) * KingTropismWeight[ROOK];
     }
 
-    // =========================================================================
-    // Queen Activity Evaluation
-    // =========================================================================
     Bitboard queens = board.pieces(c, QUEEN);
     while (queens) {
         Square sq = pop_lsb(queens);
@@ -1512,11 +1383,6 @@ EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx) {
     return score;
 }
 
-// ============================================================================
-// Advanced King Safety Evaluation
-// Comprehensive evaluation of king safety including pawn shelter, storms, and attacks
-// ============================================================================
-
 EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ctx) {
     EvalScore score;
     Color enemy = ~c;
@@ -1531,10 +1397,7 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
     int attackUnits = 0;
     int attackerCount = ctx.kingAttackersCount[enemy];
 
-    // =========================================================================
-    // Pawn Shield Evaluation (Detailed)
-    // =========================================================================
-    if (kingRelRank <= RANK_2) {  // King is on back ranks
+    if (kingRelRank <= RANK_2) {
         int shieldScore = 0;
         int missingPawns = 0;
 
@@ -1568,9 +1431,6 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
         }
     }
 
-    // =========================================================================
-    // Pawn Storm Evaluation (Enemy pawns advancing toward our king)
-    // =========================================================================
     if (kingRelRank <= RANK_2) {
         int stormScore = 0;
 
@@ -1597,64 +1457,44 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
         score.mg -= stormScore;
     }
 
-    // =========================================================================
-    // Attack Unit Calculation with Refined Weights
-    // =========================================================================
-
     attackUnits += ctx.kingAttackersWeight[enemy];
 
     attackUnits += ctx.innerRingAttacks[enemy] * 2;
     attackUnits += ctx.outerRingAttacks[enemy];
 
-    // =========================================================================
-    // Safe Check Detection
-    // =========================================================================
     Bitboard unsafeFor = ctx.attackedBy[c][ALL_PIECES];
     Bitboard safeSquares = ~unsafeFor & ~board.pieces(enemy);
-
-    // Knight checks
     Bitboard knightChecks = knight_attacks_bb(kingSq) & safeSquares;
     if (ctx.attackedBy[enemy][KNIGHT] & knightChecks) {
         attackUnits += SafeCheckBonus[KNIGHT];
     }
 
-    // Bishop checks
     Bitboard bishopChecks = bishop_attacks_bb(kingSq, occupied) & safeSquares;
     if (ctx.attackedBy[enemy][BISHOP] & bishopChecks) {
         attackUnits += SafeCheckBonus[BISHOP];
     }
-
-    // Rook checks
     Bitboard rookChecks = rook_attacks_bb(kingSq, occupied) & safeSquares;
     if (ctx.attackedBy[enemy][ROOK] & rookChecks) {
         attackUnits += SafeCheckBonus[ROOK];
     }
 
-    // Queen checks
     Bitboard queenChecks = queen_attacks_bb(kingSq, occupied) & safeSquares;
     if (ctx.attackedBy[enemy][QUEEN] & queenChecks) {
         attackUnits += SafeCheckBonus[QUEEN];
     }
 
-    // Contact checks (pieces directly attacking adjacent squares)
     Bitboard kingZone = king_attacks_bb(kingSq);
     Bitboard contactAttacks = kingZone & ctx.attackedBy[enemy][ALL_PIECES] & safeSquares;
     if (contactAttacks) {
         attackUnits += ContactCheckBonus * popcount(contactAttacks);
     }
 
-    // =========================================================================
-    // Virtual Mobility (potential slider attacks through king position)
-    // =========================================================================
     Bitboard virtualBishop = bishop_attacks_bb(kingSq, occupied ^ board.pieces(c, QUEEN));
     Bitboard virtualRook = rook_attacks_bb(kingSq, occupied ^ board.pieces(c, QUEEN));
 
     attackUnits += popcount(virtualBishop & board.pieces(enemy, BISHOP, QUEEN)) * VirtualMobilityWeight;
     attackUnits += popcount(virtualRook & board.pieces(enemy, ROOK, QUEEN)) * VirtualMobilityWeight;
 
-    // =========================================================================
-    // Open/Semi-Open Files Near King
-    // =========================================================================
     for (int df = -1; df <= 1; df++) {
         File f = File(kingFile + df);
         if (f < FILE_A || f > FILE_H) continue;
@@ -1674,9 +1514,6 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
         }
     }
 
-    // =========================================================================
-    // Weak Squares in King Zone
-    // =========================================================================
     Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
     Bitboard enemyAttacked = ctx.attackedBy[enemy][ALL_PIECES];
 
@@ -1686,9 +1523,6 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
     Bitboard outerWeak = ctx.outerKingRing[c] & ~ourDefended & enemyAttacked;
     attackUnits += popcount(outerWeak);
 
-    // =========================================================================
-    // Final Safety Calculation
-    // =========================================================================
     if (attackerCount >= MinAttackersForDanger) {
         int penalty = KingSafetyTable[std::min(attackUnits, 99)];
         penalty = penalty * Tuning::KingSafetyWeight / 100;
@@ -1698,10 +1532,6 @@ EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ct
 
     return score;
 }
-
-// ============================================================================
-// Main Evaluation Function
-// ============================================================================
 
 int evaluate(const Board& board, int alpha, int beta) {
     PROFILE_SCOPE("Eval::evaluate");
@@ -1731,10 +1561,6 @@ int evaluate(const Board& board, int alpha, int beta) {
     }
     score += pawnScore;
 
-    // =========================================================================
-    // LAZY EVALUATION - Quick check for clearly won/lost positions
-    // Only skip expensive calculations if position is VERY far from window
-    // =========================================================================
     {
         int mg = score.mg;
         int eg = score.eg;
@@ -1747,38 +1573,23 @@ int evaluate(const Board& board, int alpha, int beta) {
         }
     }
 
-    // =========================================================================
-    // FULL EVALUATION with EvalContext
-    // Initialize attack maps ONCE and reuse across all evaluation components
-    // This is more efficient than computing attacks separately in each function
-    // =========================================================================
     EvalContext ctx;
     init_eval_context(ctx, board);
 
-    // Piece mobility and activity evaluation (uses cached attack maps)
     score += eval_pieces_with_context(board, WHITE, ctx);
     score -= eval_pieces_with_context(board, BLACK, ctx);
 
-    // King safety evaluation (uses cached attack maps and king ring info)
     score += eval_king_safety_with_context(board, WHITE, ctx);
     score -= eval_king_safety_with_context(board, BLACK, ctx);
 
-    // =========================================================================
-    // THREAT DETECTION - Critical for tactical accuracy!
-    // Evaluates hanging pieces, attacks on valuable pieces, etc.
-    // =========================================================================
     score += eval_threats_with_context(board, WHITE, ctx);
     score -= eval_threats_with_context(board, BLACK, ctx);
-
-    // Space evaluation (control of central squares)
     score += eval_space(board, WHITE);
     score -= eval_space(board, BLACK);
 
-    // Material imbalance (piece combination bonuses/penalties)
     score += eval_material_imbalance(board, WHITE);
     score -= eval_material_imbalance(board, BLACK);
 
-    // Tapered evaluation
     int mg = score.mg;
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
@@ -1794,7 +1605,6 @@ int evaluate(const Board& board) {
 int evaluate_no_cache(const Board& board) {
     EvalScore score;
 
-    // Calculate game phase
     int phase = 0;
     phase += popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
     phase += popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
@@ -1802,71 +1612,49 @@ int evaluate_no_cache(const Board& board) {
     phase += popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
     phase = std::min(phase, TotalPhase);
 
-    // Material and PST - use incrementally updated scores
     score += board.psqt_score(WHITE);
     score -= board.psqt_score(BLACK);
 
-    // Pawn structure (computed directly, no caching)
     EvalScore pawnScore;
     pawnScore += eval_pawn_structure(board, WHITE);
     pawnScore -= eval_pawn_structure(board, BLACK);
     score += pawnScore;
 
-    // Initialize EvalContext
     EvalContext ctx;
     init_eval_context(ctx, board);
 
-    // Piece activity
     score += eval_pieces_with_context(board, WHITE, ctx);
     score -= eval_pieces_with_context(board, BLACK, ctx);
 
-    // King safety
     score += eval_king_safety_with_context(board, WHITE, ctx);
     score -= eval_king_safety_with_context(board, BLACK, ctx);
 
-    // Threats
     score += eval_threats_with_context(board, WHITE, ctx);
     score -= eval_threats_with_context(board, BLACK, ctx);
 
-    // Space evaluation
     score += eval_space(board, WHITE);
     score -= eval_space(board, BLACK);
 
-    // Material imbalance (piece combination bonuses/penalties)
     score += eval_material_imbalance(board, WHITE);
     score -= eval_material_imbalance(board, BLACK);
 
-    // Pawn lever detection (pawn storm threats)
     score += eval_pawn_levers(board, WHITE, ctx);
     score -= eval_pawn_levers(board, BLACK, ctx);
 
-    // Minor piece coordination (synergy bonuses)
     score += eval_minor_coordination(board, WHITE, ctx);
     score -= eval_minor_coordination(board, BLACK, ctx);
 
-    // Tapered evaluation
     int mg = score.mg;
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
-
-    // [FIX] Tempo bonus consistent at 12cp
     constexpr int TEMPO = 12;
 
-    // Return from side to move's perspective with tempo
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
 }
-
-// ============================================================================
-// Material Balance
-// Returns material difference from White's perspective in centipawns
-// Positive = White ahead, Negative = Black ahead
-// Used for dynamic contempt calculation
-// ============================================================================
 
 int material_balance(const Board& board) {
     int balance = 0;
 
-    // Count material for each side
     balance += popcount(board.pieces(WHITE, PAWN)) * PawnValue.mg;
     balance -= popcount(board.pieces(BLACK, PAWN)) * PawnValue.mg;
 
@@ -1885,5 +1673,5 @@ int material_balance(const Board& board) {
     return balance;
 }
 
-} // namespace Eval
+}
 

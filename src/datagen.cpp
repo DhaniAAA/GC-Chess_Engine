@@ -1,7 +1,3 @@
-// ============================================================================
-// datagen.cpp - Data Generation for NNUE Training
-// ============================================================================
-
 #include "datagen.hpp"
 #include "movegen.hpp"
 #include "eval.hpp"
@@ -20,17 +16,9 @@
 
 namespace DataGen {
 
-// ============================================================================
-// Global Instance
-// ============================================================================
-
 static std::unique_ptr<DataGenerator> g_generator = nullptr;
 static std::mutex g_mutex;
 static std::mutex g_search_mutex;
-
-// ============================================================================
-// Statistics Printing
-// ============================================================================
 
 void DataGenStats::print() const {
     uint64_t games = games_completed.load();
@@ -52,10 +40,6 @@ void DataGenStats::print() const {
     std::cout << "Avg pos/game     : " << (games > 0 ? pos / games : 0) << std::endl;
     std::cout << "==================================" << std::endl;
 }
-
-// ============================================================================
-// Data Generator Implementation
-// ============================================================================
 
 DataGenerator::DataGenerator(const DataGenConfig& config)
     : m_config(config) {
@@ -254,9 +238,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
     int adjudicate_count = 0;
     int draw_count = 0;
 
-    // =========================================================================
-    // Phase 1: Opening book phase
-    // =========================================================================
     if (m_config.use_book && Book::book.is_loaded()) {
         while (ply < m_config.book_depth && state_idx < 510) {
             Move book_move = Book::book.probe(board);
@@ -269,9 +250,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         }
     }
 
-    // =========================================================================
-    // Phase 2: Random opening phase (after book, for variety)
-    // =========================================================================
     int random_moves_made = 0;
     while (random_moves_made < m_config.random_plies && state_idx < 510) {
         Move m = select_random_move(board, thread_id);
@@ -287,9 +265,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         random_moves_made++;
     }
 
-    // =========================================================================
-    // Phase 3: Main game phase (search-based play)
-    // =========================================================================
     while (ply < m_config.max_ply && state_idx < 510) {
         MoveList moves;
         MoveGen::generate_legal(board, moves);
@@ -340,7 +315,6 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
             draw_count = 0;
         }
 
-        // Make move
         board.do_move(best_move, state_stack[state_idx++]);
         ply++;
     }
@@ -381,11 +355,6 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
 }
 
 bool DataGenerator::should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id) {
-    // =========================================================================
-    // Quiet Position Detection Algorithm
-    // Based on: "Study of the Proper NNUE Dataset" (arXiv, December 2024)
-    // =========================================================================
-
     if (ply < m_config.min_ply) {
         return false;
     }
@@ -408,10 +377,6 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
         }
     }
 
-    // =========================================================================
-    // Paper's Quiet Position Algorithm:
-    // Check volatility with quiescence search (M1 threshold)
-    // =========================================================================
     if (m_config.qsearch_margin > 0) {
         Search& searcher = *m_searchers[thread_id];
         int qsearch_score = searcher.qsearch_score(board);
@@ -422,10 +387,6 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
         }
     }
 
-    // =========================================================================
-    // Paper's Quiet Position Algorithm:
-    // Check divergence with search score (M2 threshold)
-    // =========================================================================
     if (m_config.search_margin > 0) {
         int search_diff = std::abs(static_eval - search_score);
         if (search_diff > m_config.search_margin) {
@@ -529,8 +490,6 @@ int DataGenerator::rand_int(int thread_id, int max) {
     return static_cast<int>(rand_next(thread_id) % static_cast<uint64_t>(max));
 }
 
-// ============================================================================\n// Global Interface\n// ============================================================================
-
 void start(const DataGenConfig& config) {
     std::lock_guard<std::mutex> lock(g_mutex);
 
@@ -623,10 +582,6 @@ DataGenConfig parse_config(std::istringstream& is) {
 
     return config;
 }
-
-// ============================================================================
-// Binpack File Reading & Conversion Implementation
-// ============================================================================
 
 std::string entry_to_string(const TrainingEntry& entry) {
     std::ostringstream ss;
@@ -810,12 +765,9 @@ bool convert_to_epd(const std::string& binary_path, const std::string& epd_path,
             out_file << field;
         }
 
-        // Write result
         const char* result_str = (entry.result == 2) ? "1-0" :
                                  (entry.result == 0) ? "0-1" : "1/2-1/2";
         out_file << " c9 \"" << result_str << "\";";
-
-        // Write score
         out_file << " c0 \"" << entry.score << "\";\n";
 
         count++;
@@ -854,12 +806,7 @@ bool get_file_stats(const std::string& path, FileStats& stats) {
     return stats.total_entries > 0;
 }
 
-// ============================================================================
-// Entry to Board Conversion (for filtering)
-// ============================================================================
-
 bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si) {
-    // Build FEN from entry and set board
     std::string fen = entry_to_fen(entry);
     try {
         board.set(fen, &si);
@@ -868,10 +815,6 @@ bool entry_to_board(const TrainingEntry& entry, Board& board, StateInfo& si) {
         return false;
     }
 }
-
-// ============================================================================
-// Filter Binpack Implementation
-// ============================================================================
 
 bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
 
@@ -1043,4 +986,4 @@ FilterConfig parse_filter_config(std::istringstream& is) {
     return config;
 }
 
-} // namespace DataGen
+}
