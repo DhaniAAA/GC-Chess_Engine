@@ -10,35 +10,23 @@
 #include <chrono>
 #include <vector>
 
-// ============================================================================
-// Search Constants
-// ============================================================================
-
 constexpr int MAX_PLY = 128;
 constexpr int MAX_MOVES = 256;
-constexpr int MAX_MULTI_PV = 500;  // Maximum number of principal variations
-
-// ============================================================================
-// Search Limits
-// ============================================================================
+constexpr int MAX_MULTI_PV = 500;
 
 struct SearchLimits {
-    int depth = 0;           // Maximum depth (0 = unlimited)
-    int mate = 0;            // Search for mate in N moves
-    U64 nodes = 0;           // Maximum nodes to search
-    int movetime = 0;        // Time per move in ms
-    int time[2] = {0, 0};    // Time left for each side (ms)
-    int inc[2] = {0, 0};     // Increment per move (ms)
-    int movestogo = 0;       // Moves until next time control
-    bool infinite = false;   // Infinite analysis
-    bool ponder = false;     // Pondering mode
+    int depth = 0;
+    int mate = 0;
+    U64 nodes = 0;
+    int movetime = 0;
+    int time[2] = {0, 0};
+    int inc[2] = {0, 0};
+    int movestogo = 0;
+    bool infinite = false;
+    bool ponder = false;
 
-    std::vector<Move> searchmoves;  // Restrict search to these moves
+    std::vector<Move> searchmoves;
 };
-
-// ============================================================================
-// Search Statistics
-// ============================================================================
 
 struct SearchStats {
     U64 nodes = 0;
@@ -54,18 +42,12 @@ struct SearchStats {
     }
 };
 
-// ============================================================================
-// Principal Variation
-// ============================================================================
-
 struct PVLine {
     int length = 0;
     Move moves[MAX_PLY];
 
-    // Clear the PV line - also reset a few moves to prevent stale data
     void clear() {
         length = 0;
-        // Clear first few moves to prevent stale ponder moves
         for (int i = 0; i < 4 && i < MAX_PLY; ++i) {
             moves[i] = MOVE_NONE;
         }
@@ -78,7 +60,6 @@ struct PVLine {
             moves[i + 1] = child.moves[i];
             newLen++;
         }
-        // Clear any old moves beyond the new length to prevent stale data
         for (int i = newLen; i < length && i < MAX_PLY; ++i) {
             moves[i] = MOVE_NONE;
         }
@@ -95,11 +76,6 @@ struct PVLine {
     }
 };
 
-// ============================================================================
-// Search Stack
-// Stack of information for each ply in the search tree
-// ============================================================================
-
 struct SearchStack {
     Move* pv;
     int ply;
@@ -111,23 +87,17 @@ struct SearchStack {
     int moveCount;
     int extensions;
     int doubleExtensions;
-    int tripleExtensions;     // Track triple extensions (PlentyChess-style)
-    int fractionalExt;        // Fractional extension accumulator (0-99, 100 = 1 ply)
+    int tripleExtensions;
+    int fractionalExt;
     bool inCheck;
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
-    bool inLMR;               // Currently in LMR reduced search (for Post-LMR adjustments)
-    int reduction;            // Current LMR reduction amount
+    bool inLMR;
+    int reduction;
     int cutoffCnt;
     ContinuationHistoryEntry* contHistory;
 };
-
-// ============================================================================
-// Correction History
-// Tracks the average difference between static eval and search result
-// to correct systematic bias in evaluation
-// ============================================================================
 
 class CorrectionHistory {
 public:
@@ -164,10 +134,6 @@ private:
     int table[COLOR_NB][SIZE];
 };
 
-// ============================================================================
-// Search Info (for UCI output)
-// ============================================================================
-
 struct SearchInfo {
     int depth;
     int selDepth;
@@ -180,11 +146,6 @@ struct SearchInfo {
     int multiPVIdx;
     PVLine pv;
 };
-
-// ============================================================================
-// Root Move (for MultiPV support)
-// Stores information about each legal move at the root position
-// ============================================================================
 
 struct RootMove {
     Move move = MOVE_NONE;
@@ -212,10 +173,6 @@ struct RootMove {
     }
 };
 
-// ============================================================================
-// Search Class
-// ============================================================================
-
 class Search {
 public:
     Search();
@@ -241,16 +198,14 @@ public:
     using InfoCallback = void(*)(const SearchInfo&);
     void set_info_callback(InfoCallback cb) { infoCallback = cb; }
 
-    // Silent mode - suppresses UCI info output (used by datagen)
     void set_silent(bool silent) { silentMode = silent; }
     bool is_silent() const { return silentMode; }
 
     void clear_history();
 
     int evaluate(const Board& board);
-    int evaluate(const Board& board, int alpha, int beta);  // With lazy eval
+    int evaluate(const Board& board, int alpha, int beta);
 
-    // Quiescence search wrapper for datagen (returns score from white's perspective)
     int qsearch_score(Board& board);
 
 private:
@@ -278,7 +233,7 @@ private:
     std::atomic<bool> stopped;
     std::atomic<bool> searching;
     std::atomic<bool> isPondering;
-    bool silentMode = false;  // Suppress UCI info output when true
+    bool silentMode = false;
     SearchLimits limits;
     SearchStats searchStats;
 
@@ -315,10 +270,6 @@ private:
 
     InfoCallback infoCallback = nullptr;
 };
-
-// ============================================================================
-// Global Search Instance
-// ============================================================================
 
 extern Search Searcher;
 
