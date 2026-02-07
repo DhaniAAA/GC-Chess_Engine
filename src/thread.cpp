@@ -569,9 +569,9 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     Move quietsSearched[64];
     int quietCount = 0;
 
-    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->mateKillers, thread->counterMoves,
+    MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
                   thread->history, thread->previousMove,
-                  nullptr, nullptr, nullptr, nullptr);
+                  nullptr, nullptr, nullptr);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
