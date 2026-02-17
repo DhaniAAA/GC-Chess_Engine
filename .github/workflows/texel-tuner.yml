@@ -3,16 +3,8 @@ name: Texel Tuner
 on:
   workflow_dispatch:
     inputs:
-      tuner_type:
-        description: "Tuner type (texel or spsa)"
-        required: true
-        default: "texel"
-        type: choice
-        options:
-          - texel
-          - spsa
       max_positions:
-        description: "Maximum positions to use (Texel: 50000-2000000, SPSA: FEN count)"
+        description: "Maximum positions to use (50000-2000000)"
         required: true
         default: "500000"
       iterations:
@@ -48,58 +40,26 @@ jobs:
             echo "WARNING: EPD file not found. Please ensure tuner/quiet-labeled.epd is in the repository."
           fi
 
-      - name: Build Engine & Tuner
+      - name: Run Texel Tuner Wrapper
         run: |
-          echo "Building with optimizations..."
-          if [ "${{ github.event.inputs.tuner_type }}" = "texel" ]; then
-            make tuner CXX=g++ CXXFLAGS="-std=c++17 -O3 -march=native -DNDEBUG -pthread"
-          else
-            make CXX=g++ CXXFLAGS="-std=c++17 -O3 -march=native -DNDEBUG -pthread"
-          fi
-
-      - name: Run Texel Tuner
-        if: ${{ github.event.inputs.tuner_type == 'texel' }}
-        run: |
-          echo "Starting Texel Tuning..."
+          echo "Starting Texel Tuning via Python Wrapper..."
           echo "Positions: ${{ github.event.inputs.max_positions }}"
           echo "Iterations: ${{ github.event.inputs.iterations }}"
           echo ""
-          ./output/tuner tuner/quiet-labeled.epd ${{ github.event.inputs.max_positions }} ${{ github.event.inputs.iterations }} | tee tuning_results.txt
-
-      - name: Run SPSA Tuner
-        if: ${{ github.event.inputs.tuner_type == 'spsa' }}
-        run: |
-          echo "Starting SPSA Tuning..."
-          echo "FEN Count: ${{ github.event.inputs.max_positions }}"
-          echo "Iterations: ${{ github.event.inputs.iterations }}"
-          echo ""
-          python3 tuner/spsa_tuner.py \
-            --engine ./output/main \
-            --simple \
-            --iterations ${{ github.event.inputs.iterations }} \
-            --fen-count ${{ github.event.inputs.max_positions }} \
-            --positions-per-iter 30 \
-            --search-depth 6 \
-            --output tuning_results.json \
-            | tee tuning_results.txt
+          # Python script handles compilation automatically
+          python3 tuner/texel_tuner.py tuner/quiet-labeled.epd ${{ github.event.inputs.max_positions }} ${{ github.event.inputs.iterations }} | tee tuning_results.txt
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: tuning-results-${{ github.event.inputs.tuner_type }}
+          name: tuning-results
           path: |
             tuning_results.txt
-            tuning_results.json
-            spsa_results.json
           retention-days: 30
 
       - name: Display Final Values
         run: |
           echo "============================================"
-          echo "TUNING COMPLETE (${{ github.event.inputs.tuner_type }})"
+          echo "TUNING COMPLETE"
           echo "============================================"
-          if [ "${{ github.event.inputs.tuner_type }}" = "texel" ]; then
-            grep -A 50 "FINAL TUNED VALUES" tuning_results.txt || true
-          else
-            grep -A 50 "TUNING COMPLETE" tuning_results.txt || true
-          fi
+          grep -A 50 "FINAL TUNED VALUES" tuning_results.txt || true
