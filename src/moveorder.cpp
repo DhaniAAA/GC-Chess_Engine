@@ -65,6 +65,13 @@ int SEE::evaluate(const Board& board, Move m) {
 
     gain[depth] = PieceValue[victim];
 
+    // Promotion: the pawn becomes a stronger piece, adding net value
+    if (m.is_promotion()) {
+        PieceType promoPt = m.promotion_type();
+        gain[depth] += PieceValue[promoPt] - PieceValue[PAWN];
+        attacker = promoPt;  // Post-promotion, the piece at risk is the promoted piece
+    }
+
     Bitboard occupied = board.pieces();
     occupied ^= square_bb(from);
     occupied |= square_bb(to);
@@ -120,11 +127,19 @@ bool SEE::see_ge(const Board& board, Move m, int threshold) {
     }
 
     int swap = PieceValue[victim] - threshold;
+
+    // Promotion: gain includes promoted piece value minus pawn
+    if (m.is_promotion()) {
+        swap += PieceValue[m.promotion_type()] - PieceValue[PAWN];
+    }
+
     if (swap < 0) {
         return false;
     }
 
-    swap = PieceValue[attacker] - swap;
+    // After promotion, the piece at risk is the promoted piece, not the pawn
+    int attackerValue = m.is_promotion() ? PieceValue[m.promotion_type()] : PieceValue[attacker];
+    swap = attackerValue - swap;
     if (swap <= 0) {
         return true;
     }
@@ -137,9 +152,10 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
                        const HistoryTable& ht, Move prevMove,
                        const ContinuationHistoryEntry* contHist1,
                        const ContinuationHistoryEntry* contHist2,
-                       const CaptureHistory* ch)
+                       const CaptureHistory* ch,
+                       const ContinuationHistoryEntry* contHist4)
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
-      contHist1ply(contHist1), contHist2ply(contHist2),
+      contHist1ply(contHist1), contHist2ply(contHist2), contHist4ply(contHist4),
       captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), quietCheckCount(0), currentIdx(0), equalCaptureIdx(0), quietCheckIdx(0),
       badCaptureIdx(0), ply(p), stage(STAGE_TT_MOVE) {
@@ -161,7 +177,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
 
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(nullptr),
+      contHist1ply(nullptr), contHist2ply(nullptr), contHist4ply(nullptr), captureHist(nullptr),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -174,7 +190,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryT
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht,
                        const CaptureHistory* ch)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(ch),
+      contHist1ply(nullptr), contHist2ply(nullptr), contHist4ply(nullptr), captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -252,11 +268,11 @@ void MovePicker::score_captures() {
         if (needsSEE || valueDiff < 0) {
             givesCheck = MoveGen::gives_check(board, m);
             if (givesCheck) {
-                sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
-            if (captureHist && captured != NO_PIECE) {
-                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
-            }
-            continue;
+                sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
+                if (captureHist && captured != NO_PIECE) {
+                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
+                }
+                continue;
             }
         }
 
@@ -289,7 +305,7 @@ void MovePicker::score_captures() {
             }
         } else {
             if (MoveGen::gives_check(board, m)) {
-                sm.score = SCORE_WINNING_CAP + 10000 + mvvLva;
+                sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
             } else {
                 sm.score = SCORE_LOSING_CAP + see_value;
                 if (captureHist && captured != NO_PIECE) {
@@ -299,12 +315,34 @@ void MovePicker::score_captures() {
             }
         }
         }
+
+        // King zone proximity bonus for captures (SEE-aware)
+        // Captures landing on or near the enemy king are tactically significant
+        {
+            Square enemyKingSq = board.king_square(~board.side_to_move());
+            Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
+            bool nearKing = (enemyKingZone & square_bb(m.to()));
+
+            if (nearKing) {
+                // Winning capture near king (SEE >= 0): push to top priority
+                if (SEE::see_ge(board, m, 0)) {
+                    sm.score += 5000;
+                }
+                // Sacrifice near king (SEE < 0): still boost priority
+                // enough to be tried before quiet moves, but after winning captures
+                else {
+                    sm.score += 2500;
+                }
+            }
+        }
     }
 }
 
 void MovePicker::score_quiets() {
     PROFILE_SCOPE("score_quiets");
     Color us = board.side_to_move();
+    Square enemyKing = board.king_square(~us);
+    Bitboard kingZone = king_attacks_bb(enemyKing) | square_bb(enemyKing);
 
     const int moveCount = static_cast<int>(moves.size());
 
@@ -319,51 +357,52 @@ void MovePicker::score_quiets() {
             PREFETCH_READ(&moves[idx + 2]);
         }
 
+        // === TACTICAL QUIET PRIORITY (computed first) ===
+        int tacticalBonus = 0;
+
+        // 1. Move that attacks king zone (critical for WAC: Qh6, Rxh7, etc.)
+        Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
+        Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
+        if (attacksAfter & kingZone) {
+            tacticalBonus += 5000;
+        }
+
+        // 2. Quiet move that gives check (direct or discovered)
+        if (MoveGen::gives_check(board, m)) {
+            tacticalBonus += 8000;
+        }
+
+        // 3. Discovered attack on king (piece was blocking a slider aimed at king)
+        if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
+            !aligned(m.from(), to, enemyKing)) {
+            tacticalBonus += 4000;
+        }
+
+        // Killer, counter, and history scoring — tactical bonus added on top
         if (m == killer1) {
-            sm.score = SCORE_KILLER_1;
+            sm.score = SCORE_KILLER_1 + tacticalBonus;
         } else if (m == killer2) {
-            sm.score = SCORE_KILLER_2;
+            sm.score = SCORE_KILLER_2 + tacticalBonus;
         } else if (m == counterMove) {
-            sm.score = SCORE_COUNTER;
+            sm.score = SCORE_COUNTER + tacticalBonus;
         } else {
             int histScore = history.get(us, m);
+            int cont1 = contHist1ply ? contHist1ply->get(pt, to) : 0;
+            int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
+            int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
 
-            int contHist1Score = 0;
-            int contHist2Score = 0;
-
-            if (contHist1ply) {
-                contHist1Score = contHist1ply->get(pt, to);
-            }
-
-            if (contHist2ply) {
-                contHist2Score = contHist2ply->get(pt, to);
-            }
-
-            sm.score = histScore + 2 * contHist1Score + contHist2Score;
+            // Synchronized with LMR statScore formula:
+            // 2*mainHistory + cont1 + cont2 + cont4
+            sm.score = 2 * histScore + cont1 + cont2 + cont4 + tacticalBonus;
         }
 
-        if (pt == QUEEN || pt == ROOK) {
-            Square enemyKingSq = board.king_square(~us);
-            Bitboard kingZone = king_attacks_bb(enemyKingSq);
-            Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
-            Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
-
-            if (attacksAfter & (kingZone | square_bb(enemyKingSq))) {
-                sm.score += 5000;
-            }
-        }
-
+        // Promotion bonus
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
-            if (promo == QUEEN) {
-                sm.score += SCORE_QUEEN_PROMO;
-            } else if (promo == KNIGHT) {
-                sm.score += SCORE_KNIGHT_PROMO;
-            } else if (promo == ROOK) {
-                sm.score += SCORE_ROOK_PROMO;
-            } else {
-                sm.score += SCORE_BISHOP_PROMO;
-            }
+            sm.score += (promo == QUEEN)  ? SCORE_QUEEN_PROMO :
+                        (promo == KNIGHT) ? SCORE_KNIGHT_PROMO :
+                        (promo == ROOK)   ? SCORE_ROOK_PROMO :
+                                            SCORE_BISHOP_PROMO;
         }
     }
 }

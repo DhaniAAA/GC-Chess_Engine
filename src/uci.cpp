@@ -11,6 +11,7 @@
 #include <functional>
 #include <iomanip>
 #include "tuning.hpp"
+#include "tests.hpp"
 
 
 namespace UCI {
@@ -76,21 +77,8 @@ void UCIHandler::loop() {
                 cmd_bench(is);
             } else if (token == "datagen") {
                 cmd_datagen(is);
-            } else if (token == "threats") {
-                debug_threats(board);
-            } else if (token == "threatmove") {
-                std::string moveStr;
-                if (is >> moveStr) {
-                    Move m = string_to_move(moveStr);
-                    debug_move_threat_score(board, m);
-                }
-            } else if (token == "quietsplit") {
-                debug_quiet_split(board);
-            } else if (token == "killerstats") {
-                g_killerStats.print();
-            } else if (token == "clearstats") {
-                g_killerStats.clear();
-                std::cout << "Killer statistics cleared.\n";
+            } else if (token == "wac") {
+                cmd_wac(is);
             }
         }
     } catch (const std::exception& e) {
@@ -105,7 +93,7 @@ void UCIHandler::cmd_uci() {
     std::cout << "id author " << ENGINE_AUTHOR << std::endl;
     std::cout << std::endl;
 
-    std::cout << "option name Hash type spin default 256 min 1 max 4096" << std::endl;
+    std::cout << "option name Hash type spin default " << options.hash << " min 1 max 4096" << std::endl;
     std::cout << "option name Table Memory type spin default 64 min 1 max 1024" << std::endl;
     std::cout << "option name Threads type spin default 1 min 1 max 128" << std::endl;
     std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
@@ -826,6 +814,63 @@ void UCIHandler::cmd_datagen(std::istringstream& is) {
     }
 
     std::cout << "Unknown datagen command. Use 'datagen help' for usage." << std::endl;
+}
+
+void UCIHandler::cmd_wac(std::istringstream& is) {
+    wait_for_search();
+
+    int depth = 10;
+    int timeLimitMs = 0;
+    int startPos = 1;
+    int endPos = 0;  // 0 = all
+    bool verbose = true;
+    bool quiet = false;
+
+    std::string token;
+    while (is >> token) {
+        if (token == "depth" || token == "d") {
+            is >> depth;
+            timeLimitMs = 0;  // Depth takes priority
+        } else if (token == "time" || token == "t" || token == "movetime") {
+            is >> timeLimitMs;
+            depth = 0;  // Time takes priority
+        } else if (token == "start" || token == "from") {
+            is >> startPos;
+        } else if (token == "end" || token == "to") {
+            is >> endPos;
+        } else if (token == "quiet" || token == "q") {
+            quiet = true;
+            verbose = false;
+        } else if (token == "verbose" || token == "v") {
+            verbose = true;
+            quiet = false;
+        } else if (token == "help" || token == "?") {
+            std::cout << "\n=== WAC Test Suite Commands ===" << std::endl;
+            std::cout << "wac                  - Run all positions at depth 10" << std::endl;
+            std::cout << "wac depth <n>        - Search to specified depth" << std::endl;
+            std::cout << "wac time <ms>        - Search for specified milliseconds" << std::endl;
+            std::cout << "wac start <n> end <m> - Test positions n through m" << std::endl;
+            std::cout << "wac quiet            - Only show summary, not individual results" << std::endl;
+            std::cout << "wac verbose          - Show all individual results (default)" << std::endl;
+            std::cout << "\nExamples:" << std::endl;
+            std::cout << "  wac depth 12       - Run all at depth 12" << std::endl;
+            std::cout << "  wac time 1000      - Run all with 1 second per position" << std::endl;
+            std::cout << "  wac start 1 end 50 - Run only positions 1-50" << std::endl;
+            std::cout << "  wac depth 8 quiet  - Run at depth 8, summary only" << std::endl;
+            std::cout << "================================\n" << std::endl;
+            return;
+        } else {
+            // Try parsing as a number for quick depth setting
+            try {
+                depth = std::stoi(token);
+                timeLimitMs = 0;
+            } catch (...) {
+                // Ignore unknown token
+            }
+        }
+    }
+
+    Tests::run_wac_test(depth, timeLimitMs, startPos, endPos, verbose);
 }
 
 TimeManager::TimeManager()

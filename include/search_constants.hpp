@@ -23,7 +23,7 @@ inline int razoring_margin(int depth) {
 }
 
 inline int rfp_margin(int depth, bool improving) {
-    return 95 * depth - (improving ? 50 : 0);
+    return 75 * depth - (improving ? 75 : 0);
 }
 
 // ============================================================================
@@ -32,7 +32,7 @@ inline int rfp_margin(int depth, bool improving) {
 
 constexpr int FUTILITY_MAX_DEPTH = 6;
 constexpr int RAZORING_MAX_DEPTH = 3;
-constexpr int RFP_MAX_DEPTH = 6;
+constexpr int RFP_MAX_DEPTH = 9;
 constexpr int LMP_MAX_DEPTH = 7;
 constexpr int SEE_QUIET_MAX_DEPTH = 3;
 constexpr int SEE_CAPTURE_MAX_DEPTH = 4;
@@ -56,7 +56,7 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 constexpr int MAX_EXTENSIONS = 5;
 
 constexpr int SINGULAR_DEPTH = 4;
-constexpr int SINGULAR_MARGIN = 64;
+constexpr int SINGULAR_MARGIN = 80;
 constexpr int SINGULAR_TT_DEPTH_PENALTY = 8;
 constexpr int SINGULAR_IMPROVING_BONUS = 10;
 constexpr int SINGULAR_DOUBLE_EXT_BASE = 60;
@@ -80,7 +80,7 @@ constexpr int MULTI_CUT_REQUIRED = 2;
 // ProbCut Parameters
 // ============================================================================
 
-constexpr int PROBCUT_DEPTH = 64;
+constexpr int PROBCUT_DEPTH = 5;
 constexpr int PROBCUT_MARGIN = 200;
 
 // ============================================================================
@@ -88,14 +88,17 @@ constexpr int PROBCUT_MARGIN = 200;
 // ============================================================================
 
 constexpr int NULL_MOVE_MIN_DEPTH = 3;
-constexpr int NULL_MOVE_VERIFY_DEPTH = 16;
+constexpr int NULL_MOVE_BASE_R = 3;           // Base reduction for NMP
+constexpr int NULL_MOVE_DEPTH_DIVISOR = 4;    // R += depth / DIVISOR
+constexpr int NULL_MOVE_EVAL_MARGIN = 200;    // If (eval - beta) > MARGIN, R += 1
+constexpr int NULL_MOVE_VERIFY_DEPTH = 12;    // V-NMP threshold (was 16)
 
 // ============================================================================
 // Aspiration Window Parameters
 // ============================================================================
 
-constexpr int ASPIRATION_INITIAL_DELTA = 12;
-constexpr int ASPIRATION_MIN_DEPTH = 5;
+constexpr int ASPIRATION_INITIAL_DELTA = 30;
+constexpr int ASPIRATION_MIN_DEPTH = 6;
 
 // ============================================================================
 // IIR (Internal Iterative Reductions) Parameters
@@ -111,19 +114,31 @@ constexpr int IIR_CUT_REDUCTION = 2;
 // ============================================================================
 
 constexpr int QSEARCH_CHECK_DEPTH = -2;
-constexpr int DELTA_PRUNING_MARGIN = 550;
+constexpr int DELTA_PRUNING_MARGIN = 650;
 
 // ============================================================================
 // LMR Tuning Parameters (Adjusted for HCE Engines)
-// HCE engine needs slightly less aggressive reductions due to eval noise
+// HCE engine needs less aggressive reductions due to eval noise.
+// Base formula: R = LMR_BASE + ln(depth) * ln(moveNumber) / LMR_DIVISOR
 // ============================================================================
 
-constexpr double LMR_BASE = 0.85;
-constexpr double LMR_DIVISOR = 1.5;
+constexpr double LMR_BASE      = 0.78;      // dari 0.85 → lebih aman
+constexpr double LMR_DIVISOR   = 1.68;      // dari 1.5  → lebih halus
 
-constexpr int LMR_CUTNODE_BONUS = 3;
+constexpr int LMR_MIN_DEPTH        = 4;     // naik dari 3
+constexpr int LMR_CUTNODE_BONUS    = 2;     // turun dari 3
 constexpr int LMR_CUTOFF_CNT_BONUS = 1;
-constexpr int LMR_ALLNODE_SCALE = 1;
+constexpr int LMR_ALLNODE_SCALE    = 1;
+
+// LMR for late captures (lighter reduction than quiet LMR)
+constexpr int LMR_CAPTURE_MIN_MOVE = 4;       // Only reduce captures after move 4
+constexpr int LMR_CAPTURE_REDUCTION = 1;      // Fixed reduction for captures
+
+// NMP-threat interaction: halve LMR when NMP detected a mate threat
+constexpr int LMR_NMP_THREAT_DIVISOR = 2;
+
+// LMR re-search history bonus scale (moves that survive re-search get rewarded)
+constexpr int LMR_RESEARCH_BONUS_SCALE = 2;   // Multiply stat_bonus by this
 
 // ============================================================================
 // Extension Control Parameters
@@ -182,25 +197,25 @@ constexpr int SEE_QUIET_NOT_IMPROVING_FACTOR = 60;
 // History & LMR Weights (Stockfish-style)
 // ============================================================================
 
-constexpr int HISTORY_LMR_DIVISOR = 3500;
-constexpr int HISTORY_LMR_MAX_ADJ = 6;
+constexpr int HISTORY_LMR_DIVISOR = 5000;
+constexpr int HISTORY_LMR_MAX_ADJ = 4;
 
-constexpr int HISTORY_BONUS_BASE = 105;
-constexpr int HISTORY_BONUS_LINEAR = 175;
-constexpr int HISTORY_BONUS_QUADRATIC = 11;
-constexpr int HISTORY_BONUS_MAX = 2400;
+constexpr int HISTORY_BONUS_BASE      = 94;
+constexpr int HISTORY_BONUS_LINEAR    = 152;
+constexpr int HISTORY_BONUS_QUADRATIC = 9;
+constexpr int HISTORY_BONUS_MAX       = 2050;
 
-constexpr int HISTORY_MALUS_BASE = 80;
-constexpr int HISTORY_MALUS_LINEAR = 145;
-constexpr int HISTORY_MALUS_QUADRATIC = 8;
-constexpr int HISTORY_MALUS_MAX = 1900;
+constexpr int HISTORY_MALUS_BASE      = 76;
+constexpr int HISTORY_MALUS_LINEAR    = 138;
+constexpr int HISTORY_MALUS_QUADRATIC = 7;
+constexpr int HISTORY_MALUS_MAX       = 1680;
 
 constexpr int CONT_HIST_1PLY_WEIGHT = 2;
 constexpr int CONT_HIST_2PLY_WEIGHT = 1;
 constexpr int CONT_HIST_4PLY_WEIGHT = 1;
 
-constexpr int CAPTURE_HIST_BONUS_SCALE = 7;
-constexpr int CAPTURE_HIST_MALUS_SCALE = 5;
+constexpr int CAPTURE_HIST_BONUS_SCALE = 6;
+constexpr int CAPTURE_HIST_MALUS_SCALE = 6;
 
 // stat_bonus/malus take depth in milli-ply
 inline int stat_bonus(int depth) {

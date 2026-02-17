@@ -13,7 +13,7 @@
 namespace UCI {
 
 struct EngineOptions {
-    int hash = 256;
+    int hash = 128;
     int threads = 2;
     int multiPV = 1;
     bool ponder = true;
@@ -60,6 +60,7 @@ private:
     void cmd_eval();
     void cmd_bench(std::istringstream& is);
     void cmd_datagen(std::istringstream& is);
+    void cmd_wac(std::istringstream& is);
 
     void parse_moves(std::istringstream& is);
     void start_search(const SearchLimits& limits);

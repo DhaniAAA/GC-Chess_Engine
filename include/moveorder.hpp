@@ -530,7 +530,8 @@ public:
                const HistoryTable& ht, Move prevMove,
                const ContinuationHistoryEntry* contHist1 = nullptr,
                const ContinuationHistoryEntry* contHist2 = nullptr,
-               const CaptureHistory* captHist = nullptr);
+               const CaptureHistory* captHist = nullptr,
+               const ContinuationHistoryEntry* contHist4 = nullptr);
 
     MovePicker(const Board& b, const Move* ttMoves, int ttMoveCount, const HistoryTable& ht);
 
@@ -546,6 +547,7 @@ private:
     const CounterMoveTable* counterMoves;
     const ContinuationHistoryEntry* contHist1ply;
     const ContinuationHistoryEntry* contHist2ply;
+    const ContinuationHistoryEntry* contHist4ply;
     const CaptureHistory* captureHist;
 
     Move ttMoves[3];

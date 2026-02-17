@@ -7,6 +7,7 @@ TranspositionTable TT;
 
 TranspositionTable::TranspositionTable()
     : table(nullptr), clusterCount(0), clusterMask(0), generation8(0) {
+    // Default size — keep in sync with uci.hpp::EngineOptions::hash
     resize(128);
 }
 
@@ -71,9 +72,13 @@ TTEntry* TranspositionTable::probe(Key key, bool& found) {
 
     TTEntry* entry = first_entry(key);
     U16 key16 = static_cast<U16>(key >> 48);
+    U32 key32 = static_cast<U32>(key >> 16);  // CRITICAL FIX: Extract key32 for verification
 
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
-        if (entry[i].key16 == key16) {
+        // CRITICAL FIX: Verify BOTH key16 AND key32 to prevent collisions
+        // Old: Only checked key16 (1/65K collision rate)
+        // New: Check key16 + key32 (1/281 trillion collision rate)
+        if (entry[i].key16 == key16 && entry[i].key32 == key32) {
             found = true;
             return &entry[i];
         }
@@ -88,7 +93,10 @@ TTEntry* TranspositionTable::probe(Key key, bool& found) {
     int best_score = -100000;
 
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
-        int age_diff = (generation8 - entry[i].generation()) & 0xFC;
+        // age_diff: compare in shifted format (both with bound bits masked out)
+        // generation8 has format (gen << 2), entry genBound8 has (gen << 2 | bound)
+        // Mask genBound8 to get just gen bits, then subtract
+        int age_diff = (generation8 - (entry[i].genBound8 & 0xFC)) & 0xFC;
         int replace_score = age_diff * 256 - entry[i].depth8;
 
         if (replace_score > best_score) {
@@ -107,23 +115,48 @@ void TranspositionTable::get_moves(Key key, Move* moves, int& count) {
 
     TTEntry* entry = first_entry(key);
     U16 key16 = static_cast<U16>(key >> 48);
+    U32 key32 = static_cast<U32>(key >> 16);
+
+    // Step 1: Collect all matching entries with their depths
+    struct MoveDepth {
+        Move move;
+        int depth;
+    };
+    MoveDepth candidates[TTCluster::ENTRIES_PER_CLUSTER];
+    int numCandidates = 0;
 
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
-        if (entry[i].key16 == key16) {
+        if (entry[i].key16 == key16 && entry[i].key32 == key32) {
             Move m = entry[i].move();
             if (m != MOVE_NONE) {
-                bool duplicate = false;
-                for (int j = 0; j < count; ++j) {
-                    if (moves[j] == m) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-
-                if (!duplicate && count < TTCluster::ENTRIES_PER_CLUSTER) {
-                    moves[count++] = m;
-                }
+                candidates[numCandidates++] = { m, entry[i].depth() };
             }
+        }
+    }
+
+    // Step 2: Sort by depth descending (highest depth first)
+    for (int i = 0; i < numCandidates - 1; ++i) {
+        for (int j = i + 1; j < numCandidates; ++j) {
+            if (candidates[j].depth > candidates[i].depth) {
+                MoveDepth tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+        }
+    }
+
+    // Step 3: Add to output with strict deduplication
+    for (int i = 0; i < numCandidates; ++i) {
+        Move m = candidates[i].move;
+        bool duplicate = false;
+        for (int j = 0; j < count; ++j) {
+            if (moves[j].raw() == m.raw()) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate && count < TTCluster::ENTRIES_PER_CLUSTER) {
+            moves[count++] = m;
         }
     }
 }
@@ -134,10 +167,15 @@ int TranspositionTable::hashfull() const {
 
     if (!table || clusterCount == 0) return 0;
 
+    // Sample the first 1000 clusters and count entries that belong
+    // to the CURRENT generation. generation8 is pre-shifted (+=4 per search),
+    // with the low 2 bits reserved for Bound. entry.generation() returns
+    // genBound8 >> 2, which is the raw generation counter.
+    U8 currentGen = generation8 >> 2;
     for (int i = 0; i < samples && i < static_cast<int>(clusterCount); ++i) {
         const TTEntry* entry = &table[i].entries[0];
         for (int j = 0; j < TTCluster::ENTRIES_PER_CLUSTER; ++j) {
-            if (entry[j].key16 != 0) {
+            if (entry[j].depth8 != 0 && entry[j].generation() == currentGen) {
                 ++count;
             }
         }
@@ -145,3 +183,5 @@ int TranspositionTable::hashfull() const {
 
     return count * 1000 / (samples * TTCluster::ENTRIES_PER_CLUSTER);
 }
+
+

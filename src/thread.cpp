@@ -26,6 +26,7 @@ SearchThread::SearchThread(int id) : rand_seed(id + 1), threadId(id) {
         stack[i].killers[1] = MOVE_NONE;
         stack[i].extensions = 0;
         stack[i].nullMovePruned = false;
+        stack[i].contHistory = nullptr;
     }
 
     nativeThread = std::thread(&SearchThread::idle_loop, this);
@@ -44,6 +45,8 @@ void SearchThread::clear_history() {
     mateKillers.clear();
     counterMoves.clear();
     history.clear();
+    contHistory.clear();
+    captureHist.clear();
 }
 
 int SearchThread::rand_int(int max) {
@@ -317,28 +320,73 @@ void iterative_deepening(SearchThread* thread, Board& board) {
             if (skipChance == 0) continue;
         }
 
-        int delta = 20;
+        int delta = ASPIRATION_INITIAL_DELTA;
+        int failCount = 0;
+        int searchDepth = depth;
+        bool prevIsMate = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
-        if (depth >= 5 && thread->completedDepth >= 1) {
+        if (depth >= ASPIRATION_MIN_DEPTH && thread->completedDepth >= 1 && !prevIsMate) {
             alpha = std::max(score - delta, -VALUE_INFINITE);
             beta = std::min(score + delta, VALUE_INFINITE);
         }
 
         while (true) {
+            // Time-critical: widen to full window if <10% budget remains
+            if (failCount > 0 && thread->is_main() &&
+                !Threads.limits.infinite && Threads.limits.movetime == 0) {
+                auto now = std::chrono::steady_clock::now();
+                int elapsed = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - Threads.startTime).count()
+                );
+                if (elapsed > Threads.maximumTime * 9 / 10) {
+                    alpha = -VALUE_INFINITE;
+                    beta = VALUE_INFINITE;
+                    searchDepth = depth;
+                }
+            }
+
             int ply = 0;
             thread->pvLines[ply].clear();
 
-            score = alpha_beta(thread, board, alpha, beta, depth, false, ply);
+            score = alpha_beta(thread, board, alpha, beta, searchDepth, false, ply);
 
             if (Threads.stop_flag) break;
 
             if (score <= alpha) {
+                failCount++;
                 beta = (alpha + beta) / 2;
-                alpha = std::max(score - delta, -VALUE_INFINITE);
                 delta += delta / 2;
+
+                if (delta > 500) {
+                    alpha = -VALUE_INFINITE;
+                    beta = VALUE_INFINITE;
+                } else {
+                    alpha = std::max(score - delta, -VALUE_INFINITE);
+                }
+
+                if (failCount == 1 && depth >= 8) {
+                    searchDepth = depth - 1;
+                } else {
+                    searchDepth = depth;
+                }
+
             } else if (score >= beta) {
-                beta = std::min(score + delta, VALUE_INFINITE);
+                failCount++;
                 delta += delta / 2;
+
+                if (delta > 500) {
+                    beta = VALUE_INFINITE;
+                } else {
+                    beta = std::min(score + delta, VALUE_INFINITE);
+                }
+
+                if (failCount == 1 && depth >= 8) {
+                    searchDepth = depth - 1;
+                } else {
+                    searchDepth = depth;
+                }
+
             } else {
                 break;
             }
@@ -505,9 +553,16 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         }
     }
 
-    if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
+    if (!pvNode && !inCheck && depth <= RFP_MAX_DEPTH && depth >= 1) {
         int rfpMarg = rfp_margin(depth, true);
-        if (staticEval - rfpMarg >= beta && staticEval < VALUE_MATE_IN_MAX_PLY) {
+        if (staticEval - rfpMarg >= beta
+            && staticEval < VALUE_MATE_IN_MAX_PLY
+            && std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
+            if (tte) {
+                tte->save(board.key(), score_to_tt(staticEval, ply),
+                          staticEval, BOUND_LOWER, depth, MOVE_NONE,
+                          TT.generation());
+            }
             return staticEval;
         }
     }
@@ -569,9 +624,17 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     Move quietsSearched[64];
     int quietCount = 0;
 
+    // Compute continuation history entries for move ordering
+    const ContinuationHistoryEntry* ch1 = (ply >= 1 && ply + 1 < MAX_PLY + 4 && thread->stack[ply + 1].contHistory) ?
+                                           thread->stack[ply + 1].contHistory : nullptr;
+    const ContinuationHistoryEntry* ch2 = (ply >= 2 && ply < MAX_PLY + 4 && thread->stack[ply].contHistory) ?
+                                           thread->stack[ply].contHistory : nullptr;
+    const ContinuationHistoryEntry* ch4 = (ply >= 4 && ply - 2 >= 0 && thread->stack[ply - 2].contHistory) ?
+                                           thread->stack[ply - 2].contHistory : nullptr;
+
     MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
                   thread->history, thread->previousMove,
-                  nullptr, nullptr, nullptr);
+                  ch1, ch2, &thread->captureHist, ch4);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
@@ -601,7 +664,7 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         int extension = 0;
         int currentExt = (ply >= 2 && ply + 1 < MAX_PLY + 4) ? thread->stack[ply + 1].extensions : 0;
 
-        if (givesCheck && currentExt < MAX_EXTENSIONS && SEE::see_ge(board, m, 0)) {
+        if (givesCheck && currentExt < MAX_EXTENSIONS) {
             extension = 1;
         }
 
@@ -631,6 +694,12 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
             if (inCheck) reduction -= 1;
             reduction = std::clamp(reduction, 0, newDepth - 1);
         }
+        // Set continuation history entry before making the move
+        Piece movedPiece = board.piece_on(m.from());
+        if (ply + 2 < MAX_PLY + 4) {
+            thread->stack[ply + 2].contHistory = thread->contHistory.get_entry(movedPiece, m.to());
+        }
+
         StateInfo si;
         board.do_move(m, si);
 
@@ -672,10 +741,41 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                     if (!isCapture) {
                         thread->killers.store(ply, m);
                         if (thread->previousMove) {
-                            thread->counterMoves.store(board.piece_on(m.from()), m.to(), m);
+                            thread->counterMoves.store(board.piece_on(thread->previousMove.to()), thread->previousMove.to(), m);
                         }
                         thread->history.update_quiet_stats(board.side_to_move(), m,
                                                            quietsSearched, quietCount - 1, depth);
+
+                        // Update continuation history on beta cutoff
+                        PieceType pt = type_of(movedPiece);
+                        int statBonus = SearchParams::stat_bonus(depth);
+                        int statMalus = SearchParams::stat_malus(depth);
+
+                        if (ch1) {
+                            const_cast<ContinuationHistoryEntry*>(ch1)->update(pt, m.to(), statBonus * CONT_HIST_1PLY_WEIGHT);
+                        }
+                        if (ch2) {
+                            const_cast<ContinuationHistoryEntry*>(ch2)->update(pt, m.to(), statBonus * CONT_HIST_2PLY_WEIGHT);
+                        }
+                        if (ch4) {
+                            const_cast<ContinuationHistoryEntry*>(ch4)->update(pt, m.to(), statBonus * CONT_HIST_4PLY_WEIGHT);
+                        }
+
+                        // Penalize other quiet moves
+                        for (int i = 0; i < quietCount - 1; ++i) {
+                            if (quietsSearched[i] != m) {
+                                Piece qpc = board.piece_on(quietsSearched[i].from());
+                                PieceType qpt = type_of(qpc);
+                                Square qto = quietsSearched[i].to();
+
+                                if (ch1) {
+                                    const_cast<ContinuationHistoryEntry*>(ch1)->update(qpt, qto, -statMalus * CONT_HIST_1PLY_WEIGHT);
+                                }
+                                if (ch2) {
+                                    const_cast<ContinuationHistoryEntry*>(ch2)->update(qpt, qto, -statMalus * CONT_HIST_2PLY_WEIGHT);
+                                }
+                            }
+                        }
                     }
                     break;
                 }

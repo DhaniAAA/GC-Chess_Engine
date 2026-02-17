@@ -49,7 +49,7 @@ struct alignas(16) TTEntry {
             score16 = static_cast<S16>(s);
             eval16 = static_cast<S16>(e);
             depth8 = static_cast<U8>(d);
-            genBound8 = static_cast<U8>((gen << 2) | b);
+            genBound8 = static_cast<U8>(gen | b);
             isPv8 = pv ? 1 : 0;
         }
         else if (pv) {

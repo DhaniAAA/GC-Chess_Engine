@@ -123,7 +123,9 @@ void Board::set(const std::string& fen, StateInfo* si) {
         } else {
             size_t idx = std::string(PieceToChar).find(c);
             if (idx != std::string::npos) {
-                put_piece(Piece(idx), sq);
+                if (sq >= SQ_A1 && sq <= SQ_H8) {
+                    put_piece(Piece(idx), sq);
+                }
                 ++sq;
             }
         }
@@ -594,20 +596,13 @@ void Board::undo_null_move() {
 
 bool Board::is_draw(int ply) const {
     if (st->halfmoveClock >= 100) {
-        if (in_check()) {
-            return true;
-        }
+        if (in_check()) return false;
         return true;
     }
 
     if (st->repetition) {
-        if (st->repetition < 0) {
-            return true;
-        }
-
-        if (ply >= st->repetition) {
-            return true;
-        }
+        if (st->repetition < 0) { return true; }
+        if (ply >= st->repetition) { return true; }
     }
 
     int totalPieces = popcount(pieces());

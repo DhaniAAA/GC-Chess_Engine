@@ -31,7 +31,8 @@ struct alignas(64) ThreadStack {
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
-    char padding[20];
+    ContinuationHistoryEntry* contHistory;
+    char padding[12];
 };
 
 struct ThreadPVLine {
@@ -97,6 +98,8 @@ public:
     alignas(64) MateKillerTable mateKillers;
     alignas(64) CounterMoveTable counterMoves;
     alignas(64) HistoryTable history;
+    alignas(64) ContinuationHistory contHistory;
+    alignas(64) CaptureHistory captureHist;
 
     alignas(64) ThreadStack stack[MAX_PLY + 4];
     alignas(64) ThreadPVLine pvLines[MAX_PLY];

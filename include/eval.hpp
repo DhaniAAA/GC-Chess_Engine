@@ -53,11 +53,83 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
 EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext& ctx);
 EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ctx);
 
+// ========================================================================
+// Tunable parameters (from tuning.hpp)
+// ========================================================================
+
+// Material Values
 using Tuning::PawnValue;
 using Tuning::KnightValue;
 using Tuning::BishopValue;
 using Tuning::RookValue;
 using Tuning::QueenValue;
+
+// Pawn Structure
+using Tuning::IsolatedPawnPenalty;
+using Tuning::DoubledPawnPenalty;
+using Tuning::BackwardPawnPenalty;
+using Tuning::ConnectedPawnBonus;
+using Tuning::PhalanxBonus;
+using Tuning::PawnIslandPenalty;
+using Tuning::PawnChainBonus;
+using Tuning::PawnChainBaseBonus;
+using Tuning::CentralPawnBonus;
+using Tuning::PawnDuoBonus;
+using Tuning::OutpostHolePenalty;
+using Tuning::HangingPawnPenalty;
+using Tuning::BackwardOnHalfOpen;
+using Tuning::CentralLeverBonus;
+
+// Passed Pawns
+using Tuning::PassedPawnBonus;
+using Tuning::ConnectedPassedBonus;
+using Tuning::ProtectedPassedBonus;
+using Tuning::CandidatePassedBonus;
+using Tuning::RuleOfSquareBonus;
+
+// Piece Activity
+using Tuning::BishopPairBonus;
+using Tuning::RookOpenFileBonus;
+using Tuning::RookSemiOpenFileBonus;
+using Tuning::RookOnSeventhBonus;
+using Tuning::KnightOutpostBonus;
+
+// Mobility
+using Tuning::KnightMobility;
+using Tuning::BishopMobility;
+using Tuning::RookMobility;
+using Tuning::QueenMobility;
+
+// King Safety
+using Tuning::KnightAttackWeight;
+using Tuning::BishopAttackWeight;
+using Tuning::RookAttackWeight;
+using Tuning::QueenAttackWeight;
+using Tuning::InnerRingAttackWeight;
+using Tuning::OuterRingAttackWeight;
+using Tuning::KingSemiOpenFilePenalty;
+using Tuning::KingOpenFilePenalty;
+using Tuning::PawnShieldBonus;
+
+// Piece Activity Details
+using Tuning::KnightOnRim;
+using Tuning::BishopLongDiagonal;
+using Tuning::RookBehindPasser;
+using Tuning::TrappedBishopPenalty;
+using Tuning::TrappedRookPenalty;
+using Tuning::HighMobilityBonus;
+using Tuning::LowMobilityPenalty;
+
+// Material Imbalance
+using Tuning::RookPairBonus;
+using Tuning::BishopKnightCombo;
+using Tuning::KnightPairPenalty;
+using Tuning::RooksWithoutQueens;
+using Tuning::QueenWithoutRooks;
+
+// ========================================================================
+// Non-tunable constants (kept as constexpr)
+// ========================================================================
 
 constexpr int PhaseValue[PIECE_TYPE_NB] = {
     0,
@@ -78,6 +150,10 @@ inline int phase_weight(int phase) {
     phase = std::max(0, std::min(phase, TotalPhase));
     return (phase * 256 + TotalPhase / 2) / TotalPhase;
 }
+
+// ========================================================================
+// Piece-Square Tables (kept as constexpr, too large for basic Texel tuning)
+// ========================================================================
 
 constexpr EvalScore PawnPST[SQUARE_NB] = {
     S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0), S(  0,  0),
@@ -156,90 +232,9 @@ constexpr int KingPSTEG[SQUARE_NB] = {
     -50, -30, -20, -20, -20, -20, -30, -50
 };
 
-constexpr EvalScore PassedPawnBonus[8] = {
-    S(  0,   0), S(  5,  10), S( 10,  20), S( 20,  40),
-    S( 40,  75), S( 70, 120), S(100, 180), S(  0,   0)
-};
-
-constexpr EvalScore ConnectedPassedBonus[8] = {
-    S(  0,   0), S(  5,   8), S( 10,  15), S( 15,  25),
-    S( 25,  45), S( 40,  70), S( 60, 100), S(  0,   0)
-};
-
-using Tuning::IsolatedPawnPenalty;
-using Tuning::DoubledPawnPenalty;
-using Tuning::BackwardPawnPenalty;
-using Tuning::ConnectedPawnBonus;
-using Tuning::PhalanxBonus;
-
-constexpr EvalScore CandidatePassedBonus[8] = {
-    S(  0,   0), S(  3,   5), S(  5,  10), S( 10,  20),
-    S( 20,  40), S( 35,  60), S( 50,  90), S(  0,   0)
-};
-
-constexpr int RuleOfSquareBonus = 150;
-
-constexpr EvalScore ProtectedPassedBonus[8] = {
-    S(  0,   0), S(  8,  15), S( 15,  30), S( 25,  50),
-    S( 45,  90), S( 75, 140), S(110, 200), S(  0,   0)
-};
-
-constexpr EvalScore PawnIslandPenalty = S(-5, -8);
-
-constexpr EvalScore PawnChainBonus = S(5, 3);
-constexpr EvalScore PawnChainBaseBonus = S(8, 5);
-constexpr EvalScore CentralPawnBonus = S(15, 5);
-
-constexpr EvalScore PawnDuoBonus = S(5, 8);
-
-constexpr EvalScore CentralLeverBonus = S(8, 4);
-
-constexpr EvalScore OutpostHolePenalty = S(-12, -8);
-
-constexpr EvalScore HangingPawnPenalty = S(-8, -10);
-constexpr EvalScore HangingPawnWithThreat = S(5, 0);
-
-constexpr EvalScore BackwardOnHalfOpen = S(-10, -5);
-constexpr EvalScore KingSemiOpenFilePenalty = S( 15, 0);
-constexpr EvalScore KingOpenFilePenalty     = S( 25, 0);
-
-using Tuning::BishopPairBonus;
-using Tuning::RookOpenFileBonus;
-using Tuning::RookSemiOpenFileBonus;
-using Tuning::RookOnSeventhBonus;
-using Tuning::KnightOutpostBonus;
-
-constexpr EvalScore KnightMobility[9] = {
-    S(-30, -40), S(-15, -20), S( -5, -10), S(  0,  0),
-    S(  5,   5), S( 10,  10), S( 15,  15), S( 18, 18),
-    S( 20,  20)
-};
-constexpr EvalScore BishopMobility[14] = {
-    S(-25, -35), S(-15, -20), S( -5, -10), S(  0,  0),
-    S(  5,   5), S( 10,  10), S( 15,  15), S( 18, 18),
-    S( 20,  20), S( 22,  22), S( 24,  24), S( 25, 25),
-    S( 26,  26), S( 27,  27)
-};
-constexpr EvalScore RookMobility[15] = {
-    S(-20, -30), S(-12, -18), S( -5, -10), S(  0,  0),
-    S(  5,   5), S(  8,  10), S( 10,  15), S( 12, 18),
-    S( 14,  20), S( 16,  22), S( 17,  24), S( 18, 25),
-    S( 19,  26), S( 20,  27), S( 20,  28)
-};
-constexpr EvalScore QueenMobility[28] = {
-    S(-15, -25), S(-10, -15), S( -5, -10), S(  0,  0),
-    S(  2,   3), S(  4,   5), S(  5,   7), S(  6,  8),
-    S(  7,   9), S(  8,  10), S(  9,  11), S( 10, 12),
-    S( 10,  13), S( 11,  13), S( 11,  14), S( 12, 14),
-    S( 12,  15), S( 13,  15), S( 13,  16), S( 14, 16),
-    S( 14,  17), S( 15,  17), S( 15,  18), S( 15, 18),
-    S( 16,  18), S( 16,  19), S( 16,  19), S( 17, 20)
-};
-
-constexpr int KnightAttackWeight = 2;
-constexpr int BishopAttackWeight = 2;
-constexpr int RookAttackWeight   = 3;
-constexpr int QueenAttackWeight  = 5;
+// ========================================================================
+// King Safety Tables (kept as constexpr - complex structure)
+// ========================================================================
 
 constexpr int KingSafetyTable[100] = {
     0,   0,   1,   2,   3,   5,   7,  10,  13,  16,
@@ -254,25 +249,16 @@ constexpr int KingSafetyTable[100] = {
   600, 600, 600, 600, 600, 600, 600, 600, 600, 600
 };
 
-constexpr int PawnShieldBonus[4] = { 0, 10, 20, 30 };
-
-constexpr EvalScore RookPairBonus = S(15, 25);
-
-constexpr EvalScore BishopKnightCombo = S(10, 5);
-
-constexpr EvalScore KnightPairPenalty = S(-8, -10);
-
-constexpr EvalScore RooksWithoutQueens = S(5, 20);
-
-constexpr EvalScore QueenWithoutRooks = S(-5, -15);
-
-constexpr EvalScore MinorForExchange = S(0, 10);
-
-constexpr int InnerRingAttackWeight = 3;
-constexpr int OuterRingAttackWeight = 1;
+// ========================================================================
+// Remaining constexpr (less impactful, can be moved later)
+// ========================================================================
 
 constexpr int InnerRingWeakSquarePenalty = 15;
 constexpr int OuterRingWeakSquarePenalty = 5;
+
+constexpr EvalScore HangingPawnWithThreat = S(5, 0);
+
+constexpr EvalScore MinorForExchange = S(0, 10);
 
 constexpr EvalScore PawnLeverBonus = S(20, 5);
 constexpr EvalScore PawnLeverOnKingFile = S(30, 8);
@@ -311,19 +297,11 @@ constexpr EvalScore QueenCentralization[4] = {
     S(  5,   8)
 };
 
-constexpr EvalScore HighMobilityBonus = S(10, 15);
-constexpr EvalScore LowMobilityPenalty = S(-15, -20);
-
-constexpr EvalScore KnightOnRim = S(-10, -8);
-constexpr EvalScore BishopLongDiagonal = S(15, 10);
-constexpr EvalScore RookBehindPasser = S(20, 30);
 constexpr EvalScore RookOnQueenFile = S(8, 5);
 constexpr EvalScore QueenEarlyDevelopment = S(-15, 0);
 
 constexpr EvalScore FianchettoBonus = S(12, 8);
 constexpr EvalScore FianchettoBroken = S(-10, -5);
-constexpr EvalScore TrappedBishopPenalty = S(-100, -80);
-constexpr EvalScore TrappedRookPenalty = S(-50, -30);
 constexpr EvalScore TrappedKnightPenalty = S(-40, -30);
 
 constexpr int PawnShieldQuality[5][4] = {
@@ -386,6 +364,10 @@ constexpr int KingTropismWeight[PIECE_TYPE_NB] = {
     0
 };
 constexpr int VirtualMobilityWeight = 3;
+
+// ========================================================================
+// Functions
+// ========================================================================
 
 Square flip_square(Square sq);
 Bitboard file_bb(File f);

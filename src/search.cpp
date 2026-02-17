@@ -21,7 +21,7 @@ int LMRTable[64][64];
 void init_lmr_table() {
     for (int depth = 0; depth < 64; ++depth) {
         for (int move = 0; move < 64; ++move) {
-            if (depth < 2 || move == 0) {
+            if (depth < 3 || move == 0) {
                 LMRTable[depth][move] = 0;
                 continue;
             }
@@ -211,7 +211,8 @@ void Search::check_time() {
 
     if (limits.infinite || limits.ponder || isPondering) return;
 
-    if (limits.depth > 0 && maximumTime == 0 && optimumTime == 0) {
+    // When searching by depth only (no time control), don't apply time-based stopping
+    if (limits.depth > 0 && limits.time[WHITE] == 0 && limits.time[BLACK] == 0 && limits.movetime == 0) {
         return;
     }
 
@@ -286,6 +287,39 @@ void Search::iterative_deepening(Board& board) {
     for (size_t i = 0; i < legalMoves.size(); ++i) {
         rootMoves.push_back(RootMove(legalMoves[i].move));
     }
+
+    // Initial tactical scoring for root moves
+    // This ensures tactical moves (capture+check, king zone attacks) are tried
+    // early at depth 1, preventing them from being stuck at the bottom forever
+    {
+        Color us = board.side_to_move();
+        Square enemyKingSq = board.king_square(~us);
+        Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
+
+        for (auto& rm : rootMoves) {
+            Move m = rm.move;
+            bool isCapture = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
+            bool givesCheck = MoveGen::gives_check(board, m);
+            bool nearKing = (enemyKingZone & square_bb(m.to())) != 0;
+
+            int initScore = 0;
+            if (isCapture && givesCheck && nearKing) {
+                initScore = 40000;  // Sacrifice-captures giving check near king
+            } else if (isCapture && givesCheck) {
+                initScore = 20000;  // Captures giving check
+            } else if (isCapture && nearKing) {
+                initScore = 15000;  // Captures near king
+            } else if (isCapture && SEE::see_ge(board, m, 0)) {
+                initScore = 10000;  // Winning captures
+            } else if (givesCheck) {
+                initScore = 5000;   // Quiet checks
+            }
+            rm.score = -VALUE_INFINITE + initScore;
+            rm.previousScore = rm.score;
+        }
+        std::stable_sort(rootMoves.begin(), rootMoves.end());
+    }
+
     rootBestMove = rootMoves[0].move;
 
     if (rootMoves.size() == 1 && !limits.infinite) {
@@ -331,11 +365,88 @@ void Search::iterative_deepening(Board& board) {
     int overallBestScore = -VALUE_INFINITE;
     overallBestPV.clear();
 
+    // ====================================================================
+    // ROOT IID (Internal Iterative Deepening)
+    // Do a shallow depth-3 search of every root move to establish proper
+    // ordering based on actual search evaluation. This is critical for
+    // sacrifice-type moves (Qxg7+) that look terrible by heuristic scoring
+    // but reveal their strength even at shallow depth. Without this, such
+    // moves start at the bottom of the root list and may never get a fair
+    // search at deeper depths.
+    // ====================================================================
+    constexpr int IID_DEPTH = 3;
+    {
+        rootDepth = IID_DEPTH;  // Set for search() internals
+
+        for (auto& rm : rootMoves) {
+            StateInfo si;
+            board.do_move(rm.move, si);
+            int iidScore = -search(board, -VALUE_INFINITE, VALUE_INFINITE, IID_DEPTH - 1, false);
+            board.undo_move(rm.move);
+
+            if (stopped) break;
+
+            rm.score = iidScore;
+            rm.previousScore = iidScore;
+        }
+
+        if (!stopped) {
+            std::stable_sort(rootMoves.begin(), rootMoves.end());
+            rootBestMove = rootMoves[0].move;
+        }
+    }
+
+    // Start from depth 1 — even though IID already searched depth 3,
+    // the normal iterative deepening builds proper alpha-beta state,
+    // TT entries, and continuation history differently from per-move IID.
     for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
         for (auto& rm : rootMoves) {
             rm.previousScore = rm.score;
             rm.prevSubtreeNodes = rm.subtreeNodes;
             rm.subtreeNodes = 0;
+        }
+
+        if (rootDepth <= 12) {
+            Color stm = board.side_to_move();
+            Square ekSq = board.king_square(~stm);
+            Bitboard ekZone = king_attacks_bb(ekSq) | square_bb(ekSq);
+
+            for (auto& rm : rootMoves) {
+                Move m = rm.move;
+                bool isCap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
+                bool chk = MoveGen::gives_check(board, m);
+                bool nrK = (ekZone & square_bb(m.to())) != 0;
+
+                // Capture + check + near king: keep in top positions
+                if (isCap && chk && nrK) {
+                    rm.previousScore = std::max(rm.previousScore, -200);
+                }
+                // Capture + check: keep reasonable
+                else if (isCap && chk) {
+                    rm.previousScore = std::max(rm.previousScore, -400);
+                }
+            }
+        }
+
+        // DEBUG: Dump root moves ordering before search at this depth
+        if (!silentMode && rootDepth <= 17) {
+            Color stm_dbg = board.side_to_move();
+            Square ekSq_dbg = board.king_square(~stm_dbg);
+            Bitboard ekZone_dbg = king_attacks_bb(ekSq_dbg) | square_bb(ekSq_dbg);
+
+            std::cout << "info string === ROOT MOVES depth=" << rootDepth << " ===" << std::endl;
+            for (size_t i = 0; i < rootMoves.size(); ++i) {
+                const auto& rm = rootMoves[i];
+                Move m = rm.move;
+                bool cap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
+                bool chk = MoveGen::gives_check(board, m);
+                bool nrk = (ekZone_dbg & square_bb(m.to())) != 0;
+                std::cout << "info string  [" << i << "] " << move_to_string(m)
+                          << " score=" << rm.score
+                          << " prev=" << rm.previousScore
+                          << " cap=" << cap << " chk=" << chk << " nrk=" << nrk
+                          << std::endl;
+            }
         }
 
         std::vector<RootMove> rootMovesBackup = rootMoves;
@@ -349,8 +460,23 @@ void Search::iterative_deepening(Board& board) {
             int beta = VALUE_INFINITE;
             int delta = ASPIRATION_INITIAL_DELTA;
             int score = rootMoves[pvIdx].previousScore;
+            int failCount = 0;    // Track aspiration failures for this depth
+            int searchDepth = rootDepth;  // May be reduced on first re-search
 
-            if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE) {
+            // ================================================================
+            // Aspiration Window Setup
+            //
+            // For depth >= 5 with a valid previous score, use a narrow window
+            // around the previous iteration's score. This dramatically reduces
+            // the search tree when the score doesn't change much between depths.
+            //
+            // Mate Awareness: If previous score was a mate score, use full
+            // window to avoid "flickering" near the mate threshold where the
+            // narrow window would constantly fail high/low.
+            // ================================================================
+            bool prevIsMate = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
+
+            if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE && !prevIsMate) {
                 alpha = std::max(score - delta, -VALUE_INFINITE);
                 beta = std::min(score + delta, VALUE_INFINITE);
             }
@@ -362,46 +488,127 @@ void Search::iterative_deepening(Board& board) {
             }
 
             while (true) {
-                score = search(board, alpha, beta, rootDepth, false);
+                // Time-Critical Fallback:
+                // If less than 10% of the time budget remains, widen to full
+                // window immediately to avoid multiple costly re-searches.
+                if (failCount > 0 && !limits.infinite && limits.movetime == 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    int elapsed = static_cast<int>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
+                    );
+                    if (elapsed > maximumTime * 9 / 10) {
+                        alpha = -VALUE_INFINITE;
+                        beta = VALUE_INFINITE;
+                        searchDepth = rootDepth; // Full depth for final attempt
+                    }
+                }
+
+                score = search(board, alpha, beta, searchDepth, false);
 
                 if (stopped) break;
 
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
-                if (score <= alpha) {
-                    beta = (alpha + beta) / 2;
-                    delta *= 3;
+                // After aspiration fails, TT is polluted with entries from
+                // narrow-window searches. Increment generation so these stale
+                // entries are less trusted for pruning in the re-search.
+                if (score <= alpha || score >= beta) {
+                    if (failCount >= 1) {
+                        TT.new_search();
+                    }
+                }
 
-                    if (delta > 500) {
+                if (score <= alpha) {
+                    // ========================================================
+                    // Fail-Low: Position is worse than expected.
+                    // Widen alpha exponentially. Also bring beta closer to
+                    // center to avoid asymmetric windows.
+                    // ========================================================
+                    failCount++;
+                    beta = (alpha + beta) / 2;
+                    delta += delta / 2;
+
+                    // If we found a mate score, immediately open to full window
+                    // to avoid multiple expensive re-searches
+                    if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         alpha = -VALUE_INFINITE;
+                        beta = VALUE_INFINITE;
                     } else {
                         alpha = std::max(score - delta, -VALUE_INFINITE);
                     }
-                } else if (score >= beta) {
-                    delta *= 3;
 
-                    if (delta > 500) {
+                    // Depth-Reduced Re-search:
+                    // On the FIRST fail at depth >= 8, search at depth-1 to
+                    // quickly populate TT with relevant cutoffs before the
+                    // full-depth wide-window re-search.
+                    if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
+                        searchDepth = rootDepth - 1;
+                    } else {
+                        searchDepth = rootDepth; // Subsequent fails: full depth
+                    }
+
+                } else if (score >= beta) {
+                    // ========================================================
+                    // Fail-High: Position is better than expected.
+                    // Widen beta exponentially.
+                    // ========================================================
+                    failCount++;
+                    delta += delta / 2;
+
+                    // If we found a mate score, immediately open to full window
+                    if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         beta = VALUE_INFINITE;
+                        alpha = -VALUE_INFINITE;
                     } else {
                         beta = std::min(score + delta, VALUE_INFINITE);
                     }
+
+                    // On first fail-high at depth >= 8, do a depth-1 search
+                    // to quickly update the TT move before the full re-search.
+                    if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
+                        searchDepth = rootDepth - 1;
+                    } else {
+                        searchDepth = rootDepth;
+                    }
+
                 } else {
+                    // Score within window — search succeeded
                     break;
                 }
             }
 
+            // Log aspiration failures for diagnostics
+            if (!stopped && failCount > 0 && !silentMode) {
+                std::cout << "info string depth " << rootDepth
+                          << " aspiration fails " << failCount << std::endl;
+            }
+
+            // If search was stopped mid-iteration, restore from backup
+            // The current rootMoves data is unreliable (spoiled by return 0)
+            if (stopped) {
+                rootMoves = rootMovesBackup;
+                break;
+            }
+
             std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
-            if (!stopped && analyzedMove != MOVE_NONE) {
+            if (analyzedMove != MOVE_NONE) {
                 for (auto& rm : rootMoves) {
                     if (rm.move == analyzedMove) {
+                        // Detect unreliable results: PV disappeared or large score drop
                         bool suspiciousResult = (rm.pv.length == 0) &&
                                                 (previousIterScore != -VALUE_INFINITE) &&
-                                                (std::abs(rm.score - previousIterScore) > 500);
+                                                (std::abs(rm.score - previousIterScore) > 150);
 
                         bool pvDisappeared = (rm.pv.length == 0) && (previousPVLine.length > 0);
 
-                        if (suspiciousResult || pvDisappeared) {
+                        // Also detect large unexplained score drops even with valid PV
+                        bool largeScoreDrop = (previousIterScore != -VALUE_INFINITE) &&
+                                              (rm.pv.length > 0) &&
+                                              (rm.score < previousIterScore - 300) &&
+                                              (rootDepth <= 6);
+
+                        if (suspiciousResult || pvDisappeared || largeScoreDrop) {
                             rm.pv = previousPVLine;
                             rm.score = previousIterScore;
                         }
@@ -467,7 +674,8 @@ void Search::iterative_deepening(Board& board) {
             }
         }
 
-        if (!stopped && !rootMoves.empty()) {
+        // Handle both normal completion and stopped cases
+        if (!rootMoves.empty()) {
             bool searchReliable = (rootMoves[0].pv.length > 0) &&
                                   (rootMoves[0].pv.moves[0] != MOVE_NONE) &&
                                   MoveGen::is_pseudo_legal(board, rootMoves[0].pv.moves[0]) &&
@@ -523,7 +731,7 @@ void Search::iterative_deepening(Board& board) {
 
             pvLines[0] = bestRM.pv;
 
-            if (!limits.infinite && limits.movetime == 0 && !emergencyMode) {
+            if (!limits.infinite && !stopped && limits.movetime == 0 && !emergencyMode && limits.depth == 0) {
                 int score = bestRM.score;
 
                 if (rootDepth >= 4) {
@@ -694,6 +902,7 @@ void Search::iterative_deepening(Board& board) {
 int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     PROFILE_FUNCTION();
     const bool pvNode = (beta - alpha) > 1;
+    const int origAlpha = alpha;  // Save for correct BOUND_EXACT at TT store
 
     int ply = board.game_ply() - rootPly;
 
@@ -774,9 +983,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (ttDepth < mateDistance * 2) {
                 allowTTCutoff = false;
             }
-            if (ttDepth < mateDistance * 2) {
-                allowTTCutoff = false;
-            }
             if (mateDistance < 1 || (ply > 0 && mateDistance > ply + depth)) {
                 allowTTCutoff = false;
             }
@@ -829,8 +1035,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    if (inCheck) improving = true;
+    if (inCheck) improving = false;
 
+    // Post-LMR Worsening: If parent used LMR and eval worsened,
+    // reduce the SEARCH depth (move loop) but NOT the pruning depth.
+    // Modifying 'depth' here would cascade into RFP/NMP/etc. margins,
+    // causing systematic over-pruning. Instead we defer to searchDepth.
+    int postLMRReduction = 0;
     if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
         int parentReduction = stack[ply + 1].reduction;
         int parentEval = stack[ply + 1].staticEval;
@@ -838,8 +1049,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (parentReduction >= POST_LMR_WORSENING_THRESHOLD &&
             parentEval != VALUE_NONE && ss->staticEval != VALUE_NONE &&
             ss->staticEval <= -parentEval) {
-            depth -= POST_LMR_WORSENING_REDUCTION;
-            if (depth < 1) depth = 1;
+            postLMRReduction = POST_LMR_WORSENING_REDUCTION;
         }
     }
 
@@ -857,10 +1067,22 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    if (!pvNode && !inCheck && depth <= 6 && depth >= 1) {
+    if (!pvNode && !inCheck && depth <= RFP_MAX_DEPTH && depth >= 1
+        && ss->excludedMove == MOVE_NONE) {
         int rfpMarg = rfp_margin(depth, improving);
 
-        if (correctedStaticEval - rfpMarg >= beta && correctedStaticEval < VALUE_MATE_IN_MAX_PLY) {
+        if (correctedStaticEval - rfpMarg >= beta
+            && correctedStaticEval < VALUE_MATE_IN_MAX_PLY
+            && std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
+
+            // Save to TT as a LOWER_BOUND so future probes at this
+            // position can immediately cut off without re-searching.
+            if (tte) {
+                tte->save(board.key(), score_to_tt(correctedStaticEval, ply),
+                          staticEval, BOUND_LOWER, depth, MOVE_NONE,
+                          TT.generation());
+            }
+
             return correctedStaticEval;
         }
     }
@@ -872,10 +1094,17 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     bool mateThreat = false;
 
     if (!pvNode && !inCheck && correctedStaticEval >= beta && depth >= NULL_MOVE_MIN_DEPTH &&
-        hasNonPawnMaterial && !doubleNullMove) {
+        hasNonPawnMaterial && !doubleNullMove && ss->excludedMove == MOVE_NONE) {
 
-        int R = 3 + depth / 4 + std::min(3, (correctedStaticEval - beta) / 200);
+        int R = NULL_MOVE_BASE_R + depth / NULL_MOVE_DEPTH_DIVISOR;
+
+        if (correctedStaticEval - beta > NULL_MOVE_EVAL_MARGIN) {
+            R += 1;
+        }
+
         if (!improving) R++;
+
+        R = std::min(R, depth - 1);
 
         StateInfo si;
         board.do_null_move(si);
@@ -894,8 +1123,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (UNLIKELY(nullScore >= VALUE_MATE_IN_MAX_PLY)) {
                 nullScore = beta;
             }
+
             if (depth >= NULL_MOVE_VERIFY_DEPTH) {
-                int verifyScore = search(board, beta - 1, beta, depth - R - 1, false);
+                int verifyDepth = depth - R;
+                if (verifyDepth < 1) verifyDepth = 1;
+
+                int verifyScore = search(board, beta - 1, beta, verifyDepth, false);
                 if (verifyScore >= beta) {
                     return nullScore;
                 }
@@ -908,12 +1141,20 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
+    // Compute continuation history entries for move ordering
+    const ContinuationHistoryEntry* contHist1ply = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].contHistory) ?
+                                                    stack[ply + 1].contHistory : nullptr;
+    const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
+                                                    stack[ply].contHistory : nullptr;
+    const ContinuationHistoryEntry* contHist4ply = (ply >= 4 && ply - 2 >= 0 && stack[ply - 2].contHistory) ?
+                                                    stack[ply - 2].contHistory : nullptr;
+
     if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && ttMove != MOVE_NONE) {
         int multiCutCount = 0;
         int movesTried = 0;
 
         MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                            nullptr, nullptr, &captureHist);
+                            contHist1ply, contHist2ply, &captureHist, contHist4ply);
         Move m;
 
         while ((m = mcPicker.next_move()) != MOVE_NONE && movesTried < MULTI_CUT_COUNT + 2) {
@@ -989,7 +1230,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    int searchDepth = depth;
+    int searchDepth = depth - postLMRReduction;
+    if (searchDepth < 1 && depth >= 1) searchDepth = 1;
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
             searchDepth -= IIR_PV_REDUCTION;
@@ -1015,13 +1257,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     const bool rootNode = (ply == 0);
 
-    const ContinuationHistoryEntry* contHist1ply = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].contHistory) ?
-                                                    stack[ply + 1].contHistory : nullptr;
-    const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
-                                                    stack[ply].contHistory : nullptr;
-
     MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                  contHist1ply, contHist2ply, &captureHist);
+                  contHist1ply, contHist2ply, &captureHist, contHist4ply);
 
     size_t rootMoveIdx = 0;
     Move m;
@@ -1050,6 +1287,21 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         ++moveCount;
 
+        // UCI currmove output: tell the GUI which move we're currently searching
+        // Only at root node, and only after 3 seconds to avoid flooding output
+        if (rootNode && !silentMode) {
+            auto now = std::chrono::steady_clock::now();
+            int elapsed = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
+            );
+            if (elapsed > 3000) {
+                std::cout << "info depth " << depth
+                          << " currmove " << move_to_string(m)
+                          << " currmovenumber " << moveCount
+                          << std::endl;
+            }
+        }
+
         bool isCapture = !board.empty(m.to()) || m.is_enpassant();
         bool isPromotion = m.is_promotion();
         bool givesCheck = MoveGen::gives_check(board, m);
@@ -1059,77 +1311,147 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         PieceType movedPt = type_of(movedPiece);
         Color us = board.side_to_move();
 
+        // Detect tactical quiet moves — these should not be aggressively pruned.
+        // Includes: king zone attacks (Rh4 threatening Rh8#) and discovered attacks.
+        bool attacksKingZone = false;
+        bool isDiscoveredAttack = false;
+        if (!isCapture && !givesCheck) {
+            Square enemyKSq = board.king_square(~us);
+            Bitboard kZone = king_attacks_bb(enemyKSq) | square_bb(enemyKSq);
+            Bitboard occ = board.pieces() ^ square_bb(m.from());
+            Bitboard atk = attacks_bb(movedPt, m.to(), occ);
+            if (atk & kZone) {
+                attacksKingZone = true;
+            }
+            // Discovered attack: piece was blocking a slider aimed at enemy king
+            if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
+                !aligned(m.from(), m.to(), enemyKSq)) {
+                isDiscoveredAttack = true;
+            }
+        }
+        bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck;
+
+        // ============================================================
+        // "History of Violence": If the previous move was a capture or
+        // check AND we are losing material significantly, we might be
+        // inside a sacrifice combination (e.g., after Qxg7+ Kxg7 Bf6+
+        // Kg8). Don't aggressively prune — the reply might be the key
+        // continuation that proves the sacrifice sound.
+        // ============================================================
+        bool previousWasViolent = false;
+        if (previousMove != MOVE_NONE) {
+            // Was the previous move a capture?
+            // After opponent moved, our piece might have been captured.
+            // Check if from-square is now empty (simple heuristic)
+            previousWasViolent = !board.empty(previousMove.to()) ||
+                                  previousMove.is_enpassant() ||
+                                  inCheck;  // if we're in check, opponent gave check
+        }
+        // Losing material: correctedStaticEval is from our perspective
+        bool losingMaterial = (!inCheck && correctedStaticEval != VALUE_NONE &&
+                               correctedStaticEval < -300);
+        bool inViolentSequence = previousWasViolent && losingMaterial;
+
+        // Combined tactical bypass: either mateThreat detected by NMP,
+        // or we're in a violent sequence (sacrifice combination)
+        bool tacticalBypass = mateThreat || inViolentSequence;
 
         if (!pvNode && !inCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
             if (isCapture || givesCheck) {
                 if (isCapture && !givesCheck && depth <= SEE_CAPTURE_MAX_DEPTH) {
-                    Piece capturedPiece = board.piece_on(m.to());
-                    PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
-                                             (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
+                    // Detect captures landing in or near the enemy king zone
+                    Square ekSq_cap = board.king_square(~us);
+                    Bitboard ekZone_cap = king_attacks_bb(ekSq_cap) | square_bb(ekSq_cap);
+                    bool captureNearKing = (ekZone_cap & square_bb(m.to())) != 0;
 
-                    int seeThreshold;
-                    if (capturedType >= PAWN && capturedType <= QUEEN) {
-                        seeThreshold = improving ? -100 * depth : -80 * depth;
+                    // During tactical bypass, NEVER prune captures near the king
+                    // (they might be the key sacrifice in a mating attack)
+                    if (captureNearKing && tacticalBypass) {
+                        // Skip SEE pruning entirely — this is a "dangerous sacrifice"
                     } else {
-                        seeThreshold = improving ?
-                            -SEE_CAPTURE_IMPROVING_FACTOR * depth :
-                            -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
-                    }
+                        Piece capturedPiece = board.piece_on(m.to());
+                        PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
+                                                 (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
 
-                    if (!SEE::see_ge(board, m, seeThreshold)) {
-                        continue;
+                        int seeThreshold;
+                        if (capturedType >= PAWN && capturedType <= QUEEN) {
+                            seeThreshold = improving ? -100 * depth : -80 * depth;
+                        } else {
+                            seeThreshold = improving ?
+                                -SEE_CAPTURE_IMPROVING_FACTOR * depth :
+                                -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
+                        }
+
+                        // "Dangerous bad capture": sacrifice near king gets 2x
+                        // tolerance. Qxg7 (SEE=-800) near king is NOT the same
+                        // as Nxb2 (SEE=-200) on the queenside.
+                        if (captureNearKing) {
+                            seeThreshold *= 2;
+                        }
+
+                        if (!isTTMove && !SEE::see_ge(board, m, seeThreshold)) {
+                            continue;
+                        }
                     }
                 }
             }
             else if (!isPromotion) {
-                if (depth <= LMP_MAX_DEPTH) {
-                    int lmpThresh = lmp_threshold(depth, improving);
-                    if (moveCount > lmpThresh) {
-                        if (!killers.is_killer(ply, m) && history.get(us, m) < 0) {
+                // Skip aggressive pruning for quiet moves that attack king zone
+                // (e.g., Rh4 threatening Rh8# after Qxg7+ Bf6+),
+                // OR when mate threat is detected,
+                // OR when we're in a violent sacrifice sequence
+                if (!attacksKingZone && !tacticalBypass) {
+                    if (depth <= LMP_MAX_DEPTH) {
+                        int lmpThresh = lmp_threshold(depth, improving);
+                        if (moveCount > lmpThresh) {
+                            if (!killers.is_killer(ply, m) && history.get(us, m) < 0) {
+                                continue;
+                            }
+                        }
+                    }
+                    if (depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
+                        int futilMarg = futility_margin(depth, improving);
+                        if (correctedStaticEval + futilMarg <= alpha) {
+                            if (!killers.is_killer(ply, m) && !isTTMove) {
+                                continue;
+                            }
+                        }
+                    }
+                    if (depth <= HISTORY_LEAF_PRUNING_DEPTH && moveCount > 4) {
+                        int histScore = history.get(board.side_to_move(), m);
+                        if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
                             continue;
                         }
                     }
-                }
-                if (depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
-                    int futilMarg = futility_margin(depth, improving);
-                    if (correctedStaticEval + futilMarg <= alpha) {
-                        if (!killers.is_killer(ply, m) && !isTTMove) {
+                    if (depth <= COUNTER_HIST_PRUNING_DEPTH && contHist1ply && moveCount > 5) {
+                        PieceType pt = type_of(movedPiece);
+                        int cmHistScore = contHist1ply->get(pt, m.to());
+
+                        if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
                             continue;
                         }
                     }
-                }
-                if (depth <= HISTORY_LEAF_PRUNING_DEPTH && moveCount > 4) {
-                    int histScore = history.get(board.side_to_move(), m);
-                    if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
-                        continue;
-                    }
-                }
-                if (depth <= COUNTER_HIST_PRUNING_DEPTH && contHist1ply && moveCount > 5) {
-                    PieceType pt = type_of(movedPiece);
-                    int cmHistScore = contHist1ply->get(pt, m.to());
+                    if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
+                        const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                        PieceType pt = type_of(movedPiece);
+                        int followupScore = contHist4ply->get(pt, m.to());
 
-                    if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
-                        continue;
+                        if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
+                            continue;
+                        }
                     }
-                }
-                if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
-                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                    PieceType pt = type_of(movedPiece);
-                    int followupScore = contHist4ply->get(pt, m.to());
-
-                    if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
-                        continue;
+                    if (depth <= SEE_QUIET_MAX_DEPTH) {
+                        int seeThreshold = improving ?
+                            -SEE_QUIET_IMPROVING_FACTOR * depth :
+                            -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
+                        if (!isTTMove && !killers.is_killer(ply, m) &&
+                            !(previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to())) &&
+                            !SEE::see_ge(board, m, seeThreshold)) {
+                            continue;
+                        }
                     }
-                }
-                if (depth <= SEE_QUIET_MAX_DEPTH) {
-                    int seeThreshold = improving ?
-                        -SEE_QUIET_IMPROVING_FACTOR * depth :
-                        -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
-                    if (!SEE::see_ge(board, m, seeThreshold)) {
-                        continue;
-                    }
-                }
+                } // end !attacksKingZone
             }
         }
 
@@ -1140,7 +1462,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         int fractionalExt = 0;
         int inheritedFrac = (ply >= 1) ? stack[ply + 1].fractionalExt : 0;
 
-        if (givesCheck && currentExtensions < MAX_EXTENSIONS && depth >= 4) {
+        if (givesCheck && currentExtensions < MAX_EXTENSIONS && depth >= 2) {
             if (SEE::see_ge(board, m, 0)) {
                 fractionalExt += FRAC_EXT_CHECK;
             } else {
@@ -1152,7 +1474,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_SINGULAR);
         }
 
-        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS && depth >= 6) {
+        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS && depth >= 4) {
             Rank toRank = relative_rank(us, m.to());
             if (toRank == RANK_7) {
                 fractionalExt = std::max(fractionalExt, FRAC_EXT_PASSED_PAWN);
@@ -1185,20 +1507,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_RECAPTURE);
         }
 
-        if (!isCapture && !givesCheck && currentExtensions < MAX_EXTENSIONS &&
-            fractionalExt < FRAC_EXT_SCALE && depth >= 8 && (movedPt == QUEEN || movedPt == ROOK)) {
-
-            Square enemyKingSq = board.king_square(~us);
-            Bitboard kingZone = king_attacks_bb(enemyKingSq);
-            Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
-            Bitboard attacksAfter = attacks_bb(movedPt, m.to(), newOccupied);
-
-            if (attacksAfter & (kingZone | square_bb(enemyKingSq))) {
-                int enemyMaterial = popcount(board.pieces(~us)) - 2;
-                if (enemyMaterial <= 4) {
-                    fractionalExt = std::max(fractionalExt, FRAC_EXT_CAPTURE_IMPORTANT);
-                }
-            }
+        // King zone quiet extension: extend quiet moves by Q/R/B that attack
+        // the enemy king zone (e.g., Rh4 threatening Rh8#)
+        // Full ply extension — these are as forcing as checks in mating attacks
+        if (attacksKingZone && currentExtensions < MAX_EXTENSIONS &&
+            fractionalExt < FRAC_EXT_SCALE && depth >= 4) {
+            fractionalExt = std::max(fractionalExt, FRAC_EXT_CHECK);
         }
 
         if (!singularSearched && depth >= SINGULAR_DEPTH && isTTMove &&
@@ -1208,11 +1522,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             singularSearched = true;
 
             int singularMargin = SINGULAR_MARGIN;
+
             int depthDiff = depth - ttDepth;
             if (depthDiff > 0) {
                 singularMargin += depthDiff * SINGULAR_TT_DEPTH_PENALTY;
             }
-            if (!improving) {
+
+            if (improving) {
                 singularMargin -= SINGULAR_IMPROVING_BONUS;
             }
             if (pvNode) {
@@ -1220,7 +1536,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             }
 
             int singularBeta = std::max(ttScore - singularMargin * depth / 8, -VALUE_MATE);
-            int singularDepth = (depth - 1) / 2;
+
+            int singularDepth = (depth - 3) / 2;
 
             ss->excludedMove = m;
             int singularScore = search(board, singularBeta - 1, singularBeta, singularDepth, cutNode);
@@ -1236,7 +1553,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         doubleExtensions < DOUBLE_EXT_LIMIT) {
                         fractionalExt = FRAC_EXT_SINGULAR_DOUBLE;
                         ++doubleExtensions;
-
                         if (!isCapture && singularMarginDiff > SINGULAR_TRIPLE_EXT_MARGIN &&
                             tripleExtensions < TRIPLE_EXT_LIMIT) {
                             fractionalExt += FRAC_EXT_PV_MOVE;
@@ -1244,16 +1560,21 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         }
                     }
 
-                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN && depth < SINGULAR_DEPTH_INCREASE) {
+                    if (singularMarginDiff > SINGULAR_DOUBLE_EXT_MARGIN &&
+                        depth < SINGULAR_DEPTH_INCREASE) {
                         searchDepth += 1;
                     }
                 }
-            } else if (singularBeta >= beta) {
-                return singularBeta;
             }
-            else if (cutNode && depth >= NEG_EXT_MIN_DEPTH && singularScore < alpha - NEG_EXT_THRESHOLD) {
+
+            else if (singularScore >= beta) {
+                return singularScore;
+            }
+            else if (cutNode && depth >= NEG_EXT_MIN_DEPTH &&
+                     singularScore < alpha - NEG_EXT_THRESHOLD) {
                 fractionalExt = -FRAC_EXT_SINGULAR;
             }
+
             else if (ttScore >= beta) {
                 fractionalExt = -FRAC_EXT_SINGULAR_DOUBLE;
             }
@@ -1292,79 +1613,154 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
 
         int reduction = 0;
-        if (depth >= 2 && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
-            reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
-            int delta = beta - alpha;
-            if (delta < 20) {
-                reduction += 1;
+        bool lmrApplied = false;
+
+        if (depth >= LMR_MIN_DEPTH && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
+            bool isAdvancedPawnPush = false;
+            if (movedPt == PAWN) {
+                Rank toRank = relative_rank(us, m.to());
+                if (toRank >= RANK_6) {
+                    isAdvancedPawnPush = true;
+                }
             }
 
-            if (cutNode) {
-                reduction += LMR_CUTNODE_BONUS;
-                if (!ttMove) {
+            bool onMatePath = (bestScore >= VALUE_MATE_IN_MAX_PLY || bestScore <= VALUE_MATED_IN_MAX_PLY);
+
+            if (!isAdvancedPawnPush && !onMatePath && extension <= 0) {
+                reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
+                lmrApplied = true;
+
+                int delta = beta - alpha;
+                if (delta < 20) {
+                    reduction += 1;
+                }
+                if (cutNode) {
+                    reduction += LMR_CUTNODE_BONUS;
+                    if (!ttMove) {
+                        reduction += 1;
+                    }
+                }
+
+                if (!improving) {
+                    reduction += 1;
+                }
+                if (ply + 2 < MAX_PLY + 4) {
+                    int childCutoffs = stack[ply + 2].cutoffCnt;
+                    if (childCutoffs > 1) {
+                        reduction += LMR_CUTOFF_CNT_BONUS;
+                    }
+                    if (childCutoffs > 2) {
+                        reduction += LMR_CUTOFF_CNT_BONUS;
+                    }
+                }
+
+                if (moveCount > 12) {
+                    reduction += 1;
+                }
+                if (moveCount > 20) {
+                    reduction += 1;
+                }
+
+                if (pvNode) {
+                    reduction -= 2;
+                }
+
+                if (killers.is_killer(ply, m) ||
+                    (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
+                    reduction -= 2;
+                }
+
+                if (isTTMove) {
+                    reduction -= 2;
+                }
+                int statScore = 2 * history.get(board.side_to_move(), m);
+
+                PieceType pt = type_of(movedPiece);
+                if (contHist1ply) {
+                    statScore += contHist1ply->get(pt, m.to());
+                }
+                if (contHist2ply) {
+                    statScore += contHist2ply->get(pt, m.to());
+                }
+                if (ply >= 4 && stack[ply - 2].contHistory) {
+                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                    statScore += contHist4ply->get(pt, m.to());
+                }
+
+                reduction -= std::clamp(statScore / HISTORY_LMR_DIVISOR,
+                                        -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
+
+                // Tactical guard: quiet moves with positive SEE (discovered attacks,
+                // fork setups, etc.) are tactically loaded — reduce LMR
+                if (SEE::see_ge(board, m, PieceValue[PAWN])) {
+                    reduction = std::max(0, reduction - 2);
+                }
+
+                if (cutNode && !ttMove && depth >= 6) {
+                    reduction += reduction / (depth + 1);
+                }
+                if (mateThreat) {
+                    reduction /= LMR_NMP_THREAT_DIVISOR;
+                }
+
+                // "History of Violence": sharply reduce LMR when inside
+                // a sacrifice combination — every reply matters
+                if (inViolentSequence) {
+                    reduction = std::min(reduction, 1);
+                }
+
+                // Reduce LMR for tactical quiet moves (king zone attacks,
+                // discovered attacks, checks) — these are critical lines
+                if (isTacticalQuiet) {
+                    reduction = std::max(0, reduction - 2);
+                }
+
+                // When responding to a check, every move is potentially
+                // critical — reduce LMR to avoid missing tactical replies
+                if (inCheck) {
+                    reduction = std::max(0, reduction - 1);
+                }
+
+                reduction = std::clamp(reduction, 0, newDepth - 1);
+            }
+        }
+        else if (depth >= LMR_MIN_DEPTH && moveCount > LMR_CAPTURE_MIN_MOVE &&
+                 isCapture && !isPromotion && !givesCheck && !isTTMove &&
+                 extension <= 0 && bestScore > VALUE_MATED_IN_MAX_PLY) {
+
+            // Detect captures in the enemy king zone
+            Square ekSq_lmr = board.king_square(~us);
+            Bitboard ekZone_lmr = king_attacks_bb(ekSq_lmr) | square_bb(ekSq_lmr);
+            bool captureNearKing_lmr = (ekZone_lmr & square_bb(m.to())) != 0;
+
+            reduction = LMR_CAPTURE_REDUCTION;
+            lmrApplied = true;
+
+            // Tactical guard: winning captures (SEE >= pawn value) should
+            // NOT be reduced — they represent material gains
+            if (SEE::see_ge(board, m, PieceValue[PAWN])) {
+                reduction = 0;
+                lmrApplied = false;
+            } else if (!SEE::see_ge(board, m, 0)) {
+                // "Dangerous bad capture" near king: don't add extra reduction
+                // Normal bad capture elsewhere: penalize with +1
+                if (!captureNearKing_lmr) {
                     reduction += 1;
                 }
             }
 
-            if (!improving) {
-                reduction += 1;
-            }
-
-            if (ply + 2 < MAX_PLY + 4) {
-                int childCutoffs = stack[ply + 2].cutoffCnt;
-                if (childCutoffs > 1) {
-                    reduction += LMR_CUTOFF_CNT_BONUS;
-                }
-                if (childCutoffs > 2) {
-                    reduction += LMR_CUTOFF_CNT_BONUS;
-                }
-            }
-
-            if (moveCount > 10) {
-                reduction += 1;
-            }
-            if (moveCount > 18) {
-                reduction += 1;
+            // In tactical bypass, captures near king get zero reduction
+            if (captureNearKing_lmr && (mateThreat || inViolentSequence)) {
+                reduction = 0;
+                lmrApplied = false;
             }
 
             if (pvNode) {
-                reduction -= 2;
+                reduction = 0;
+                lmrApplied = false;
             }
 
-            if (inCheck) {
-                reduction -= 1;
-            }
-
-            if (killers.is_killer(ply, m) ||
-                (previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to()))) {
-                reduction -= 2;
-            }
-
-            if (isTTMove) {
-                reduction -= 2;
-            }
-
-            int statScore = 2 * history.get(board.side_to_move(), m);
-
-            PieceType pt = type_of(movedPiece);
-            if (contHist1ply) {
-                statScore += contHist1ply->get(pt, m.to());
-            }
-            if (contHist2ply) {
-                statScore += contHist2ply->get(pt, m.to());
-            }
-            if (ply >= 4 && stack[ply - 2].contHistory) {
-                const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                statScore += contHist4ply->get(pt, m.to());
-            }
-
-            reduction -= statScore / 4096;
-
-            if (cutNode && !ttMove && depth >= 6) {
-                reduction += reduction / (depth + 1);
-            }
-
-            reduction = std::clamp(reduction, 0, newDepth - 1);
+            reduction = std::clamp(reduction, 0, newDepth - 2);
         }
 
         if (ply + 2 < MAX_PLY + 4) {
@@ -1392,11 +1788,31 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             score = -search(board, -alpha - 1, -alpha, newDepth - reduction, true);
 
             if (score > alpha && reduction > 0) {
-                ss->inLMR = false;
-                ss->reduction = 0;
-                score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
+                if (!isCapture) {
+                    int researchBonus = SearchParams::stat_bonus(depth) * LMR_RESEARCH_BONUS_SCALE;
+                    researchBonus = std::min(researchBonus, 1200);
+                    history.update_with_bonus(board.side_to_move(), m, researchBonus);
+
+                    PieceType pt = type_of(movedPiece);
+                    if (contHist1ply) {
+                        const_cast<ContinuationHistoryEntry*>(contHist1ply)->update(pt, m.to(), researchBonus / 2);
+                    }
+                }
+
+                if (depth > 8 && reduction > 3) {
+                    int midDepth = newDepth - reduction / 2;
+                    midDepth = std::max(midDepth, newDepth - reduction + 1);
+                    score = -search(board, -alpha - 1, -alpha, midDepth, !cutNode);
+                }
+
+                if (score > alpha) {
+                    ss->inLMR = false;
+                    ss->reduction = 0;
+                    score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
+                }
             }
 
+            // Step 3: Full-window re-search for PV nodes
             if (score > alpha && score < beta) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
@@ -1468,7 +1884,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         }
 
                         if (previousMove) {
-                            counterMoves.store(board.piece_on(m.from()), m.to(), m);
+                            counterMoves.store(board.piece_on(previousMove.to()), previousMove.to(), m);
                         }
 
                         history.update_quiet_stats(board.side_to_move(), m,
@@ -1595,12 +2011,23 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (inCheck) {
             return -VALUE_MATE + ply;
         } else {
-            return 0;
+
+            MoveList verifyMoves;
+            MoveGen::generate_legal(board, verifyMoves);
+
+            if (verifyMoves.size() == 0) {
+                return 0;
+            } else {
+                return alpha;
+            }
         }
     }
 
-    Bound bound = bestScore >= beta ? BOUND_LOWER :
-                  bestScore > alpha ? BOUND_EXACT : BOUND_UPPER;
+    // Use origAlpha (saved at entry) for correct bound classification.
+    // During the move loop, 'alpha' is raised to bestScore, making
+    // 'bestScore > alpha' always false and preventing BOUND_EXACT.
+    Bound bound = bestScore >= beta  ? BOUND_LOWER :
+                  bestScore > origAlpha ? BOUND_EXACT : BOUND_UPPER;
 
     if (!stopped && tte) {
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
@@ -1638,6 +2065,12 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         return evaluate(board);
     }
 
+    // Safety: limit QS depth to prevent runaway searches
+    // qsDepth starts at 0 and decreases; if it gets too deep, bail out
+    if (UNLIKELY(qsDepth <= -32)) {
+        return board.in_check() ? 0 : evaluate(board);
+    }
+
     TT.prefetch(board.key());
 
     pvLines[ply].clear();
@@ -1665,7 +2098,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     } else {
         MoveGen::generate_captures(board, moves);
 
-        if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= 0) {
+        if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= -1) {
             MoveGen::generate_checking_moves(board, quietChecks);
         }
     }
@@ -1723,7 +2156,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
             StateInfo si;
             board.do_move(m, si);
 
-            int score = -qsearch(board, -beta, -alpha, qsDepth, SQ_NONE);
+            int score = -qsearch(board, -beta, -alpha, qsDepth - 1, SQ_NONE);
 
             board.undo_move(m);
 
@@ -1763,16 +2196,28 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             bool captureGivesCheck = MoveGen::gives_check(board, m);
 
+            // Delta pruning: skip captures that can't possibly raise alpha
+            // But NEVER prune: promotions, captures that give check, queen captures,
+            // rook captures, or captures with positive SEE (winning captures)
             if (!m.is_promotion() && !captureGivesCheck) {
                 if (capturedPt != QUEEN && capturedPt != ROOK) {
-                if (staticEval + captureValue + DELTA_PRUNING_MARGIN < alpha) {
-                        continue;
+                    if (staticEval + captureValue + DELTA_PRUNING_MARGIN < alpha) {
+                        // Before pruning, check if this capture wins material (SEE >= 0)
+                        // This prevents pruning brilliant sacrifices like Qxh7+ that
+                        // look bad by pure material but win tactically
+                        if (!SEE::see_ge(board, m, 0)) {
+                            continue;
+                        }
                     }
                 }
             }
 
-            if (capturedPt != QUEEN && !captureGivesCheck) {
-                if (!SEE::see_ge(board, m, -1)) {
+            // SEE pruning: skip losing captures (SEE < 0)
+            // But exempt: queen captures, captures that give check, promotions
+            if (capturedPt != QUEEN && !captureGivesCheck && !m.is_promotion()) {
+                // Use depth-scaled threshold: deeper QS is more aggressive
+                int seeThreshold = std::min(-1, -50 * qsDepth);
+                if (!SEE::see_ge(board, m, seeThreshold)) {
                     continue;
                 }
             }
@@ -1785,7 +2230,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
             bool isRecapture = (recaptureSquare != SQ_NONE && m.to() == recaptureSquare);
             bool isCapture = (capturedPt != NO_PIECE_TYPE) || m.is_enpassant();
 
-            int newQsDepth = isRecapture ? qsDepth : qsDepth - 1;
+            int newQsDepth = (isRecapture && qsDepth > -4) ? qsDepth : qsDepth - 1;
             Square newRecaptureSquare = isCapture ? m.to() : SQ_NONE;
 
             int score = -qsearch(board, -beta, -alpha, newQsDepth, newRecaptureSquare);
@@ -1845,7 +2290,21 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     }
 
     if (inCheck && legalMoveCount == 0) {
-        return -VALUE_MATE + ply;
+
+        MoveList evasions;
+        MoveGen::generate_evasions(board, evasions);
+
+        bool hasLegalEvasion = false;
+        for (size_t i = 0; i < evasions.size(); ++i) {
+            if (MoveGen::is_legal(board, evasions[i].move)) {
+                hasLegalEvasion = true;
+                break;
+            }
+        }
+
+        if (!hasLegalEvasion) {
+            return -VALUE_MATE + ply;
+        }
     }
 
     return bestScore;
