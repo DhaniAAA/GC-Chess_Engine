@@ -1,5 +1,5 @@
 // ============================================================================
-// Texel Tuning Implementation - Ultra-Fast Version (v6)
+// Texel Tuning Implementation - Ultra-Fast Version (v7)
 // ============================================================================
 // Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]
 //
@@ -8,6 +8,9 @@
 // 2. When testing a parameter change, only recalculate error (not re-evaluate)
 // 3. Use multi-threading to test multiple parameters simultaneously
 // 4. K value minimum clamped to 0.5 to prevent flat sigmoid
+//
+// v7: Expanded to ~200 tunable parameters (mobility, passed pawns,
+//     king safety, pawn structure, piece activity, material imbalance)
 // ============================================================================
 
 #include <iostream>
@@ -63,12 +66,51 @@ struct TrainingPosition {
 };
 
 // ============================================================================
+// Monotonic Group (for arrays where values must be non-decreasing)
+// ============================================================================
+
+struct MonotonicGroup {
+    std::string name;
+    EvalScore* array;   // pointer to the first element
+    int size;           // number of elements
+    int start_idx;      // first tunable index (skip [0] if always 0)
+    int end_idx;        // last tunable index (skip [7] if always 0)
+};
+
+// ============================================================================
 // Global Variables
 // ============================================================================
 
 std::vector<TunableParam> params;
 std::vector<TrainingPosition> positions;
+std::vector<MonotonicGroup> monotonic_groups;
 double K = 1.13;
+
+// ============================================================================
+// Check if all monotonic constraints are satisfied
+// Returns true if all groups are non-decreasing (MG and EG separately)
+// ============================================================================
+
+bool check_monotonicity() {
+    for (const auto& group : monotonic_groups) {
+        for (int i = group.start_idx + 1; i <= group.end_idx; i++) {
+            // MG must be non-decreasing
+            if (group.array[i].mg < group.array[i - 1].mg) return false;
+            // EG must be non-decreasing
+            if (group.array[i].eg < group.array[i - 1].eg) return false;
+        }
+    }
+    return true;
+}
+
+// ============================================================================
+// Helper: add EvalScore param (adds both MG and EG)
+// ============================================================================
+
+void add_eval_param(const std::string& name, EvalScore& es, int min_mg, int max_mg, int min_eg, int max_eg) {
+    params.push_back(TunableParam(name + "_MG", &es.mg, min_mg, max_mg, true));
+    params.push_back(TunableParam(name + "_EG", &es.eg, min_eg, max_eg, false));
+}
 
 // ============================================================================
 // Initialize Tunable Parameters
@@ -77,44 +119,129 @@ double K = 1.13;
 void init_params() {
     params.clear();
 
-    // Material Values
-    params.push_back(TunableParam("PawnValue_MG",           &Tuning::PawnValue.mg,            70,  130, true));
-    params.push_back(TunableParam("PawnValue_EG",           &Tuning::PawnValue.eg,           100,  160, false));
-    params.push_back(TunableParam("KnightValue_MG",         &Tuning::KnightValue.mg,         320,  360, true));
-    params.push_back(TunableParam("KnightValue_EG",         &Tuning::KnightValue.eg,         340,  380, false));
-    params.push_back(TunableParam("BishopValue_MG",         &Tuning::BishopValue.mg,         330,  370, true));
-    params.push_back(TunableParam("BishopValue_EG",         &Tuning::BishopValue.eg,         350,  390, false));
-    params.push_back(TunableParam("RookValue_MG",           &Tuning::RookValue.mg,           500,  550, true));
-    params.push_back(TunableParam("RookValue_EG",           &Tuning::RookValue.eg,           550,  600, false));
-    params.push_back(TunableParam("QueenValue_MG",          &Tuning::QueenValue.mg,          950, 1050, true));
-    params.push_back(TunableParam("QueenValue_EG",          &Tuning::QueenValue.eg,          900, 1100, false));
+    // ====================================================================
+    // Material Values (10 params)
+    // ====================================================================
+    add_eval_param("PawnValue",     Tuning::PawnValue,       70, 130,   80, 160);
+    add_eval_param("KnightValue",   Tuning::KnightValue,    280, 380,  290, 390);
+    add_eval_param("BishopValue",   Tuning::BishopValue,    290, 390,  300, 400);
+    add_eval_param("RookValue",     Tuning::RookValue,      450, 560,  470, 600);
+    add_eval_param("QueenValue",    Tuning::QueenValue,     880, 1080, 900, 1100);
 
-    // Piece Activity Bonuses
-    params.push_back(TunableParam("BishopPairBonus_MG",     &Tuning::BishopPairBonus.mg,       0,  60, true));
-    params.push_back(TunableParam("BishopPairBonus_EG",     &Tuning::BishopPairBonus.eg,       0,  80, false));
-    params.push_back(TunableParam("RookOpenFileBonus_MG",   &Tuning::RookOpenFileBonus.mg,     0,   40, true));
-    params.push_back(TunableParam("RookOpenFileBonus_EG",   &Tuning::RookOpenFileBonus.eg,     0,   50, false));
-    params.push_back(TunableParam("RookSemiOpenFileBonus_MG", &Tuning::RookSemiOpenFileBonus.mg, 0,   30, true));
-    params.push_back(TunableParam("RookSemiOpenFileBonus_EG", &Tuning::RookSemiOpenFileBonus.eg, 0,   40, false));
-    params.push_back(TunableParam("RookOnSeventhBonus_MG",  &Tuning::RookOnSeventhBonus.mg,    0,   50, true));
-    params.push_back(TunableParam("RookOnSeventhBonus_EG",  &Tuning::RookOnSeventhBonus.eg,    0,   60, false));
-    params.push_back(TunableParam("KnightOutpostBonus_MG",  &Tuning::KnightOutpostBonus.mg,    0,   50, true));
-    params.push_back(TunableParam("KnightOutpostBonus_EG",  &Tuning::KnightOutpostBonus.eg,    0,   40, false));
+    // ====================================================================
+    // Piece Activity Bonuses (10 params)
+    // ====================================================================
+    add_eval_param("BishopPairBonus",       Tuning::BishopPairBonus,        0,  60,    0,  80);
+    add_eval_param("RookOpenFileBonus",     Tuning::RookOpenFileBonus,      5,  60,    0,  50);
+    add_eval_param("RookSemiOpenFileBonus", Tuning::RookSemiOpenFileBonus,  0,  40,    0,  30);
+    add_eval_param("RookOnSeventhBonus",    Tuning::RookOnSeventhBonus,     0,  50,    0,  60);
+    add_eval_param("KnightOutpostBonus",    Tuning::KnightOutpostBonus,     5,  60,    0,  40);
 
-    // Pawn Structure
-    params.push_back(TunableParam("IsolatedPawnPenalty_MG", &Tuning::IsolatedPawnPenalty.mg, -70,    0, true));
-    params.push_back(TunableParam("IsolatedPawnPenalty_EG", &Tuning::IsolatedPawnPenalty.eg, -50,    0, false));
-    params.push_back(TunableParam("DoubledPawnPenalty_MG",  &Tuning::DoubledPawnPenalty.mg,  -40,    0, true));
-    params.push_back(TunableParam("DoubledPawnPenalty_EG",  &Tuning::DoubledPawnPenalty.eg,  -50,    0, false));
-    params.push_back(TunableParam("BackwardPawnPenalty_MG", &Tuning::BackwardPawnPenalty.mg, -30,    0, true));
-    params.push_back(TunableParam("BackwardPawnPenalty_EG", &Tuning::BackwardPawnPenalty.eg, -35,    0, false));
-    params.push_back(TunableParam("ConnectedPawnBonus_MG",  &Tuning::ConnectedPawnBonus.mg,    0,   20, true));
-    params.push_back(TunableParam("ConnectedPawnBonus_EG",  &Tuning::ConnectedPawnBonus.eg,    0,   15, false));
-    params.push_back(TunableParam("PhalanxBonus_MG",        &Tuning::PhalanxBonus.mg,          0,   25, true));
-    params.push_back(TunableParam("PhalanxBonus_EG",        &Tuning::PhalanxBonus.eg,          0,   20, false));
+    // ====================================================================
+    // Pawn Structure (18 params)
+    // ====================================================================
+    add_eval_param("IsolatedPawnPenalty",   Tuning::IsolatedPawnPenalty, -40,   0, -40,   0);
+    add_eval_param("DoubledPawnPenalty",    Tuning::DoubledPawnPenalty,  -40,   0, -40,   0);
+    add_eval_param("BackwardPawnPenalty",   Tuning::BackwardPawnPenalty, -30,   0, -30,   0);
+    add_eval_param("ConnectedPawnBonus",    Tuning::ConnectedPawnBonus,    0,  30,    0,  30);
+    add_eval_param("PhalanxBonus",          Tuning::PhalanxBonus,          0,  30,    0,  40);
+    add_eval_param("PawnIslandPenalty",     Tuning::PawnIslandPenalty,   -20,   0, -20,   0);
+    add_eval_param("PawnChainBonus",        Tuning::PawnChainBonus,        0,  15,    0,  10);
+    add_eval_param("PawnChainBaseBonus",    Tuning::PawnChainBaseBonus,    0,  20,    0,  15);
+    add_eval_param("CentralPawnBonus",      Tuning::CentralPawnBonus,      0,  30,    0,  15);
+    add_eval_param("PawnDuoBonus",          Tuning::PawnDuoBonus,          0,  15,    0,  20);
+    add_eval_param("OutpostHolePenalty",    Tuning::OutpostHolePenalty,  -30,   0, -20,   0);
+    add_eval_param("HangingPawnPenalty",    Tuning::HangingPawnPenalty,  -25,   0, -25,   0);
+    add_eval_param("BackwardOnHalfOpen",    Tuning::BackwardOnHalfOpen, -25,   0, -15,   0);
+    add_eval_param("CentralLeverBonus",     Tuning::CentralLeverBonus,    0,  20,    0,  10);
 
-    // King Safety
-    params.push_back(TunableParam("KingSafetyWeight",       &Tuning::KingSafetyWeight,        50,  150, true));
+    // ====================================================================
+    // Passed Pawn Bonuses - ranks 1-6 (rank 0 and 7 are always 0)
+    // (24 params: 4 arrays × 6 ranks × MG/EG, but we skip [0] and [7])
+    // ====================================================================
+    for (int r = 1; r <= 6; r++) {
+        std::string rstr = std::to_string(r);
+        add_eval_param("PassedPawnR" + rstr,       Tuning::PassedPawnBonus[r],        0, 200,    0, 300);
+        add_eval_param("ConnPassedR" + rstr,       Tuning::ConnectedPassedBonus[r],   0, 120,    0, 180);
+        add_eval_param("ProtPassedR" + rstr,       Tuning::ProtectedPassedBonus[r],   0, 200,    0, 300);
+        add_eval_param("CandPassedR" + rstr,       Tuning::CandidatePassedBonus[r],   0, 100,    0, 150);
+    }
+    params.push_back(TunableParam("RuleOfSquareBonus", &Tuning::RuleOfSquareBonus, 50, 300, true));
+
+    // ====================================================================
+    // Mobility Tables (with monotonicity constraints)
+    // Knight: 9 entries (18 params) - values MUST be non-decreasing
+    // ====================================================================
+    for (int i = 0; i < 9; i++) {
+        std::string istr = std::to_string(i);
+        add_eval_param("KnMob" + istr, Tuning::KnightMobility[i], -60, 40, -60, 40);
+    }
+    monotonic_groups.push_back({"KnightMobility", Tuning::KnightMobility, 9, 0, 8});
+
+    // Bishop: 14 entries (28 params)
+    for (int i = 0; i < 14; i++) {
+        std::string istr = std::to_string(i);
+        add_eval_param("BiMob" + istr, Tuning::BishopMobility[i], -50, 50, -50, 50);
+    }
+    monotonic_groups.push_back({"BishopMobility", Tuning::BishopMobility, 14, 0, 13});
+
+    // Rook: 15 entries (30 params)
+    for (int i = 0; i < 15; i++) {
+        std::string istr = std::to_string(i);
+        add_eval_param("RkMob" + istr, Tuning::RookMobility[i], -40, 40, -50, 50);
+    }
+    monotonic_groups.push_back({"RookMobility", Tuning::RookMobility, 15, 0, 14});
+
+    // Queen: 28 entries (56 params)
+    for (int i = 0; i < 28; i++) {
+        std::string istr = std::to_string(i);
+        add_eval_param("QnMob" + istr, Tuning::QueenMobility[i], -40, 30, -40, 30);
+    }
+    monotonic_groups.push_back({"QueenMobility", Tuning::QueenMobility, 28, 0, 27});
+
+    // Passed pawn tables: rank bonuses should also be non-decreasing (rank 1-6)
+    // (rank 0 and 7 are always 0, so we constrain indices 1 through 6)
+    monotonic_groups.push_back({"PassedPawnBonus",       Tuning::PassedPawnBonus,       8, 1, 6});
+    monotonic_groups.push_back({"ConnectedPassedBonus",  Tuning::ConnectedPassedBonus,  8, 1, 6});
+    monotonic_groups.push_back({"ProtectedPassedBonus",  Tuning::ProtectedPassedBonus,  8, 1, 6});
+    monotonic_groups.push_back({"CandidatePassedBonus",  Tuning::CandidatePassedBonus,  8, 1, 6});
+
+    // ====================================================================
+    // King Safety (11 params)
+    // ====================================================================
+    params.push_back(TunableParam("KingSafetyWeight",      &Tuning::KingSafetyWeight,       30, 200, true));
+    params.push_back(TunableParam("KnightAttackWeight",    &Tuning::KnightAttackWeight,      1,   6, true));
+    params.push_back(TunableParam("BishopAttackWeight",    &Tuning::BishopAttackWeight,      1,   6, true));
+    params.push_back(TunableParam("RookAttackWeight",      &Tuning::RookAttackWeight,        1,   8, true));
+    params.push_back(TunableParam("QueenAttackWeight",     &Tuning::QueenAttackWeight,       2,  10, true));
+    params.push_back(TunableParam("InnerRingAttackWeight", &Tuning::InnerRingAttackWeight,   1,   6, true));
+    params.push_back(TunableParam("OuterRingAttackWeight", &Tuning::OuterRingAttackWeight,   0,   4, true));
+    add_eval_param("KingSemiOpenFilePenalty", Tuning::KingSemiOpenFilePenalty, 0, 40, 0, 15);
+    add_eval_param("KingOpenFilePenalty",     Tuning::KingOpenFilePenalty,     5, 50, 0, 20);
+    for (int i = 1; i <= 3; i++) {
+        std::string istr = std::to_string(i);
+        params.push_back(TunableParam("PawnShieldBonus" + istr, &Tuning::PawnShieldBonus[i], 0, 50, true));
+    }
+
+    // ====================================================================
+    // Piece Activity (14 params)
+    // ====================================================================
+    add_eval_param("KnightOnRim",          Tuning::KnightOnRim,         -25,   0, -20,   0);
+    add_eval_param("BishopLongDiagonal",   Tuning::BishopLongDiagonal,    0,  30,    0,  20);
+    add_eval_param("RookBehindPasser",     Tuning::RookBehindPasser,      0,  40,    0,  50);
+    add_eval_param("TrappedBishopPenalty", Tuning::TrappedBishopPenalty,-150,   0,-120,   0);
+    add_eval_param("TrappedRookPenalty",   Tuning::TrappedRookPenalty,  -80,   0, -60,   0);
+    add_eval_param("HighMobilityBonus",    Tuning::HighMobilityBonus,     0,  25,    0,  30);
+    add_eval_param("LowMobilityPenalty",   Tuning::LowMobilityPenalty,  -30,   0, -40,   0);
+
+    // ====================================================================
+    // Material Imbalance (10 params)
+    // ====================================================================
+    add_eval_param("RookPairBonus",        Tuning::RookPairBonus,         0,  30,    0,  50);
+    add_eval_param("BishopKnightCombo",    Tuning::BishopKnightCombo,     0,  25,    0,  15);
+    add_eval_param("KnightPairPenalty",    Tuning::KnightPairPenalty,   -25,   0, -25,   0);
+    add_eval_param("RooksWithoutQueens",   Tuning::RooksWithoutQueens,    0,  20,    0,  40);
+    add_eval_param("QueenWithoutRooks",    Tuning::QueenWithoutRooks,   -20,   0, -30,   0);
 
     std::cout << "Initialized " << params.size() << " tunable parameters\n";
 }
@@ -326,11 +453,16 @@ double find_optimal_k(double manual_k = 0.0) {
 // ============================================================================
 
 void tune_parameters(int iterations = 100) {
-    std::cout << "\n=== Starting Texel Tuning (Fast Local Search) ===\n";
+    std::cout << "\n=== Starting Texel Tuning (Fast Local Search v7) ===\n";
     std::cout << "Threads: " << NUM_THREADS << "\n";
     std::cout << "Iterations: " << iterations << "\n";
     std::cout << "Positions: " << positions.size() << "\n";
-    std::cout << "Parameters: " << params.size() << "\n\n";
+    std::cout << "Parameters: " << params.size() << "\n";
+    std::cout << "Monotonic groups: " << monotonic_groups.size() << "\n";
+    for (const auto& g : monotonic_groups) {
+        std::cout << "  - " << g.name << " [" << g.start_idx << ".." << g.end_idx << "]\n";
+    }
+    std::cout << "\n";
 
     double best_error = calculate_error_fast(K);
     std::cout << "Initial error: " << std::fixed << std::setprecision(8) << best_error << "\n\n";
@@ -353,14 +485,22 @@ void tune_parameters(int iterations = 100) {
             int new_val_up = std::clamp(original + step, params[p].min_val, params[p].max_val);
             if (new_val_up != original) {
                 *params[p].value_ptr = new_val_up;
-                reevaluate_all_scores();  // Re-evaluate with new param
-                double error_up = calculate_error_fast(K);
 
-                if (error_up < best_error) {
-                    best_error = error_up;
-                    improved_this_iter = true;
-                    params_changed++;
-                    continue;
+                // Check monotonicity constraint
+                if (!check_monotonicity()) {
+                    *params[p].value_ptr = original;
+                } else {
+                    reevaluate_all_scores();
+                    double error_up = calculate_error_fast(K);
+
+                    if (error_up < best_error) {
+                        best_error = error_up;
+                        improved_this_iter = true;
+                        params_changed++;
+                        continue;
+                    }
+                    // Not better, restore
+                    *params[p].value_ptr = original;
                 }
             }
 
@@ -368,19 +508,29 @@ void tune_parameters(int iterations = 100) {
             int new_val_down = std::clamp(original - step, params[p].min_val, params[p].max_val);
             if (new_val_down != original) {
                 *params[p].value_ptr = new_val_down;
-                reevaluate_all_scores();
-                double error_down = calculate_error_fast(K);
 
-                if (error_down < best_error) {
-                    best_error = error_down;
-                    improved_this_iter = true;
-                    params_changed++;
-                    continue;
+                // Check monotonicity constraint
+                if (!check_monotonicity()) {
+                    *params[p].value_ptr = original;
+                } else {
+                    reevaluate_all_scores();
+                    double error_down = calculate_error_fast(K);
+
+                    if (error_down < best_error) {
+                        best_error = error_down;
+                        improved_this_iter = true;
+                        params_changed++;
+                        continue;
+                    }
+                    // Not better, restore
+                    *params[p].value_ptr = original;
                 }
             }
 
-            // Restore and re-evaluate
-            *params[p].value_ptr = original;
+            // Ensure original is restored and re-evaluate
+            if (*params[p].value_ptr != original) {
+                *params[p].value_ptr = original;
+            }
             reevaluate_all_scores();
         }
 
@@ -407,10 +557,12 @@ void tune_parameters(int iterations = 100) {
             no_improvement_count = 0;
         }
 
-        if (iter % 5 == 0) {
-            std::cout << "\n--- Current Values ---\n";
+        // Print current values periodically
+        if (iter % 5 == 0 || !improved_this_iter) {
+            std::cout << "\n--- Current Values (Iter " << iter << ") ---\n";
             for (const auto& param : params) {
-                std::cout << param.name << " = " << *param.value_ptr << "\n";
+                std::cout << "  " << std::setw(28) << std::left << param.name
+                          << " = " << std::setw(5) << std::right << *param.value_ptr << "\n";
             }
             std::cout << "\n";
         }
@@ -421,29 +573,121 @@ void tune_parameters(int iterations = 100) {
         }
     }
 
-    // Print final values
-    std::cout << "\n=== FINAL TUNED VALUES ===\n\n";
-    std::cout << "// Copy to tuning.cpp:\n\n";
+    // ====================================================================
+    // Print final values (ready to copy into tuning.cpp)
+    // ====================================================================
+    std::cout << "\n";
+    std::cout << "// ================================================================\n";
+    std::cout << "// FINAL TUNED VALUES - Copy to tuning.cpp\n";
+    std::cout << "// ================================================================\n\n";
 
-    std::cout << "EvalScore PawnValue           = S(" << std::setw(4) << Tuning::PawnValue.mg << ", " << std::setw(4) << Tuning::PawnValue.eg << ");\n";
-    std::cout << "EvalScore KnightValue         = S(" << std::setw(4) << Tuning::KnightValue.mg << ", " << std::setw(4) << Tuning::KnightValue.eg << ");\n";
-    std::cout << "EvalScore BishopValue         = S(" << std::setw(4) << Tuning::BishopValue.mg << ", " << std::setw(4) << Tuning::BishopValue.eg << ");\n";
-    std::cout << "EvalScore RookValue           = S(" << std::setw(4) << Tuning::RookValue.mg << ", " << std::setw(4) << Tuning::RookValue.eg << ");\n";
-    std::cout << "EvalScore QueenValue          = S(" << std::setw(4) << Tuning::QueenValue.mg << ", " << std::setw(4) << Tuning::QueenValue.eg << ");\n";
+    // Material
+    std::cout << "    EvalScore PawnValue   = S(" << std::setw(4) << Tuning::PawnValue.mg << ", " << std::setw(4) << Tuning::PawnValue.eg << ");\n";
+    std::cout << "    EvalScore KnightValue = S(" << std::setw(4) << Tuning::KnightValue.mg << ", " << std::setw(4) << Tuning::KnightValue.eg << ");\n";
+    std::cout << "    EvalScore BishopValue = S(" << std::setw(4) << Tuning::BishopValue.mg << ", " << std::setw(4) << Tuning::BishopValue.eg << ");\n";
+    std::cout << "    EvalScore RookValue   = S(" << std::setw(4) << Tuning::RookValue.mg << ", " << std::setw(4) << Tuning::RookValue.eg << ");\n";
+    std::cout << "    EvalScore QueenValue  = S(" << std::setw(4) << Tuning::QueenValue.mg << ", " << std::setw(4) << Tuning::QueenValue.eg << ");\n\n";
 
-    std::cout << "EvalScore BishopPairBonus     = S(" << std::setw(4) << Tuning::BishopPairBonus.mg << ", " << std::setw(4) << Tuning::BishopPairBonus.eg << ");\n";
-    std::cout << "EvalScore RookOpenFileBonus   = S(" << std::setw(4) << Tuning::RookOpenFileBonus.mg << ", " << std::setw(4) << Tuning::RookOpenFileBonus.eg << ");\n";
-    std::cout << "EvalScore RookSemiOpenFileBonus = S(" << std::setw(4) << Tuning::RookSemiOpenFileBonus.mg << ", " << std::setw(4) << Tuning::RookSemiOpenFileBonus.eg << ");\n";
-    std::cout << "EvalScore RookOnSeventhBonus  = S(" << std::setw(4) << Tuning::RookOnSeventhBonus.mg << ", " << std::setw(4) << Tuning::RookOnSeventhBonus.eg << ");\n";
-    std::cout << "EvalScore KnightOutpostBonus  = S(" << std::setw(4) << Tuning::KnightOutpostBonus.mg << ", " << std::setw(4) << Tuning::KnightOutpostBonus.eg << ");\n";
+    // Piece Activity
+    std::cout << "    EvalScore BishopPairBonus       = S(" << std::setw(4) << Tuning::BishopPairBonus.mg << ", " << std::setw(4) << Tuning::BishopPairBonus.eg << ");\n";
+    std::cout << "    EvalScore RookOpenFileBonus     = S(" << std::setw(4) << Tuning::RookOpenFileBonus.mg << ", " << std::setw(4) << Tuning::RookOpenFileBonus.eg << ");\n";
+    std::cout << "    EvalScore RookSemiOpenFileBonus = S(" << std::setw(4) << Tuning::RookSemiOpenFileBonus.mg << ", " << std::setw(4) << Tuning::RookSemiOpenFileBonus.eg << ");\n";
+    std::cout << "    EvalScore RookOnSeventhBonus    = S(" << std::setw(4) << Tuning::RookOnSeventhBonus.mg << ", " << std::setw(4) << Tuning::RookOnSeventhBonus.eg << ");\n";
+    std::cout << "    EvalScore KnightOutpostBonus    = S(" << std::setw(4) << Tuning::KnightOutpostBonus.mg << ", " << std::setw(4) << Tuning::KnightOutpostBonus.eg << ");\n\n";
 
-    std::cout << "EvalScore IsolatedPawnPenalty = S(" << std::setw(4) << Tuning::IsolatedPawnPenalty.mg << ", " << std::setw(4) << Tuning::IsolatedPawnPenalty.eg << ");\n";
-    std::cout << "EvalScore DoubledPawnPenalty  = S(" << std::setw(4) << Tuning::DoubledPawnPenalty.mg << ", " << std::setw(4) << Tuning::DoubledPawnPenalty.eg << ");\n";
-    std::cout << "EvalScore BackwardPawnPenalty = S(" << std::setw(4) << Tuning::BackwardPawnPenalty.mg << ", " << std::setw(4) << Tuning::BackwardPawnPenalty.eg << ");\n";
-    std::cout << "EvalScore ConnectedPawnBonus  = S(" << std::setw(4) << Tuning::ConnectedPawnBonus.mg << ", " << std::setw(4) << Tuning::ConnectedPawnBonus.eg << ");\n";
-    std::cout << "EvalScore PhalanxBonus        = S(" << std::setw(4) << Tuning::PhalanxBonus.mg << ", " << std::setw(4) << Tuning::PhalanxBonus.eg << ");\n";
+    // Pawn Structure
+    std::cout << "    EvalScore IsolatedPawnPenalty = S(" << std::setw(4) << Tuning::IsolatedPawnPenalty.mg << ", " << std::setw(4) << Tuning::IsolatedPawnPenalty.eg << ");\n";
+    std::cout << "    EvalScore DoubledPawnPenalty  = S(" << std::setw(4) << Tuning::DoubledPawnPenalty.mg << ", " << std::setw(4) << Tuning::DoubledPawnPenalty.eg << ");\n";
+    std::cout << "    EvalScore BackwardPawnPenalty = S(" << std::setw(4) << Tuning::BackwardPawnPenalty.mg << ", " << std::setw(4) << Tuning::BackwardPawnPenalty.eg << ");\n";
+    std::cout << "    EvalScore ConnectedPawnBonus  = S(" << std::setw(4) << Tuning::ConnectedPawnBonus.mg << ", " << std::setw(4) << Tuning::ConnectedPawnBonus.eg << ");\n";
+    std::cout << "    EvalScore PhalanxBonus        = S(" << std::setw(4) << Tuning::PhalanxBonus.mg << ", " << std::setw(4) << Tuning::PhalanxBonus.eg << ");\n";
+    std::cout << "    EvalScore PawnIslandPenalty   = S(" << std::setw(4) << Tuning::PawnIslandPenalty.mg << ", " << std::setw(4) << Tuning::PawnIslandPenalty.eg << ");\n";
+    std::cout << "    EvalScore PawnChainBonus      = S(" << std::setw(4) << Tuning::PawnChainBonus.mg << ", " << std::setw(4) << Tuning::PawnChainBonus.eg << ");\n";
+    std::cout << "    EvalScore PawnChainBaseBonus  = S(" << std::setw(4) << Tuning::PawnChainBaseBonus.mg << ", " << std::setw(4) << Tuning::PawnChainBaseBonus.eg << ");\n";
+    std::cout << "    EvalScore CentralPawnBonus    = S(" << std::setw(4) << Tuning::CentralPawnBonus.mg << ", " << std::setw(4) << Tuning::CentralPawnBonus.eg << ");\n";
+    std::cout << "    EvalScore PawnDuoBonus        = S(" << std::setw(4) << Tuning::PawnDuoBonus.mg << ", " << std::setw(4) << Tuning::PawnDuoBonus.eg << ");\n";
+    std::cout << "    EvalScore OutpostHolePenalty  = S(" << std::setw(4) << Tuning::OutpostHolePenalty.mg << ", " << std::setw(4) << Tuning::OutpostHolePenalty.eg << ");\n";
+    std::cout << "    EvalScore HangingPawnPenalty  = S(" << std::setw(4) << Tuning::HangingPawnPenalty.mg << ", " << std::setw(4) << Tuning::HangingPawnPenalty.eg << ");\n";
+    std::cout << "    EvalScore BackwardOnHalfOpen  = S(" << std::setw(4) << Tuning::BackwardOnHalfOpen.mg << ", " << std::setw(4) << Tuning::BackwardOnHalfOpen.eg << ");\n";
+    std::cout << "    EvalScore CentralLeverBonus   = S(" << std::setw(4) << Tuning::CentralLeverBonus.mg << ", " << std::setw(4) << Tuning::CentralLeverBonus.eg << ");\n\n";
 
-    std::cout << "int KingSafetyWeight          = " << std::setw(4) << Tuning::KingSafetyWeight << ";\n";
+    // Passed Pawns
+    std::cout << "    EvalScore PassedPawnBonus[8] = {\n        ";
+    for (int i = 0; i < 8; i++) {
+        std::cout << "S(" << std::setw(4) << Tuning::PassedPawnBonus[i].mg << "," << std::setw(4) << Tuning::PassedPawnBonus[i].eg << ")";
+        if (i < 7) std::cout << ", ";
+        if (i == 3) std::cout << "\n        ";
+    }
+    std::cout << "\n    };\n";
+
+    std::cout << "    EvalScore ConnectedPassedBonus[8] = {\n        ";
+    for (int i = 0; i < 8; i++) {
+        std::cout << "S(" << std::setw(4) << Tuning::ConnectedPassedBonus[i].mg << "," << std::setw(4) << Tuning::ConnectedPassedBonus[i].eg << ")";
+        if (i < 7) std::cout << ", ";
+        if (i == 3) std::cout << "\n        ";
+    }
+    std::cout << "\n    };\n";
+
+    std::cout << "    EvalScore ProtectedPassedBonus[8] = {\n        ";
+    for (int i = 0; i < 8; i++) {
+        std::cout << "S(" << std::setw(4) << Tuning::ProtectedPassedBonus[i].mg << "," << std::setw(4) << Tuning::ProtectedPassedBonus[i].eg << ")";
+        if (i < 7) std::cout << ", ";
+        if (i == 3) std::cout << "\n        ";
+    }
+    std::cout << "\n    };\n";
+
+    std::cout << "    EvalScore CandidatePassedBonus[8] = {\n        ";
+    for (int i = 0; i < 8; i++) {
+        std::cout << "S(" << std::setw(4) << Tuning::CandidatePassedBonus[i].mg << "," << std::setw(4) << Tuning::CandidatePassedBonus[i].eg << ")";
+        if (i < 7) std::cout << ", ";
+        if (i == 3) std::cout << "\n        ";
+    }
+    std::cout << "\n    };\n";
+    std::cout << "    int RuleOfSquareBonus = " << Tuning::RuleOfSquareBonus << ";\n\n";
+
+    // Mobility Tables
+    auto print_mob = [](const char* name, const EvalScore* table, int size) {
+        std::cout << "    EvalScore " << name << "[" << size << "] = {\n        ";
+        for (int i = 0; i < size; i++) {
+            std::cout << "S(" << std::setw(4) << table[i].mg << "," << std::setw(4) << table[i].eg << ")";
+            if (i < size - 1) std::cout << ", ";
+            if ((i + 1) % 4 == 0 && i < size - 1) std::cout << "\n        ";
+        }
+        std::cout << "\n    };\n";
+    };
+    print_mob("KnightMobility", Tuning::KnightMobility, 9);
+    print_mob("BishopMobility", Tuning::BishopMobility, 14);
+    print_mob("RookMobility",   Tuning::RookMobility,   15);
+    print_mob("QueenMobility",  Tuning::QueenMobility,  28);
+    std::cout << "\n";
+
+    // King Safety
+    std::cout << "    int KingSafetyWeight = " << Tuning::KingSafetyWeight << ";\n";
+    std::cout << "    int KnightAttackWeight = " << Tuning::KnightAttackWeight << ";\n";
+    std::cout << "    int BishopAttackWeight = " << Tuning::BishopAttackWeight << ";\n";
+    std::cout << "    int RookAttackWeight   = " << Tuning::RookAttackWeight << ";\n";
+    std::cout << "    int QueenAttackWeight  = " << Tuning::QueenAttackWeight << ";\n";
+    std::cout << "    int InnerRingAttackWeight = " << Tuning::InnerRingAttackWeight << ";\n";
+    std::cout << "    int OuterRingAttackWeight = " << Tuning::OuterRingAttackWeight << ";\n";
+    std::cout << "    EvalScore KingSemiOpenFilePenalty = S(" << std::setw(4) << Tuning::KingSemiOpenFilePenalty.mg << ", " << std::setw(4) << Tuning::KingSemiOpenFilePenalty.eg << ");\n";
+    std::cout << "    EvalScore KingOpenFilePenalty     = S(" << std::setw(4) << Tuning::KingOpenFilePenalty.mg << ", " << std::setw(4) << Tuning::KingOpenFilePenalty.eg << ");\n";
+    std::cout << "    int PawnShieldBonus[4] = { 0, " << Tuning::PawnShieldBonus[1] << ", " << Tuning::PawnShieldBonus[2] << ", " << Tuning::PawnShieldBonus[3] << " };\n\n";
+
+    // Piece Activity
+    std::cout << "    EvalScore KnightOnRim          = S(" << std::setw(4) << Tuning::KnightOnRim.mg << ", " << std::setw(4) << Tuning::KnightOnRim.eg << ");\n";
+    std::cout << "    EvalScore BishopLongDiagonal   = S(" << std::setw(4) << Tuning::BishopLongDiagonal.mg << ", " << std::setw(4) << Tuning::BishopLongDiagonal.eg << ");\n";
+    std::cout << "    EvalScore RookBehindPasser     = S(" << std::setw(4) << Tuning::RookBehindPasser.mg << ", " << std::setw(4) << Tuning::RookBehindPasser.eg << ");\n";
+    std::cout << "    EvalScore TrappedBishopPenalty = S(" << std::setw(4) << Tuning::TrappedBishopPenalty.mg << ", " << std::setw(4) << Tuning::TrappedBishopPenalty.eg << ");\n";
+    std::cout << "    EvalScore TrappedRookPenalty   = S(" << std::setw(4) << Tuning::TrappedRookPenalty.mg << ", " << std::setw(4) << Tuning::TrappedRookPenalty.eg << ");\n";
+    std::cout << "    EvalScore HighMobilityBonus    = S(" << std::setw(4) << Tuning::HighMobilityBonus.mg << ", " << std::setw(4) << Tuning::HighMobilityBonus.eg << ");\n";
+    std::cout << "    EvalScore LowMobilityPenalty   = S(" << std::setw(4) << Tuning::LowMobilityPenalty.mg << ", " << std::setw(4) << Tuning::LowMobilityPenalty.eg << ");\n\n";
+
+    // Material Imbalance
+    std::cout << "    EvalScore RookPairBonus        = S(" << std::setw(4) << Tuning::RookPairBonus.mg << ", " << std::setw(4) << Tuning::RookPairBonus.eg << ");\n";
+    std::cout << "    EvalScore BishopKnightCombo    = S(" << std::setw(4) << Tuning::BishopKnightCombo.mg << ", " << std::setw(4) << Tuning::BishopKnightCombo.eg << ");\n";
+    std::cout << "    EvalScore KnightPairPenalty    = S(" << std::setw(4) << Tuning::KnightPairPenalty.mg << ", " << std::setw(4) << Tuning::KnightPairPenalty.eg << ");\n";
+    std::cout << "    EvalScore RooksWithoutQueens   = S(" << std::setw(4) << Tuning::RooksWithoutQueens.mg << ", " << std::setw(4) << Tuning::RooksWithoutQueens.eg << ");\n";
+    std::cout << "    EvalScore QueenWithoutRooks    = S(" << std::setw(4) << Tuning::QueenWithoutRooks.mg << ", " << std::setw(4) << Tuning::QueenWithoutRooks.eg << ");\n\n";
 
     double improvement = (initial_error - best_error) * 100 / initial_error;
     std::cout << "\n=== Tuning Complete ===\n";
@@ -458,8 +702,8 @@ void tune_parameters(int iterations = 100) {
 
 int main(int argc, char* argv[]) {
     std::cout << "=================================\n";
-    std::cout << "  GC-Engine Texel Tuner v6\n";
-    std::cout << "  (Ultra-Fast Version)\n";
+    std::cout << "  GC-Engine Texel Tuner v7\n";
+    std::cout << "  (Extended ~200 Parameters)\n";
     std::cout << "=================================\n\n";
     std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]\n";
     std::cout << "  epd_file      : Path to labeled EPD file\n";
