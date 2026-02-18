@@ -705,12 +705,18 @@ int main(int argc, char* argv[]) {
     std::cout << "  GC-Engine Texel Tuner v7\n";
     std::cout << "  (Extended ~200 Parameters)\n";
     std::cout << "=================================\n\n";
-    std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]\n";
+    std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K] [threads]\n";
     std::cout << "  epd_file      : Path to labeled EPD file\n";
     std::cout << "  max_positions : Maximum positions to load (0 = all)\n";
     std::cout << "  iterations    : Number of tuning iterations (default: 100)\n";
-    std::cout << "  manual_K      : Optional manual K value (default: auto-find)\n\n";
+    std::cout << "  manual_K      : Optional manual K value (default: auto-find, 0 = auto)\n";
+    std::cout << "  threads       : Number of threads (default: auto-detect)\n\n";
 
+    // Override thread count if provided as 5th argument
+    if (argc > 5) {
+        unsigned int requested = std::stoi(argv[5]);
+        if (requested > 0) NUM_THREADS = requested;
+    }
     if (NUM_THREADS == 0) NUM_THREADS = 1;
     std::cout << "Using " << NUM_THREADS << " threads\n\n";
 
