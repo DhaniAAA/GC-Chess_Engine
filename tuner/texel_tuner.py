@@ -3,12 +3,12 @@
 Texel Tuner Wrapper for GitHub Actions & Local Use
 ==================================================
 This script builds and runs the high-performance C++ Texel Tuner.
+~320 tunable parameters with monotonicity constraints.
 
 Usage:
     python tuner/texel_tuner.py [epd_file] [max_positions] [iterations]
-
-Example:
-    python tuner/texel_tuner.py tuner/quiet-labeled.epd 500000 100
+    python tuner/texel_tuner.py tuner/quiet-labeled.epd 500000 100 --threads 4
+    python tuner/texel_tuner.py tuner/quiet-labeled.epd 500000 100 --manual-k 1.13 --threads 8
 """
 
 import sys
@@ -19,10 +19,12 @@ import argparse
 import shutil
 
 def main():
-    parser = argparse.ArgumentParser(description="Build and run GC-Chess Texel Tuner (C++)")
+    parser = argparse.ArgumentParser(description="Build and run GC-Chess Texel Tuner (C++) - ~320 params")
     parser.add_argument("epd_file", nargs="?", default="tuner/quiet-labeled.epd", help="Path to EPD file")
     parser.add_argument("max_positions", nargs="?", default="500000", help="Max positions to load")
     parser.add_argument("iterations", nargs="?", default="100", help="Tuning iterations")
+    parser.add_argument("--manual-k", type=float, default=0.0, help="Manual K value (0 = auto-find)")
+    parser.add_argument("--threads", type=int, default=0, help="Number of threads (0 = auto-detect)")
     parser.add_argument("--skip-build", action="store_true", help="Skip compilation step")
 
     args = parser.parse_args()
@@ -90,13 +92,20 @@ def main():
         sys.exit(1)
 
     # 2. Execution Step
+    import multiprocessing
+    threads = args.threads if args.threads > 0 else multiprocessing.cpu_count()
+    k_arg = args.manual_k if args.manual_k > 0 else 0
+
     print(f"\n🚀 Running Texel Tuner: {final_exe}")
     print(f"   EPD File:   {args.epd_file}")
     print(f"   Positions:  {args.max_positions}")
     print(f"   Iterations: {args.iterations}")
+    print(f"   Threads:    {threads} {'(auto)' if args.threads == 0 else '(manual)'}")
+    print(f"   Manual K:   {'auto' if k_arg == 0 else k_arg}")
     print("-" * 60)
 
-    run_cmd = [final_exe, args.epd_file, str(args.max_positions), str(args.iterations)]
+    run_cmd = [final_exe, args.epd_file, str(args.max_positions), str(args.iterations),
+               str(k_arg), str(threads)]
 
     try:
         # Run and stream output

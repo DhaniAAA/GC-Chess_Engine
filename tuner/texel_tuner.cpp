@@ -243,6 +243,50 @@ void init_params() {
     add_eval_param("RooksWithoutQueens",   Tuning::RooksWithoutQueens,    0,  20,    0,  40);
     add_eval_param("QueenWithoutRooks",    Tuning::QueenWithoutRooks,   -20,   0, -30,   0);
 
+    // ====================================================================
+    // King Safety Extended
+    // ====================================================================
+    // SafeCheckBonus - only indices 2-5 (Knight=2, Bishop=3, Rook=4, Queen=5)
+    params.push_back(TunableParam("SafeCheck_Knight", &Tuning::SafeCheckBonus[2], 10, 100, true));
+    params.push_back(TunableParam("SafeCheck_Bishop", &Tuning::SafeCheckBonus[3], 10, 100, true));
+    params.push_back(TunableParam("SafeCheck_Rook",   &Tuning::SafeCheckBonus[4], 10, 100, true));
+    params.push_back(TunableParam("SafeCheck_Queen",  &Tuning::SafeCheckBonus[5], 10, 100, true));
+    params.push_back(TunableParam("ContactCheckBonus", &Tuning::ContactCheckBonus, 10, 80, true));
+
+    // KingTropismWeight - only indices 2-5
+    params.push_back(TunableParam("KingTropism_Knight", &Tuning::KingTropismWeight[2], 0, 12, true));
+    params.push_back(TunableParam("KingTropism_Bishop", &Tuning::KingTropismWeight[3], 0, 12, true));
+    params.push_back(TunableParam("KingTropism_Rook",   &Tuning::KingTropismWeight[4], 0, 12, true));
+    params.push_back(TunableParam("KingTropism_Queen",  &Tuning::KingTropismWeight[5], 0, 12, true));
+
+    // PawnShieldQuality[5][4] - all 20 entries
+    for (int f = 0; f < 5; f++) {
+        for (int r = 0; r < 4; r++) {
+            std::string name = "ShieldQ_f" + std::to_string(f) + "r" + std::to_string(r);
+            params.push_back(TunableParam(name, &Tuning::PawnShieldQuality[f][r], -60, 30, true));
+        }
+    }
+
+    // PawnStormDanger[5][4] - skip [*][0] (always 0), tune [*][1..3]
+    for (int f = 0; f < 5; f++) {
+        for (int r = 1; r < 4; r++) {
+            std::string name = "StormD_f" + std::to_string(f) + "r" + std::to_string(r);
+            params.push_back(TunableParam(name, &Tuning::PawnStormDanger[f][r], 0, 80, true));
+        }
+    }
+
+    // ShelterWeakness[4] - skip [0] (always S(0,0)), tune [1..3]
+    for (int i = 1; i <= 3; i++) {
+        std::string istr = std::to_string(i);
+        add_eval_param("ShelterWeak" + istr, Tuning::ShelterWeakness[i], -80, 0, -30, 0);
+    }
+
+    // ====================================================================
+    // Piece Patterns (4 params)
+    // ====================================================================
+    add_eval_param("FianchettoBonus",       Tuning::FianchettoBonus,        0,  30,    0,  20);
+    add_eval_param("TrappedKnightPenalty",  Tuning::TrappedKnightPenalty, -80,   0, -60,   0);
+
     std::cout << "Initialized " << params.size() << " tunable parameters\n";
 }
 
@@ -688,6 +732,47 @@ void tune_parameters(int iterations = 100) {
     std::cout << "    EvalScore KnightPairPenalty    = S(" << std::setw(4) << Tuning::KnightPairPenalty.mg << ", " << std::setw(4) << Tuning::KnightPairPenalty.eg << ");\n";
     std::cout << "    EvalScore RooksWithoutQueens   = S(" << std::setw(4) << Tuning::RooksWithoutQueens.mg << ", " << std::setw(4) << Tuning::RooksWithoutQueens.eg << ");\n";
     std::cout << "    EvalScore QueenWithoutRooks    = S(" << std::setw(4) << Tuning::QueenWithoutRooks.mg << ", " << std::setw(4) << Tuning::QueenWithoutRooks.eg << ");\n\n";
+
+    // King Safety Extended
+    std::cout << "    int SafeCheckBonus[7] = {\n";
+    std::cout << "        0, 0, " << Tuning::SafeCheckBonus[2] << ", " << Tuning::SafeCheckBonus[3]
+              << ", " << Tuning::SafeCheckBonus[4] << ", " << Tuning::SafeCheckBonus[5] << ", 0\n";
+    std::cout << "    };\n";
+    std::cout << "    int ContactCheckBonus = " << Tuning::ContactCheckBonus << ";\n\n";
+
+    std::cout << "    int KingTropismWeight[7] = {\n";
+    std::cout << "        0, 0, " << Tuning::KingTropismWeight[2] << ", " << Tuning::KingTropismWeight[3]
+              << ", " << Tuning::KingTropismWeight[4] << ", " << Tuning::KingTropismWeight[5] << ", 0\n";
+    std::cout << "    };\n\n";
+
+    std::cout << "    int PawnShieldQuality[5][4] = {\n";
+    for (int f = 0; f < 5; f++) {
+        std::cout << "        { " << std::setw(4) << Tuning::PawnShieldQuality[f][0]
+                  << ", " << std::setw(4) << Tuning::PawnShieldQuality[f][1]
+                  << ", " << std::setw(4) << Tuning::PawnShieldQuality[f][2]
+                  << ", " << std::setw(4) << Tuning::PawnShieldQuality[f][3] << " },\n";
+    }
+    std::cout << "    };\n\n";
+
+    std::cout << "    int PawnStormDanger[5][4] = {\n";
+    for (int f = 0; f < 5; f++) {
+        std::cout << "        { " << std::setw(4) << Tuning::PawnStormDanger[f][0]
+                  << ", " << std::setw(4) << Tuning::PawnStormDanger[f][1]
+                  << ", " << std::setw(4) << Tuning::PawnStormDanger[f][2]
+                  << ", " << std::setw(4) << Tuning::PawnStormDanger[f][3] << " },\n";
+    }
+    std::cout << "    };\n\n";
+
+    std::cout << "    EvalScore ShelterWeakness[4] = {\n        ";
+    for (int i = 0; i < 4; i++) {
+        std::cout << "S(" << std::setw(4) << Tuning::ShelterWeakness[i].mg << "," << std::setw(4) << Tuning::ShelterWeakness[i].eg << ")";
+        if (i < 3) std::cout << ", ";
+    }
+    std::cout << "\n    };\n\n";
+
+    // Piece Patterns
+    std::cout << "    EvalScore FianchettoBonus      = S(" << std::setw(4) << Tuning::FianchettoBonus.mg << ", " << std::setw(4) << Tuning::FianchettoBonus.eg << ");\n";
+    std::cout << "    EvalScore TrappedKnightPenalty = S(" << std::setw(4) << Tuning::TrappedKnightPenalty.mg << ", " << std::setw(4) << Tuning::TrappedKnightPenalty.eg << ");\n\n";
 
     double improvement = (initial_error - best_error) * 100 / initial_error;
     std::cout << "\n=== Tuning Complete ===\n";

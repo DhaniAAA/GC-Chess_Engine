@@ -300,25 +300,13 @@ constexpr EvalScore QueenCentralization[4] = {
 constexpr EvalScore RookOnQueenFile = S(8, 5);
 constexpr EvalScore QueenEarlyDevelopment = S(-15, 0);
 
-constexpr EvalScore FianchettoBonus = S(12, 8);
+using Tuning::FianchettoBonus;
 constexpr EvalScore FianchettoBroken = S(-10, -5);
-constexpr EvalScore TrappedKnightPenalty = S(-40, -30);
+using Tuning::TrappedKnightPenalty;
 
-constexpr int PawnShieldQuality[5][4] = {
-    {  -35,       0,        -10,       -20  },
-    {  -25,      10,          0,       -10  },
-    {  -30,      15,          5,       -15  },
-    {  -25,      10,          0,       -10  },
-    {  -35,       0,        -10,       -20  },
-};
+using Tuning::PawnShieldQuality;
 
-constexpr int PawnStormDanger[5][4] = {
-    {    0,         5,           15,          30   },
-    {    0,        10,           25,          45   },
-    {    0,        15,           35,          60   },
-    {    0,        10,           25,          45   },
-    {    0,         5,           15,          30   },
-};
+using Tuning::PawnStormDanger;
 
 constexpr int AttackWeightByPiece[PIECE_TYPE_NB] = {
     0,
@@ -336,33 +324,12 @@ constexpr int KingExposedOnFile = 20;
 constexpr int KingExposedOnDiagonal = 15;
 constexpr int KingNoQueensideCastle = 25;
 constexpr int KingNoKingsideCastle = 30;
-constexpr EvalScore ShelterWeakness[4] = {
-    S(  0,   0),
-    S(-10,  -3),
-    S(-25,  -8),
-    S(-50, -15)
-};
-constexpr int SafeCheckBonus[PIECE_TYPE_NB] = {
-    0,
-    0,
-    45,
-    35,
-    50,
-    60,
-    0
-};
+using Tuning::ShelterWeakness;
+using Tuning::SafeCheckBonus;
 
-constexpr int ContactCheckBonus = 40;
+using Tuning::ContactCheckBonus;
 
-constexpr int KingTropismWeight[PIECE_TYPE_NB] = {
-    0,
-    0,
-    5,
-    3,
-    4,
-    2,
-    0
-};
+using Tuning::KingTropismWeight;
 constexpr int VirtualMobilityWeight = 3;
 
 // ========================================================================

@@ -124,6 +124,59 @@ namespace Tuning {
     EvalScore RooksWithoutQueens   = S(5, 20);
     EvalScore QueenWithoutRooks    = S(-5, -15);
 
+    // ========================================================================
+    // King Safety Extended
+    // ========================================================================
+    int SafeCheckBonus[7] = {
+        0,    // NO_PIECE_TYPE
+        0,    // PAWN
+        45,   // KNIGHT
+        35,   // BISHOP
+        50,   // ROOK
+        60,   // QUEEN
+        0     // KING
+    };
+    int ContactCheckBonus = 40;
+
+    int KingTropismWeight[7] = {
+        0,    // NO_PIECE_TYPE
+        0,    // PAWN
+        5,    // KNIGHT
+        3,    // BISHOP
+        4,    // ROOK
+        2,    // QUEEN
+        0     // KING
+    };
+
+    int PawnShieldQuality[5][4] = {
+        {  -35,       0,        -10,       -20  },
+        {  -25,      10,          0,       -10  },
+        {  -30,      15,          5,       -15  },
+        {  -25,      10,          0,       -10  },
+        {  -35,       0,        -10,       -20  },
+    };
+
+    int PawnStormDanger[5][4] = {
+        {    0,         5,           15,          30   },
+        {    0,        10,           25,          45   },
+        {    0,        15,           35,          60   },
+        {    0,        10,           25,          45   },
+        {    0,         5,           15,          30   },
+    };
+
+    EvalScore ShelterWeakness[4] = {
+        S(  0,   0),
+        S(-10,  -3),
+        S(-25,  -8),
+        S(-50, -15)
+    };
+
+    // ========================================================================
+    // Piece Patterns
+    // ========================================================================
+    EvalScore FianchettoBonus      = S(12, 8);
+    EvalScore TrappedKnightPenalty = S(-40, -30);
+
     void init() {
     }
 

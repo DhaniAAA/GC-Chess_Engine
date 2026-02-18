@@ -93,6 +93,22 @@ namespace Tuning {
     extern EvalScore RooksWithoutQueens;
     extern EvalScore QueenWithoutRooks;
 
+    // ========================================================================
+    // King Safety Extended
+    // ========================================================================
+    extern int SafeCheckBonus[7];         // indexed by PieceType (0=none,1=pawn,...6=king)
+    extern int ContactCheckBonus;
+    extern int KingTropismWeight[7];      // indexed by PieceType
+    extern int PawnShieldQuality[5][4];   // [file_rel_king][rank_distance]
+    extern int PawnStormDanger[5][4];     // [file_rel_king][rank_distance]
+    extern EvalScore ShelterWeakness[4];  // [weakness_level]
+
+    // ========================================================================
+    // Piece Patterns
+    // ========================================================================
+    extern EvalScore FianchettoBonus;
+    extern EvalScore TrappedKnightPenalty;
+
     // Initialization
     void init();
 }
