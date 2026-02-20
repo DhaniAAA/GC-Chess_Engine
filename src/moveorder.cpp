@@ -56,7 +56,7 @@ int SEE::evaluate(const Board& board, Move m) {
         victim = PAWN;
     }
 
-    if (victim == NO_PIECE_TYPE && !m.is_enpassant()) {
+    if (victim == NO_PIECE_TYPE && !m.is_enpassant() && !m.is_promotion()) {
         return 0;
     }
 
@@ -65,11 +65,10 @@ int SEE::evaluate(const Board& board, Move m) {
 
     gain[depth] = PieceValue[victim];
 
-    // Promotion: the pawn becomes a stronger piece, adding net value
     if (m.is_promotion()) {
         PieceType promoPt = m.promotion_type();
         gain[depth] += PieceValue[promoPt] - PieceValue[PAWN];
-        attacker = promoPt;  // Post-promotion, the piece at risk is the promoted piece
+        attacker = promoPt;
     }
 
     Bitboard occupied = board.pieces();
@@ -128,7 +127,6 @@ bool SEE::see_ge(const Board& board, Move m, int threshold) {
 
     int swap = PieceValue[victim] - threshold;
 
-    // Promotion: gain includes promoted piece value minus pawn
     if (m.is_promotion()) {
         swap += PieceValue[m.promotion_type()] - PieceValue[PAWN];
     }
@@ -137,7 +135,6 @@ bool SEE::see_ge(const Board& board, Move m, int threshold) {
         return false;
     }
 
-    // After promotion, the piece at risk is the promoted piece, not the pawn
     int attackerValue = m.is_promotion() ? PieceValue[m.promotion_type()] : PieceValue[attacker];
     swap = attackerValue - swap;
     if (swap <= 0) {
@@ -316,21 +313,15 @@ void MovePicker::score_captures() {
         }
         }
 
-        // King zone proximity bonus for captures (SEE-aware)
-        // Captures landing on or near the enemy king are tactically significant
         {
             Square enemyKingSq = board.king_square(~board.side_to_move());
             Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
             bool nearKing = (enemyKingZone & square_bb(m.to()));
 
             if (nearKing) {
-                // Winning capture near king (SEE >= 0): push to top priority
                 if (SEE::see_ge(board, m, 0)) {
                     sm.score += 5000;
-                }
-                // Sacrifice near king (SEE < 0): still boost priority
-                // enough to be tried before quiet moves, but after winning captures
-                else {
+                } else {
                     sm.score += 2500;
                 }
             }
@@ -357,28 +348,23 @@ void MovePicker::score_quiets() {
             PREFETCH_READ(&moves[idx + 2]);
         }
 
-        // === TACTICAL QUIET PRIORITY (computed first) ===
         int tacticalBonus = 0;
 
-        // 1. Move that attacks king zone (critical for WAC: Qh6, Rxh7, etc.)
         Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
         Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
         if (attacksAfter & kingZone) {
             tacticalBonus += 5000;
         }
 
-        // 2. Quiet move that gives check (direct or discovered)
         if (MoveGen::gives_check(board, m)) {
             tacticalBonus += 8000;
         }
 
-        // 3. Discovered attack on king (piece was blocking a slider aimed at king)
         if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
             !aligned(m.from(), to, enemyKing)) {
             tacticalBonus += 4000;
         }
 
-        // Killer, counter, and history scoring — tactical bonus added on top
         if (m == killer1) {
             sm.score = SCORE_KILLER_1 + tacticalBonus;
         } else if (m == killer2) {
@@ -391,12 +377,9 @@ void MovePicker::score_quiets() {
             int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
             int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
 
-            // Synchronized with LMR statScore formula:
-            // 2*mainHistory + cont1 + cont2 + cont4
             sm.score = 2 * histScore + cont1 + cont2 + cont4 + tacticalBonus;
         }
 
-        // Promotion bonus
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
             sm.score += (promo == QUEEN)  ? SCORE_QUEEN_PROMO :
@@ -499,7 +482,7 @@ Move MovePicker::next_move() {
 
         case STAGE_QUIET_CHECKS:
             while (quietCheckIdx < quietChecks.size()) {
-                m = quietChecks[quietCheckIdx++].move;
+                m = quietChecks.pick_best(quietCheckIdx++);
                 if (is_tt_move(m)) continue;
                 if (m == killer1 || m == killer2 || m == counterMove) continue;
                 return m;
@@ -556,7 +539,7 @@ Move MovePicker::next_move() {
 
         case STAGE_EQUAL_CAPTURES:
             while (equalCaptureIdx < equalCaptures.size()) {
-                m = equalCaptures[equalCaptureIdx++].move;
+                m = equalCaptures.pick_best(equalCaptureIdx++);
                 if (is_tt_move(m)) continue;
                 return m;
             }
@@ -578,7 +561,7 @@ Move MovePicker::next_move() {
 
         case STAGE_BAD_CAPTURES:
             while (badCaptureIdx < badCaptures.size()) {
-                m = badCaptures[badCaptureIdx++].move;
+                m = badCaptures.pick_best(badCaptureIdx++);
                 if (is_tt_move(m)) continue;
                 return m;
             }
@@ -608,9 +591,6 @@ Move MovePicker::next_move() {
             while (currentIdx < moves.size()) {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
-                // Stop returning captures once we reach losing captures (SEE < 0).
-                // This prevents QS tree explosion from evaluating suicidal captures
-                // like Queen-takes-guarded-Pawn.
                 if (moves[currentIdx - 1].score <= SCORE_LOSING_CAP + 1000) break;
                 return m;
             }

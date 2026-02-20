@@ -211,7 +211,6 @@ void Search::check_time() {
 
     if (limits.infinite || limits.ponder || isPondering) return;
 
-    // When searching by depth only (no time control), don't apply time-based stopping
     if (limits.depth > 0 && limits.time[WHITE] == 0 && limits.time[BLACK] == 0 && limits.movetime == 0) {
         return;
     }
@@ -225,10 +224,6 @@ void Search::check_time() {
         stopped = true;
         return;
     }
-
-    // optimumTime (soft limit) is now evaluated only between iterations
-    // in iterative_deepening(). Mid-iteration abort here was wasting
-    // the deepest search results and causing TT inaccuracies.
 
     if (limits.nodes > 0 && searchStats.nodes >= limits.nodes) {
         stopped = true;
@@ -258,9 +253,6 @@ void Search::iterative_deepening(Board& board) {
         rootMoves.push_back(RootMove(legalMoves[i].move));
     }
 
-    // Initial tactical scoring for root moves
-    // This ensures tactical moves (capture+check, king zone attacks) are tried
-    // early at depth 1, preventing them from being stuck at the bottom forever
     {
         Color us = board.side_to_move();
         Square enemyKingSq = board.king_square(~us);
@@ -274,15 +266,15 @@ void Search::iterative_deepening(Board& board) {
 
             int initScore = 0;
             if (isCapture && givesCheck && nearKing) {
-                initScore = 40000;  // Sacrifice-captures giving check near king
+                initScore = 40000;
             } else if (isCapture && givesCheck) {
-                initScore = 20000;  // Captures giving check
+                initScore = 20000;
             } else if (isCapture && nearKing) {
-                initScore = 15000;  // Captures near king
+                initScore = 15000;
             } else if (isCapture && SEE::see_ge(board, m, 0)) {
-                initScore = 10000;  // Winning captures
+                initScore = 10000;
             } else if (givesCheck) {
-                initScore = 5000;   // Quiet checks
+                initScore = 5000;
             }
             rm.score = -VALUE_INFINITE + initScore;
             rm.previousScore = rm.score;
@@ -335,18 +327,9 @@ void Search::iterative_deepening(Board& board) {
     int overallBestScore = -VALUE_INFINITE;
     overallBestPV.clear();
 
-    // ====================================================================
-    // ROOT IID (Internal Iterative Deepening)
-    // Do a shallow depth-3 search of every root move to establish proper
-    // ordering based on actual search evaluation. This is critical for
-    // sacrifice-type moves (Qxg7+) that look terrible by heuristic scoring
-    // but reveal their strength even at shallow depth. Without this, such
-    // moves start at the bottom of the root list and may never get a fair
-    // search at deeper depths.
-    // ====================================================================
     constexpr int IID_DEPTH = 3;
     {
-        rootDepth = IID_DEPTH;  // Set for search() internals
+        rootDepth = IID_DEPTH;
 
         for (auto& rm : rootMoves) {
             StateInfo si;
@@ -366,9 +349,6 @@ void Search::iterative_deepening(Board& board) {
         }
     }
 
-    // Start from depth 1 — even though IID already searched depth 3,
-    // the normal iterative deepening builds proper alpha-beta state,
-    // TT entries, and continuation history differently from per-move IID.
     for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
         for (auto& rm : rootMoves) {
             rm.previousScore = rm.score;
@@ -387,18 +367,15 @@ void Search::iterative_deepening(Board& board) {
                 bool chk = MoveGen::gives_check(board, m);
                 bool nrK = (ekZone & square_bb(m.to())) != 0;
 
-                // Capture + check + near king: keep in top positions
                 if (isCap && chk && nrK) {
                     rm.previousScore = std::max(rm.previousScore, -200);
                 }
-                // Capture + check: keep reasonable
                 else if (isCap && chk) {
                     rm.previousScore = std::max(rm.previousScore, -400);
                 }
             }
         }
 
-        // DEBUG: Dump root moves ordering before search at this depth
         if (!silentMode && rootDepth <= 17) {
             Color stm_dbg = board.side_to_move();
             Square ekSq_dbg = board.king_square(~stm_dbg);
@@ -430,20 +407,9 @@ void Search::iterative_deepening(Board& board) {
             int beta = VALUE_INFINITE;
             int delta = ASPIRATION_INITIAL_DELTA;
             int score = rootMoves[pvIdx].previousScore;
-            int failCount = 0;    // Track aspiration failures for this depth
-            int searchDepth = rootDepth;  // May be reduced on first re-search
+            int failCount = 0;
+            int searchDepth = rootDepth;
 
-            // ================================================================
-            // Aspiration Window Setup
-            //
-            // For depth >= 5 with a valid previous score, use a narrow window
-            // around the previous iteration's score. This dramatically reduces
-            // the search tree when the score doesn't change much between depths.
-            //
-            // Mate Awareness: If previous score was a mate score, use full
-            // window to avoid "flickering" near the mate threshold where the
-            // narrow window would constantly fail high/low.
-            // ================================================================
             bool prevIsMate = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
             if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE && !prevIsMate) {
@@ -458,9 +424,6 @@ void Search::iterative_deepening(Board& board) {
             }
 
             while (true) {
-                // Time-Critical Fallback:
-                // If less than 10% of the time budget remains, widen to full
-                // window immediately to avoid multiple costly re-searches.
                 if (failCount > 0 && !limits.infinite && limits.movetime == 0) {
                     auto now = std::chrono::steady_clock::now();
                     int elapsed = static_cast<int>(
@@ -469,7 +432,7 @@ void Search::iterative_deepening(Board& board) {
                     if (elapsed > maximumTime * 9 / 10) {
                         alpha = -VALUE_INFINITE;
                         beta = VALUE_INFINITE;
-                        searchDepth = rootDepth; // Full depth for final attempt
+                        searchDepth = rootDepth;
                     }
                 }
 
@@ -479,9 +442,6 @@ void Search::iterative_deepening(Board& board) {
 
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
-                // After aspiration fails, TT is polluted with entries from
-                // narrow-window searches. Increment generation so these stale
-                // entries are less trusted for pruning in the re-search.
                 if (score <= alpha || score >= beta) {
                     if (failCount >= 1) {
                         TT.new_search();
@@ -489,17 +449,9 @@ void Search::iterative_deepening(Board& board) {
                 }
 
                 if (score <= alpha) {
-                    // ========================================================
-                    // Fail-Low: Position is worse than expected.
-                    // Widen alpha exponentially. Do NOT touch beta —
-                    // narrowing beta on fail-low causes ping-pong between
-                    // fail-low and fail-high, wasting search time.
-                    // ========================================================
                     failCount++;
                     delta += delta / 2;
 
-                    // If we found a mate score, immediately open to full window
-                    // to avoid multiple expensive re-searches
                     if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         alpha = -VALUE_INFINITE;
                         beta = VALUE_INFINITE;
@@ -507,25 +459,16 @@ void Search::iterative_deepening(Board& board) {
                         alpha = std::max(score - delta, -VALUE_INFINITE);
                     }
 
-                    // Depth-Reduced Re-search:
-                    // On the FIRST fail at depth >= 8, search at depth-1 to
-                    // quickly populate TT with relevant cutoffs before the
-                    // full-depth wide-window re-search.
                     if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
                         searchDepth = rootDepth - 1;
                     } else {
-                        searchDepth = rootDepth; // Subsequent fails: full depth
+                        searchDepth = rootDepth;
                     }
 
                 } else if (score >= beta) {
-                    // ========================================================
-                    // Fail-High: Position is better than expected.
-                    // Widen beta exponentially.
-                    // ========================================================
                     failCount++;
                     delta += delta / 2;
 
-                    // If we found a mate score, immediately open to full window
                     if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         beta = VALUE_INFINITE;
                         alpha = -VALUE_INFINITE;
@@ -533,8 +476,6 @@ void Search::iterative_deepening(Board& board) {
                         beta = std::min(score + delta, VALUE_INFINITE);
                     }
 
-                    // On first fail-high at depth >= 8, do a depth-1 search
-                    // to quickly update the TT move before the full re-search.
                     if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
                         searchDepth = rootDepth - 1;
                     } else {
@@ -542,19 +483,15 @@ void Search::iterative_deepening(Board& board) {
                     }
 
                 } else {
-                    // Score within window — search succeeded
                     break;
                 }
             }
 
-            // Log aspiration failures for diagnostics
             if (!stopped && failCount > 0 && !silentMode) {
                 std::cout << "info string depth " << rootDepth
                           << " aspiration fails " << failCount << std::endl;
             }
 
-            // If search was stopped mid-iteration, restore from backup
-            // The current rootMoves data is unreliable (spoiled by return 0)
             if (stopped) {
                 rootMoves = rootMovesBackup;
                 break;
@@ -565,14 +502,12 @@ void Search::iterative_deepening(Board& board) {
             if (analyzedMove != MOVE_NONE) {
                 for (auto& rm : rootMoves) {
                     if (rm.move == analyzedMove) {
-                        // Detect unreliable results: PV disappeared or large score drop
                         bool suspiciousResult = (rm.pv.length == 0) &&
                                                 (previousIterScore != -VALUE_INFINITE) &&
                                                 (std::abs(rm.score - previousIterScore) > 150);
 
                         bool pvDisappeared = (rm.pv.length == 0) && (previousPVLine.length > 0);
 
-                        // Also detect large unexplained score drops even with valid PV
                         bool largeScoreDrop = (previousIterScore != -VALUE_INFINITE) &&
                                               (rm.pv.length > 0) &&
                                               (rm.score < previousIterScore - 300) &&
@@ -644,7 +579,6 @@ void Search::iterative_deepening(Board& board) {
             }
         }
 
-        // Handle both normal completion and stopped cases
         if (!rootMoves.empty()) {
             bool searchReliable = (rootMoves[0].pv.length > 0) &&
                                   (rootMoves[0].pv.moves[0] != MOVE_NONE) &&
@@ -872,7 +806,7 @@ void Search::iterative_deepening(Board& board) {
 int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     PROFILE_FUNCTION();
     const bool pvNode = (beta - alpha) > 1;
-    const int origAlpha = alpha;  // Save for correct BOUND_EXACT at TT store
+    const int origAlpha = alpha;
 
     int ply = board.game_ply() - rootPly;
 
@@ -1007,10 +941,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     if (inCheck) improving = false;
 
-    // Post-LMR Worsening: If parent used LMR and eval worsened,
-    // reduce the SEARCH depth (move loop) but NOT the pruning depth.
-    // Modifying 'depth' here would cascade into RFP/NMP/etc. margins,
-    // causing systematic over-pruning. Instead we defer to searchDepth.
     int postLMRReduction = 0;
     if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
         int parentReduction = stack[ply + 1].reduction;
@@ -1045,8 +975,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             && correctedStaticEval < VALUE_MATE_IN_MAX_PLY
             && std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
 
-            // Save to TT as a LOWER_BOUND so future probes at this
-            // position can immediately cut off without re-searching.
             if (tte) {
                 tte->save(board.key(), score_to_tt(correctedStaticEval, ply),
                           staticEval, BOUND_LOWER, depth, MOVE_NONE,
@@ -1111,7 +1039,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    // Compute continuation history entries for move ordering
     const ContinuationHistoryEntry* contHist1ply = (ply >= 1 && ply + 1 < MAX_PLY + 4 && stack[ply + 1].contHistory) ?
                                                     stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
@@ -1257,8 +1184,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         ++moveCount;
 
-        // UCI currmove output: tell the GUI which move we're currently searching
-        // Only at root node, and only after 3 seconds to avoid flooding output
         if (rootNode && !silentMode) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(
@@ -1281,8 +1206,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         PieceType movedPt = type_of(movedPiece);
         Color us = board.side_to_move();
 
-        // Detect tactical quiet moves — these should not be aggressively pruned.
-        // Includes: king zone attacks (Rh4 threatening Rh8#) and discovered attacks.
         bool attacksKingZone = false;
         bool isDiscoveredAttack = false;
         if (!isCapture && !givesCheck) {
@@ -1293,7 +1216,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             if (atk & kZone) {
                 attacksKingZone = true;
             }
-            // Discovered attack: piece was blocking a slider aimed at enemy king
             if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
                 !aligned(m.from(), m.to(), enemyKSq)) {
                 isDiscoveredAttack = true;
@@ -1301,44 +1223,26 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
         bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck;
 
-        // ============================================================
-        // "History of Violence": If the previous move was a capture or
-        // check AND we are losing material significantly, we might be
-        // inside a sacrifice combination (e.g., after Qxg7+ Kxg7 Bf6+
-        // Kg8). Don't aggressively prune — the reply might be the key
-        // continuation that proves the sacrifice sound.
-        // ============================================================
         bool previousWasViolent = false;
         if (previousMove != MOVE_NONE) {
-            // Was the previous move a capture?
-            // After opponent moved, our piece might have been captured.
-            // Check if from-square is now empty (simple heuristic)
             previousWasViolent = !board.empty(previousMove.to()) ||
                                   previousMove.is_enpassant() ||
-                                  inCheck;  // if we're in check, opponent gave check
+                                  inCheck;
         }
-        // Losing material: correctedStaticEval is from our perspective
         bool losingMaterial = (!inCheck && correctedStaticEval != VALUE_NONE &&
                                correctedStaticEval < -300);
         bool inViolentSequence = previousWasViolent && losingMaterial;
-
-        // Combined tactical bypass: either mateThreat detected by NMP,
-        // or we're in a violent sequence (sacrifice combination)
         bool tacticalBypass = mateThreat || inViolentSequence;
 
         if (!pvNode && !inCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
             if (isCapture || givesCheck) {
                 if (isCapture && !givesCheck && depth <= SEE_CAPTURE_MAX_DEPTH) {
-                    // Detect captures landing in or near the enemy king zone
                     Square ekSq_cap = board.king_square(~us);
                     Bitboard ekZone_cap = king_attacks_bb(ekSq_cap) | square_bb(ekSq_cap);
                     bool captureNearKing = (ekZone_cap & square_bb(m.to())) != 0;
 
-                    // During tactical bypass, NEVER prune captures near the king
-                    // (they might be the key sacrifice in a mating attack)
                     if (captureNearKing && tacticalBypass) {
-                        // Skip SEE pruning entirely — this is a "dangerous sacrifice"
                     } else {
                         Piece capturedPiece = board.piece_on(m.to());
                         PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
@@ -1353,9 +1257,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                 -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
                         }
 
-                        // "Dangerous bad capture": sacrifice near king gets 2x
-                        // tolerance. Qxg7 (SEE=-800) near king is NOT the same
-                        // as Nxb2 (SEE=-200) on the queenside.
                         if (captureNearKing) {
                             seeThreshold *= 2;
                         }
@@ -1367,10 +1268,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
             }
             else if (!isPromotion) {
-                // Skip aggressive pruning for quiet moves that attack king zone
-                // (e.g., Rh4 threatening Rh8# after Qxg7+ Bf6+),
-                // OR when mate threat is detected,
-                // OR when we're in a violent sacrifice sequence
                 if (!attacksKingZone && !tacticalBypass) {
                     if (depth <= LMP_MAX_DEPTH) {
                         int lmpThresh = lmp_threshold(depth, improving);
@@ -1421,7 +1318,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                             continue;
                         }
                     }
-                } // end !attacksKingZone
+                }
             }
         }
 
@@ -1477,9 +1374,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_RECAPTURE);
         }
 
-        // King zone quiet extension: extend quiet moves by Q/R/B that attack
-        // the enemy king zone (e.g., Rh4 threatening Rh8#)
-        // Full ply extension — these are as forcing as checks in mating attacks
         if (attacksKingZone && currentExtensions < MAX_EXTENSIONS &&
             fractionalExt < FRAC_EXT_SCALE && depth >= 4) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_CHECK);
@@ -1660,12 +1554,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 reduction -= std::clamp(statScore / HISTORY_LMR_DIVISOR,
                                         -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
 
-                // Tactical guard: quiet moves with positive SEE (discovered attacks,
-                // fork setups, etc.) are tactically loaded — reduce LMR
-                if (SEE::see_ge(board, m, PieceValue[PAWN])) {
-                    reduction = std::max(0, reduction - 2);
-                }
-
                 if (cutNode && !ttMove && depth >= 6) {
                     reduction += reduction / (depth + 1);
                 }
@@ -1673,20 +1561,14 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     reduction /= LMR_NMP_THREAT_DIVISOR;
                 }
 
-                // "History of Violence": sharply reduce LMR when inside
-                // a sacrifice combination — every reply matters
                 if (inViolentSequence) {
                     reduction = std::min(reduction, 1);
                 }
 
-                // Reduce LMR for tactical quiet moves (king zone attacks,
-                // discovered attacks, checks) — these are critical lines
                 if (isTacticalQuiet) {
                     reduction = std::max(0, reduction - 2);
                 }
 
-                // When responding to a check, every move is potentially
-                // critical — reduce LMR to avoid missing tactical replies
                 if (inCheck) {
                     reduction = std::max(0, reduction - 1);
                 }
@@ -1698,7 +1580,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                  isCapture && !isPromotion && !givesCheck && !isTTMove &&
                  extension <= 0 && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
-            // Detect captures in the enemy king zone
             Square ekSq_lmr = board.king_square(~us);
             Bitboard ekZone_lmr = king_attacks_bb(ekSq_lmr) | square_bb(ekSq_lmr);
             bool captureNearKing_lmr = (ekZone_lmr & square_bb(m.to())) != 0;
@@ -1706,20 +1587,15 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             reduction = LMR_CAPTURE_REDUCTION;
             lmrApplied = true;
 
-            // Tactical guard: winning captures (SEE >= pawn value) should
-            // NOT be reduced — they represent material gains
             if (SEE::see_ge(board, m, PieceValue[PAWN])) {
                 reduction = 0;
                 lmrApplied = false;
             } else if (!SEE::see_ge(board, m, 0)) {
-                // "Dangerous bad capture" near king: don't add extra reduction
-                // Normal bad capture elsewhere: penalize with +1
                 if (!captureNearKing_lmr) {
                     reduction += 1;
                 }
             }
 
-            // In tactical bypass, captures near king get zero reduction
             if (captureNearKing_lmr && (mateThreat || inViolentSequence)) {
                 reduction = 0;
                 lmrApplied = false;
@@ -1782,7 +1658,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
             }
 
-            // Step 3: Full-window re-search for PV nodes
             if (score > alpha && score < beta) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
@@ -1993,16 +1868,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    // All moves were pruned: bestScore is still -VALUE_INFINITE but this
-    // is NOT checkmate — it's a fail-low caused by over-pruning.
-    // Return alpha to avoid storing a fake mate score in TT.
     if (moveCount > 0 && bestScore == -VALUE_INFINITE) {
         return alpha;
     }
 
-    // Use origAlpha (saved at entry) for correct bound classification.
-    // During the move loop, 'alpha' is raised to bestScore, making
-    // 'bestScore > alpha' always false and preventing BOUND_EXACT.
     Bound bound = bestScore >= beta  ? BOUND_LOWER :
                   bestScore > origAlpha ? BOUND_EXACT : BOUND_UPPER;
 
@@ -2042,8 +1911,6 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         return evaluate(board);
     }
 
-    // Safety: limit QS depth to prevent runaway searches
-    // qsDepth starts at 0 and decreases; if it gets too deep, bail out
     if (UNLIKELY(qsDepth <= -32)) {
         return board.in_check() ? 0 : evaluate(board);
     }
@@ -2173,24 +2040,14 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             bool captureGivesCheck = MoveGen::gives_check(board, m);
 
-            // Delta pruning: skip captures that can't possibly raise alpha
-            // But NEVER prune: promotions, captures that give check, queen captures,
-            // rook captures, or captures with positive SEE (winning captures)
             if (!m.is_promotion() && !captureGivesCheck) {
                 if (capturedPt != QUEEN && capturedPt != ROOK) {
                     if (staticEval + captureValue + DELTA_PRUNING_MARGIN < alpha) {
-                        // Before pruning, check if this capture wins material (SEE >= 0)
-                        // This prevents pruning brilliant sacrifices like Qxh7+ that
-                        // look bad by pure material but win tactically
-                        if (!SEE::see_ge(board, m, 0)) {
-                            continue;
-                        }
+                        continue;
                     }
                 }
             }
 
-            // SEE pruning: skip losing captures (SEE < 0)
-            // NEVER prune captures that win or break even.
             if (capturedPt != QUEEN && !captureGivesCheck && !m.is_promotion()) {
                 if (!SEE::see_ge(board, m, 0)) {
                     continue;
