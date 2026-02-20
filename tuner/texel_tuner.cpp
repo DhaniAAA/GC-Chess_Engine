@@ -1,16 +1,20 @@
 // ============================================================================
-// Texel Tuning Implementation - Ultra-Fast Version (v7)
+// Texel Tuning Implementation - Anti-Overfitting Version (v8)
 // ============================================================================
-// Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K]
+// Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K] [threads]
 //
 // OPTIMIZED APPROACH:
 // 1. Pre-compute base scores for all positions ONCE
 // 2. When testing a parameter change, only recalculate error (not re-evaluate)
 // 3. Use multi-threading to test multiple parameters simultaneously
-// 4. K value minimum clamped to 0.5 to prevent flat sigmoid
+// 4. K value minimum clamped to 0.8 to prevent over-steep sigmoid
 //
-// v7: Expanded to ~200 tunable parameters (mobility, passed pawns,
-//     king safety, pawn structure, piece activity, material imbalance)
+// v8 ANTI-OVERFITTING FEATURES:
+// - K minimum raised to 0.8 (typical chess engines: 1.0-1.4)
+// - L2 regularization: penalizes deviating too far from initial values
+// - Initial value anchoring: tracks how far each param drifts
+// - Deviation report: shows which params changed most
+// - ~320 tunable parameters with monotonicity constraints
 // ============================================================================
 
 #include <iostream>
@@ -47,12 +51,13 @@ unsigned int NUM_THREADS = std::thread::hardware_concurrency();
 struct TunableParam {
     std::string name;
     int* value_ptr;
+    int initial_value;  // v8: anchor for regularization
     int min_val;
     int max_val;
     bool is_mg;
 
     TunableParam(const std::string& n, int* ptr, int min_v, int max_v, bool mg = true)
-        : name(n), value_ptr(ptr), min_val(min_v), max_val(max_v), is_mg(mg) {}
+        : name(n), value_ptr(ptr), initial_value(*ptr), min_val(min_v), max_val(max_v), is_mg(mg) {}
 };
 
 // ============================================================================
@@ -85,6 +90,16 @@ std::vector<TunableParam> params;
 std::vector<TrainingPosition> positions;
 std::vector<MonotonicGroup> monotonic_groups;
 double K = 1.13;
+
+// ============================================================================
+// v8: Regularization Configuration
+// Lambda controls how strongly params are anchored to initial values.
+// Higher lambda = less drift from initial values = less overfitting.
+// 0.0 = no regularization (original behavior)
+// 1e-7 to 1e-6 = light regularization (recommended)
+// 1e-5 = strong regularization (very conservative)
+// ============================================================================
+double REGULARIZATION_LAMBDA = 2e-7;
 
 // ============================================================================
 // Check if all monotonic constraints are satisfied
@@ -403,6 +418,19 @@ void calc_error_worker(size_t start, size_t end, double k, double& partial_error
     partial_error = local_error;
 }
 
+// v8: Calculate L2 regularization penalty
+double calculate_regularization() {
+    if (REGULARIZATION_LAMBDA <= 0.0) return 0.0;
+    double penalty = 0.0;
+    for (const auto& p : params) {
+        double diff = static_cast<double>(*p.value_ptr - p.initial_value);
+        // Scale penalty by parameter magnitude to treat all params fairly
+        double scale = std::max(1.0, std::abs(static_cast<double>(p.initial_value)));
+        penalty += (diff * diff) / (scale * scale);
+    }
+    return REGULARIZATION_LAMBDA * penalty / params.size();
+}
+
 double calculate_error_fast(double k) {
     std::vector<std::thread> threads;
     std::vector<double> partial_errors(NUM_THREADS, 0.0);
@@ -420,7 +448,10 @@ double calculate_error_fast(double k) {
 
     double total = 0.0;
     for (double err : partial_errors) total += err;
-    return total / positions.size();
+    double mse = total / positions.size();
+
+    // v8: Add regularization penalty to prevent overfitting
+    return mse + calculate_regularization();
 }
 
 // ============================================================================
@@ -454,12 +485,14 @@ double find_optimal_k(double manual_k = 0.0) {
     }
 
     std::cout << "Finding optimal K value...\n";
+    std::cout << "  (v8: K range 0.80 - 2.00, typical for chess: 1.0-1.4)\n";
 
     double best_k = 1.13;  // Start with typical value
     double best_error = calculate_error_fast(best_k);
 
-    // Coarse search - start from 0.5 (K < 0.5 is usually too flat)
-    for (double k = 0.5; k <= 2.5; k += 0.1) {
+    // v8: Coarse search - K minimum raised to 0.80
+    // K < 0.8 makes sigmoid too steep and kills small positional terms
+    for (double k = 0.80; k <= 2.00; k += 0.05) {
         double error = calculate_error_fast(k);
         std::cout << "  K = " << std::fixed << std::setprecision(2) << k
                   << ", error = " << std::setprecision(6) << error << "\n";
@@ -469,10 +502,10 @@ double find_optimal_k(double manual_k = 0.0) {
         }
     }
 
-    // Fine search around best K
-    double search_start = std::max(0.5, best_k - 0.1);
-    double search_end = best_k + 0.1;
-    for (double k = search_start; k <= search_end; k += 0.01) {
+    // Fine search around best K (0.01 granularity)
+    double search_start = std::max(0.80, best_k - 0.05);
+    double search_end = std::min(2.00, best_k + 0.05);
+    for (double k = search_start; k <= search_end; k += 0.005) {
         double error = calculate_error_fast(k);
         if (error < best_error) {
             best_error = error;
@@ -480,10 +513,15 @@ double find_optimal_k(double manual_k = 0.0) {
         }
     }
 
-    // Sanity check: K should be between 0.5 and 2.5
-    if (best_k < 0.5) {
-        std::cout << "Warning: Optimal K (" << best_k << ") is too low, clamping to 0.5\n";
-        best_k = 0.5;
+    // v8: Sanity check - K must be in [0.8, 2.0]
+    if (best_k < 0.80) {
+        std::cout << "Warning: Optimal K (" << best_k << ") is too low, clamping to 0.80\n";
+        std::cout << "  K < 0.8 causes steep sigmoid that kills positional terms.\n";
+        best_k = 0.80;
+    }
+    if (best_k > 2.00) {
+        std::cout << "Warning: Optimal K (" << best_k << ") is too high, clamping to 2.00\n";
+        best_k = 2.00;
     }
 
     std::cout << "Optimal K = " << std::fixed << std::setprecision(4) << best_k
@@ -497,11 +535,13 @@ double find_optimal_k(double manual_k = 0.0) {
 // ============================================================================
 
 void tune_parameters(int iterations = 100) {
-    std::cout << "\n=== Starting Texel Tuning (Fast Local Search v7) ===\n";
+    std::cout << "\n=== Starting Texel Tuning (Fast Local Search v8 - Anti-Overfitting) ===\n";
     std::cout << "Threads: " << NUM_THREADS << "\n";
     std::cout << "Iterations: " << iterations << "\n";
     std::cout << "Positions: " << positions.size() << "\n";
     std::cout << "Parameters: " << params.size() << "\n";
+    std::cout << "K value: " << std::fixed << std::setprecision(4) << K << "\n";
+    std::cout << "Regularization lambda: " << std::scientific << REGULARIZATION_LAMBDA << std::fixed << "\n";
     std::cout << "Monotonic groups: " << monotonic_groups.size() << "\n";
     for (const auto& g : monotonic_groups) {
         std::cout << "  - " << g.name << " [" << g.start_idx << ".." << g.end_idx << "]\n";
@@ -509,10 +549,12 @@ void tune_parameters(int iterations = 100) {
     std::cout << "\n";
 
     double best_error = calculate_error_fast(K);
-    std::cout << "Initial error: " << std::fixed << std::setprecision(8) << best_error << "\n\n";
+    std::cout << "Initial error: " << std::fixed << std::setprecision(8) << best_error;
+    std::cout << " (reg: " << std::setprecision(10) << calculate_regularization() << ")\n\n";
     double initial_error = best_error;
 
-    int step = 5;
+    // v8: Start with step=3 (less aggressive than v7's step=5)
+    int step = 3;
     int no_improvement_count = 0;
 
     for (int iter = 1; iter <= iterations; iter++) {
@@ -616,6 +658,33 @@ void tune_parameters(int iterations = 100) {
             break;
         }
     }
+
+    // v8: Print deviation report (which params changed most from initial)
+    std::cout << "\n--- Parameter Deviation Report (v8) ---\n";
+    std::cout << "  Params that moved most from initial values:\n";
+    struct Deviation { std::string name; int initial; int final_val; double pct; };
+    std::vector<Deviation> devs;
+    for (const auto& p : params) {
+        int diff = *p.value_ptr - p.initial_value;
+        if (diff != 0) {
+            double pct = (p.initial_value != 0) ? std::abs(diff * 100.0 / p.initial_value) : 999.0;
+            devs.push_back({p.name, p.initial_value, *p.value_ptr, pct});
+        }
+    }
+    std::sort(devs.begin(), devs.end(), [](const Deviation& a, const Deviation& b) {
+        return std::abs(a.final_val - a.initial) > std::abs(b.final_val - b.initial);
+    });
+    int show_count = std::min(30, (int)devs.size());
+    for (int i = 0; i < show_count; i++) {
+        std::cout << "    " << std::setw(28) << std::left << devs[i].name
+                  << " : " << std::setw(5) << std::right << devs[i].initial
+                  << " -> " << std::setw(5) << devs[i].final_val
+                  << " (" << std::showpos << (devs[i].final_val - devs[i].initial) << std::noshowpos << ")\n";
+    }
+    int unchanged = (int)params.size() - (int)devs.size();
+    std::cout << "  " << unchanged << " / " << params.size() << " params unchanged\n";
+    std::cout << "  " << devs.size() << " / " << params.size() << " params modified\n";
+    std::cout << "  Regularization penalty: " << std::setprecision(10) << calculate_regularization() << "\n\n";
 
     // ====================================================================
     // Print final values (ready to copy into tuning.cpp)
@@ -786,10 +855,10 @@ void tune_parameters(int iterations = 100) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    std::cout << "=================================\n";
-    std::cout << "  GC-Engine Texel Tuner v7\n";
-    std::cout << "  (Extended ~200 Parameters)\n";
-    std::cout << "=================================\n\n";
+    std::cout << "==========================================\n";
+    std::cout << "  GC-Engine Texel Tuner v8\n";
+    std::cout << "  (~320 Params + Anti-Overfitting)\n";
+    std::cout << "==========================================\n\n";
     std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K] [threads]\n";
     std::cout << "  epd_file      : Path to labeled EPD file\n";
     std::cout << "  max_positions : Maximum positions to load (0 = all)\n";
