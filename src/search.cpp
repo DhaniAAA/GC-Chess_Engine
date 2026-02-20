@@ -226,39 +226,9 @@ void Search::check_time() {
         return;
     }
 
-    if (elapsed >= optimumTime) {
-        bool unstable = false;
-
-        if (!rootMoves.empty()) {
-            if (previousRootBestMove != MOVE_NONE && rootBestMove != previousRootBestMove) {
-                unstable = true;
-            }
-
-            if (previousRootScore != VALUE_NONE) {
-                int currentPvScore = rootMoves[0].score;
-
-                bool currentIsMate = std::abs(currentPvScore) >= VALUE_MATE_IN_MAX_PLY;
-                bool previousIsMate = std::abs(previousRootScore) >= VALUE_MATE_IN_MAX_PLY;
-
-                if (currentIsMate && previousIsMate) {
-                    bool sameDirection = (currentPvScore > 0) == (previousRootScore > 0);
-                    if (!sameDirection) {
-                        unstable = true;
-                    }
-                } else if (!currentIsMate && !previousIsMate) {
-                    if (std::abs(currentPvScore - previousRootScore) > 40) {
-                        unstable = true;
-                    }
-                } else {
-                    unstable = true;
-                }
-            }
-        }
-
-        if (!unstable) {
-            stopped = true;
-        }
-    }
+    // optimumTime (soft limit) is now evaluated only between iterations
+    // in iterative_deepening(). Mid-iteration abort here was wasting
+    // the deepest search results and causing TT inaccuracies.
 
     if (limits.nodes > 0 && searchStats.nodes >= limits.nodes) {
         stopped = true;
@@ -521,11 +491,11 @@ void Search::iterative_deepening(Board& board) {
                 if (score <= alpha) {
                     // ========================================================
                     // Fail-Low: Position is worse than expected.
-                    // Widen alpha exponentially. Also bring beta closer to
-                    // center to avoid asymmetric windows.
+                    // Widen alpha exponentially. Do NOT touch beta —
+                    // narrowing beta on fail-low causes ping-pong between
+                    // fail-low and fail-high, wasting search time.
                     // ========================================================
                     failCount++;
-                    beta = (alpha + beta) / 2;
                     delta += delta / 2;
 
                     // If we found a mate score, immediately open to full window
@@ -2023,6 +1993,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
+    // All moves were pruned: bestScore is still -VALUE_INFINITE but this
+    // is NOT checkmate — it's a fail-low caused by over-pruning.
+    // Return alpha to avoid storing a fake mate score in TT.
+    if (moveCount > 0 && bestScore == -VALUE_INFINITE) {
+        return alpha;
+    }
+
     // Use origAlpha (saved at entry) for correct bound classification.
     // During the move loop, 'alpha' is raised to bestScore, making
     // 'bestScore > alpha' always false and preventing BOUND_EXACT.
@@ -2213,11 +2190,9 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
             }
 
             // SEE pruning: skip losing captures (SEE < 0)
-            // But exempt: queen captures, captures that give check, promotions
+            // NEVER prune captures that win or break even.
             if (capturedPt != QUEEN && !captureGivesCheck && !m.is_promotion()) {
-                // Use depth-scaled threshold: deeper QS is more aggressive
-                int seeThreshold = std::min(-1, -50 * qsDepth);
-                if (!SEE::see_ge(board, m, seeThreshold)) {
+                if (!SEE::see_ge(board, m, 0)) {
                     continue;
                 }
             }

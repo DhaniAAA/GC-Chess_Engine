@@ -465,6 +465,7 @@ Move MovePicker::next_move() {
                 if (is_tt_move(m)) continue;
 
                 if (moves[currentIdx - 1].score <= SCORE_EQUAL_CAP + EQUAL_CAP_QUEEN_BONUS) {
+                    currentIdx--;
                     break;
                 }
                 return m;
@@ -607,6 +608,10 @@ Move MovePicker::next_move() {
             while (currentIdx < moves.size()) {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
+                // Stop returning captures once we reach losing captures (SEE < 0).
+                // This prevents QS tree explosion from evaluating suicidal captures
+                // like Queen-takes-guarded-Pawn.
+                if (moves[currentIdx - 1].score <= SCORE_LOSING_CAP + 1000) break;
                 return m;
             }
             ++stage;

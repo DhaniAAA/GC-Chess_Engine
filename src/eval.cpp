@@ -1590,6 +1590,12 @@ int evaluate(const Board& board, int alpha, int beta) {
     score += eval_material_imbalance(board, WHITE);
     score -= eval_material_imbalance(board, BLACK);
 
+    score += eval_pawn_levers(board, WHITE, ctx);
+    score -= eval_pawn_levers(board, BLACK, ctx);
+
+    score += eval_minor_coordination(board, WHITE, ctx);
+    score -= eval_minor_coordination(board, BLACK, ctx);
+
     int mg = score.mg;
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;

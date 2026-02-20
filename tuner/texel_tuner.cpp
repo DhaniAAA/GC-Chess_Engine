@@ -1,5 +1,5 @@
 // ============================================================================
-// Texel Tuning Implementation - Anti-Overfitting Version (v8)
+// Texel Tuning Implementation - Anti-Overfitting Version (v9)
 // ============================================================================
 // Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K] [threads]
 //
@@ -7,13 +7,13 @@
 // 1. Pre-compute base scores for all positions ONCE
 // 2. When testing a parameter change, only recalculate error (not re-evaluate)
 // 3. Use multi-threading to test multiple parameters simultaneously
-// 4. K value minimum clamped to 0.8 to prevent over-steep sigmoid
+// 4. Score normalization: scales eval scores so K operates correctly
 //
-// v8 ANTI-OVERFITTING FEATURES:
-// - K minimum raised to 0.8 (typical chess engines: 1.0-1.4)
-// - L2 regularization: penalizes deviating too far from initial values
-// - Initial value anchoring: tracks how far each param drifts
-// - Deviation report: shows which params changed most
+// v9 KEY IMPROVEMENTS:
+// - Score normalization: ensures sigmoid isn't saturated
+// - K minimum raised to 1.0 (industry standard for chess engines)
+// - Strong L2 regularization (lambda = 5e-6)
+// - Initial value anchoring with deviation report
 // - ~320 tunable parameters with monotonicity constraints
 // ============================================================================
 
@@ -92,14 +92,18 @@ std::vector<MonotonicGroup> monotonic_groups;
 double K = 1.13;
 
 // ============================================================================
-// v8: Regularization Configuration
+// v9: Regularization Configuration
 // Lambda controls how strongly params are anchored to initial values.
 // Higher lambda = less drift from initial values = less overfitting.
 // 0.0 = no regularization (original behavior)
-// 1e-7 to 1e-6 = light regularization (recommended)
-// 1e-5 = strong regularization (very conservative)
+// 5e-6 = moderate regularization (v9 default, prevents zeroing)
+// 1e-4 = very strong regularization
 // ============================================================================
-double REGULARIZATION_LAMBDA = 2e-7;
+double REGULARIZATION_LAMBDA = 5e-6;
+
+// v9: Score normalization factor (computed from data)
+// Divides all eval scores by this factor so sigmoid operates in correct range
+double SCORE_NORMALIZATION = 1.0;
 
 // ============================================================================
 // Check if all monotonic constraints are satisfied
@@ -391,9 +395,41 @@ void precompute_all_scores() {
         thread.join();
     }
 
-    auto end = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(end - start).count();
+    auto end_t = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(end_t - start).count();
     std::cout << "  Done in " << std::fixed << std::setprecision(1) << elapsed << "s\n";
+
+    // v9: Compute score statistics for normalization
+    double sum_abs = 0.0;
+    double sum_sq = 0.0;
+    int max_score = 0;
+    int min_score = 0;
+    for (const auto& pos : positions) {
+        sum_abs += std::abs(pos.base_score);
+        sum_sq += (double)pos.base_score * pos.base_score;
+        if (pos.base_score > max_score) max_score = pos.base_score;
+        if (pos.base_score < min_score) min_score = pos.base_score;
+    }
+    double mean_abs = sum_abs / positions.size();
+    double rms = std::sqrt(sum_sq / positions.size());
+    std::cout << "\n  Score Statistics (v9):\n";
+    std::cout << "    Mean |eval|: " << std::setprecision(1) << mean_abs << "\n";
+    std::cout << "    RMS eval:    " << rms << "\n";
+    std::cout << "    Range:       [" << min_score << ", " << max_score << "]\n";
+
+    // v9: Calculate normalization factor
+    // Target: mean_abs should be around 100-150cp for K=1.0-1.3 to work
+    // If mean_abs is much larger (e.g. 300+), we need to normalize down
+    const double TARGET_MEAN_ABS = 120.0;  // healthy centipawn range
+    if (mean_abs > TARGET_MEAN_ABS * 1.5) {
+        SCORE_NORMALIZATION = mean_abs / TARGET_MEAN_ABS;
+        std::cout << "    *** Scores are inflated! ***\n";
+        std::cout << "    Normalization factor: " << std::setprecision(3) << SCORE_NORMALIZATION << "\n";
+        std::cout << "    Effective mean |eval|: " << std::setprecision(1) << (mean_abs / SCORE_NORMALIZATION) << "\n";
+    } else {
+        SCORE_NORMALIZATION = 1.0;
+        std::cout << "    Scores in healthy range, no normalization needed.\n";
+    }
 }
 
 // ============================================================================
@@ -401,7 +437,9 @@ void precompute_all_scores() {
 // ============================================================================
 
 inline double sigmoid(double score, double k) {
-    return 1.0 / (1.0 + std::pow(10.0, -k * score / 400.0));
+    // v9: apply normalization to bring scores into healthy range for sigmoid
+    double normalized = score / SCORE_NORMALIZATION;
+    return 1.0 / (1.0 + std::pow(10.0, -k * normalized / 400.0));
 }
 
 // ============================================================================
@@ -485,14 +523,13 @@ double find_optimal_k(double manual_k = 0.0) {
     }
 
     std::cout << "Finding optimal K value...\n";
-    std::cout << "  (v8: K range 0.80 - 2.00, typical for chess: 1.0-1.4)\n";
+    std::cout << "  (v9: K range 1.00 - 2.00, normalization = " << std::setprecision(3) << SCORE_NORMALIZATION << ")\n";
 
     double best_k = 1.13;  // Start with typical value
     double best_error = calculate_error_fast(best_k);
 
-    // v8: Coarse search - K minimum raised to 0.80
-    // K < 0.8 makes sigmoid too steep and kills small positional terms
-    for (double k = 0.80; k <= 2.00; k += 0.05) {
+    // v9: Coarse search - K minimum raised to 1.00 (with normalization)
+    for (double k = 1.00; k <= 2.00; k += 0.05) {
         double error = calculate_error_fast(k);
         std::cout << "  K = " << std::fixed << std::setprecision(2) << k
                   << ", error = " << std::setprecision(6) << error << "\n";
@@ -502,8 +539,8 @@ double find_optimal_k(double manual_k = 0.0) {
         }
     }
 
-    // Fine search around best K (0.01 granularity)
-    double search_start = std::max(0.80, best_k - 0.05);
+    // Fine search around best K (0.005 granularity)
+    double search_start = std::max(1.00, best_k - 0.05);
     double search_end = std::min(2.00, best_k + 0.05);
     for (double k = search_start; k <= search_end; k += 0.005) {
         double error = calculate_error_fast(k);
@@ -513,11 +550,10 @@ double find_optimal_k(double manual_k = 0.0) {
         }
     }
 
-    // v8: Sanity check - K must be in [0.8, 2.0]
-    if (best_k < 0.80) {
-        std::cout << "Warning: Optimal K (" << best_k << ") is too low, clamping to 0.80\n";
-        std::cout << "  K < 0.8 causes steep sigmoid that kills positional terms.\n";
-        best_k = 0.80;
+    // v9: Sanity check - K must be in [1.0, 2.0]
+    if (best_k < 1.00) {
+        std::cout << "Warning: Optimal K (" << best_k << ") is too low, clamping to 1.00\n";
+        best_k = 1.00;
     }
     if (best_k > 2.00) {
         std::cout << "Warning: Optimal K (" << best_k << ") is too high, clamping to 2.00\n";
@@ -535,12 +571,13 @@ double find_optimal_k(double manual_k = 0.0) {
 // ============================================================================
 
 void tune_parameters(int iterations = 100) {
-    std::cout << "\n=== Starting Texel Tuning (Fast Local Search v8 - Anti-Overfitting) ===\n";
+    std::cout << "\n=== Starting Texel Tuning (Fast Local Search v9 - Anti-Overfitting) ===\n";
     std::cout << "Threads: " << NUM_THREADS << "\n";
     std::cout << "Iterations: " << iterations << "\n";
     std::cout << "Positions: " << positions.size() << "\n";
     std::cout << "Parameters: " << params.size() << "\n";
     std::cout << "K value: " << std::fixed << std::setprecision(4) << K << "\n";
+    std::cout << "Score normalization: " << std::setprecision(3) << SCORE_NORMALIZATION << "\n";
     std::cout << "Regularization lambda: " << std::scientific << REGULARIZATION_LAMBDA << std::fixed << "\n";
     std::cout << "Monotonic groups: " << monotonic_groups.size() << "\n";
     for (const auto& g : monotonic_groups) {
@@ -856,8 +893,8 @@ void tune_parameters(int iterations = 100) {
 
 int main(int argc, char* argv[]) {
     std::cout << "==========================================\n";
-    std::cout << "  GC-Engine Texel Tuner v8\n";
-    std::cout << "  (~320 Params + Anti-Overfitting)\n";
+    std::cout << "  GC-Engine Texel Tuner v9\n";
+    std::cout << "  (~320 Params + Score Normalization)\n";
     std::cout << "==========================================\n\n";
     std::cout << "Usage: tuner.exe <epd_file> [max_positions] [iterations] [manual_K] [threads]\n";
     std::cout << "  epd_file      : Path to labeled EPD file\n";

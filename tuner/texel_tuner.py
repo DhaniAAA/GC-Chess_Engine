@@ -3,7 +3,7 @@
 Texel Tuner Wrapper for GitHub Actions & Local Use
 ==================================================
 This script builds and runs the high-performance C++ Texel Tuner.
-~320 tunable parameters with monotonicity constraints.
+~320 tunable parameters with score normalization + anti-overfitting (v9).
 
 Usage:
     python tuner/texel_tuner.py [epd_file] [max_positions] [iterations]
