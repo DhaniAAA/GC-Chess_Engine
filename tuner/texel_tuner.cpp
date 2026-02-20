@@ -456,15 +456,15 @@ void calc_error_worker(size_t start, size_t end, double k, double& partial_error
     partial_error = local_error;
 }
 
-// v8: Calculate L2 regularization penalty
+// v9: Calculate L2 regularization penalty
 double calculate_regularization() {
     if (REGULARIZATION_LAMBDA <= 0.0) return 0.0;
     double penalty = 0.0;
     for (const auto& p : params) {
         double diff = static_cast<double>(*p.value_ptr - p.initial_value);
-        // Scale penalty by parameter magnitude to treat all params fairly
-        double scale = std::max(1.0, std::abs(static_cast<double>(p.initial_value)));
-        penalty += (diff * diff) / (scale * scale);
+        // Apply L2 regularization purely on the absolute change (centipawns)
+        // Treating all parameters equally, without scaling by initial value.
+        penalty += (diff * diff);
     }
     return REGULARIZATION_LAMBDA * penalty / params.size();
 }
