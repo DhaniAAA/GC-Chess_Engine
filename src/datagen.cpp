@@ -614,7 +614,7 @@ DataGenConfig parse_config(std::istringstream& is) {
         }
     }
 
-    config.threads = std::max(1, std::min(config.threads, 128));
+    config.threads = std::max(1, std::min(config.threads, 256));
     config.depth = std::max(1, std::min(config.depth, 30));
     config.games = std::max(1, config.games);
     config.random_plies = std::max(0, std::min(config.random_plies, 20));
