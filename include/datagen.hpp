@@ -191,6 +191,8 @@ struct FilterStats {
     size_t filtered_tactical = 0;
     size_t filtered_qsearch = 0;
     size_t filtered_score = 0;
+    size_t filtered_mate = 0;
+    size_t filtered_few_pieces = 0;
     size_t clamped_eval_limit = 0;
 };
 

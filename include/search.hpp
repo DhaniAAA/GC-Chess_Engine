@@ -191,6 +191,8 @@ public:
 
     Move best_move() const { return rootBestMove; }
 
+    int best_score() const { return rootBestScore; }
+
     Move ponder_move() const { return rootPonderMove; }
 
     const SearchStats& stats() const { return searchStats; }
@@ -240,6 +242,7 @@ private:
     Move rootBestMove;
     Move rootPonderMove;
     Move previousRootBestMove;
+    int rootBestScore;
     int previousRootScore;
     int rootDepth;
     int rootPly;
@@ -265,8 +268,6 @@ private:
     SearchStack stack[MAX_PLY + 4];
     Move pvTable[MAX_PLY][MAX_PLY];
     PVLine pvLines[MAX_PLY];
-
-    Move previousMove;
 
     InfoCallback infoCallback = nullptr;
 };

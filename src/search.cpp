@@ -54,9 +54,10 @@ int get_contempt(const Board& board) {
 }
 
 Search::Search() : stopped(false), searching(false), isPondering(false), rootBestMove(MOVE_NONE),
-                   rootPonderMove(MOVE_NONE), previousRootBestMove(MOVE_NONE), previousRootScore(VALUE_NONE),
+                   rootPonderMove(MOVE_NONE), previousRootBestMove(MOVE_NONE), rootBestScore(VALUE_NONE),
+                   previousRootScore(VALUE_NONE),
                    rootDepth(0), rootPly(0), pvIdx(0),
-                   optimumTime(0), maximumTime(0), previousMove(MOVE_NONE) {
+                   optimumTime(0), maximumTime(0) {
     static bool lmr_initialized = false;
     if (!lmr_initialized) {
         init_lmr_table();
@@ -237,6 +238,7 @@ bool Search::should_stop() const {
 void Search::iterative_deepening(Board& board) {
     rootBestMove = MOVE_NONE;
     rootPonderMove = MOVE_NONE;
+    rootBestScore = VALUE_NONE;
     rootPly = board.game_ply();
     pvIdx = 0;
 
@@ -292,6 +294,7 @@ void Search::iterative_deepening(Board& board) {
 
         if (!stopped) {
             rootMoves[0].score = score;
+            rootBestScore = score;
 
             if (rootMoves[0].pv.length == 0) {
                 rootMoves[0].pv.moves[0] = rootMoves[0].move;
@@ -381,19 +384,19 @@ void Search::iterative_deepening(Board& board) {
             Square ekSq_dbg = board.king_square(~stm_dbg);
             Bitboard ekZone_dbg = king_attacks_bb(ekSq_dbg) | square_bb(ekSq_dbg);
 
-            std::cout << "info string === ROOT MOVES depth=" << rootDepth << " ===" << std::endl;
-            for (size_t i = 0; i < rootMoves.size(); ++i) {
-                const auto& rm = rootMoves[i];
-                Move m = rm.move;
-                bool cap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
-                bool chk = MoveGen::gives_check(board, m);
-                bool nrk = (ekZone_dbg & square_bb(m.to())) != 0;
-                std::cout << "info string  [" << i << "] " << move_to_string(m)
-                          << " score=" << rm.score
-                          << " prev=" << rm.previousScore
-                          << " cap=" << cap << " chk=" << chk << " nrk=" << nrk
-                          << std::endl;
-            }
+            // std::cout << "info string === ROOT MOVES depth=" << rootDepth << " ===" << std::endl;
+            // for (size_t i = 0; i < rootMoves.size(); ++i) {
+            //     const auto& rm = rootMoves[i];
+            //     Move m = rm.move;
+            //     bool cap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
+            //     bool chk = MoveGen::gives_check(board, m);
+            //     bool nrk = (ekZone_dbg & square_bb(m.to())) != 0;
+            //     std::cout << "info string  [" << i << "] " << move_to_string(m)
+            //               << " score=" << rm.score
+            //               << " prev=" << rm.previousScore
+            //               << " cap=" << cap << " chk=" << chk << " nrk=" << nrk
+            //               << std::endl;
+            // }
         }
 
         std::vector<RootMove> rootMovesBackup = rootMoves;
@@ -608,16 +611,19 @@ void Search::iterative_deepening(Board& board) {
                 Move candidate = bestRM.pv.moves[0];
                 if (MoveGen::is_pseudo_legal(board, candidate) && MoveGen::is_legal(board, candidate)) {
                     rootBestMove = candidate;
+                    rootBestScore = bestRM.score;
                 }
             } else if (bestRM.move != MOVE_NONE &&
                        MoveGen::is_pseudo_legal(board, bestRM.move) &&
                        MoveGen::is_legal(board, bestRM.move)) {
                 rootBestMove = bestRM.move;
+                rootBestScore = bestRM.score;
             }
             else if (overallBestMove != MOVE_NONE &&
                      MoveGen::is_pseudo_legal(board, overallBestMove) &&
                      MoveGen::is_legal(board, overallBestMove)) {
                 rootBestMove = overallBestMove;
+                rootBestScore = overallBestScore;
             }
 
             rootPonderMove = MOVE_NONE;
@@ -831,6 +837,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     ss->cutoffCnt = 0;
 
+    Move previousMove = ply >= 0 ? stack[ply + 1].currentMove : MOVE_NONE;
+
     if (depth <= 0) {
         return qsearch(board, alpha, beta, 0);
     }
@@ -953,7 +961,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
+    if (!pvNode && !inCheck && depth <= RAZORING_MAX_DEPTH && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
         int razorMarg = razoring_margin(predictedDepth);
 
@@ -1189,12 +1197,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             int elapsed = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
             );
-            if (elapsed > 3000) {
-                std::cout << "info depth " << depth
-                          << " currmove " << move_to_string(m)
-                          << " currmovenumber " << moveCount
-                          << std::endl;
-            }
+            // if (elapsed > 3000) {
+            //     std::cout << "info depth " << depth
+            //               << " currmove " << move_to_string(m)
+            //               << " currmovenumber " << moveCount
+            //               << std::endl;
+            // }
         }
 
         bool isCapture = !board.empty(m.to()) || m.is_enpassant();
@@ -1205,6 +1213,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         Piece movedPiece = board.piece_on(m.from());
         PieceType movedPt = type_of(movedPiece);
         Color us = board.side_to_move();
+
+        ss->currentMove = m;
 
         bool attacksKingZone = false;
         bool isDiscoveredAttack = false;
@@ -1250,7 +1260,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
                         int seeThreshold;
                         if (capturedType >= PAWN && capturedType <= QUEEN) {
-                            seeThreshold = improving ? -100 * depth : -80 * depth;
+                            seeThreshold = improving ? -120 * depth : -100 * depth;
                         } else {
                             seeThreshold = improving ?
                                 -SEE_CAPTURE_IMPROVING_FACTOR * depth :
@@ -1258,7 +1268,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         }
 
                         if (captureNearKing) {
-                            seeThreshold *= 2;
+                            seeThreshold *= 3;
                         }
 
                         if (!isTTMove && !SEE::see_ge(board, m, seeThreshold)) {
@@ -1856,14 +1866,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (inCheck) {
             return -VALUE_MATE + ply;
         } else {
-
-            MoveList verifyMoves;
-            MoveGen::generate_legal(board, verifyMoves);
-
-            if (verifyMoves.size() == 0) {
-                return 0;
-            } else {
+            if (ss->excludedMove != MOVE_NONE) {
                 return alpha;
+            } else {
+                return 0;
             }
         }
     }
@@ -1941,7 +1947,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         MoveGen::generate_evasions(board, moves);
     } else {
         MoveGen::generate_captures(board, moves);
-
+        // Jangan di ubah ke qsDepth >= -1, atau akan lambat dan meledak nodes
         if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= -1) {
             MoveGen::generate_checking_moves(board, quietChecks);
         }
@@ -2122,21 +2128,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     }
 
     if (inCheck && legalMoveCount == 0) {
-
-        MoveList evasions;
-        MoveGen::generate_evasions(board, evasions);
-
-        bool hasLegalEvasion = false;
-        for (size_t i = 0; i < evasions.size(); ++i) {
-            if (MoveGen::is_legal(board, evasions[i].move)) {
-                hasLegalEvasion = true;
-                break;
-            }
-        }
-
-        if (!hasLegalEvasion) {
-            return -VALUE_MATE + ply;
-        }
+        return -VALUE_MATE + ply;
     }
 
     return bestScore;

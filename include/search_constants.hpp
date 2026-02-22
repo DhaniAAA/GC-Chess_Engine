@@ -31,7 +31,7 @@ inline int rfp_margin(int depth, bool improving) {
 // ============================================================================
 
 constexpr int FUTILITY_MAX_DEPTH = 6;
-constexpr int RAZORING_MAX_DEPTH = 3;
+constexpr int RAZORING_MAX_DEPTH = 1;
 constexpr int RFP_MAX_DEPTH = 9;
 constexpr int LMP_MAX_DEPTH = 7;
 constexpr int SEE_QUIET_MAX_DEPTH = 3;
@@ -109,11 +109,7 @@ constexpr int IIR_REDUCTION = 1;
 constexpr int IIR_PV_REDUCTION = 1;
 constexpr int IIR_CUT_REDUCTION = 2;
 
-// ============================================================================
-// Quiescence Search Parameters
-// ============================================================================
-
-constexpr int QSEARCH_CHECK_DEPTH = -2;
+constexpr int QSEARCH_CHECK_DEPTH = 0;
 constexpr int DELTA_PRUNING_MARGIN = 650;
 
 // ============================================================================
@@ -125,7 +121,7 @@ constexpr int DELTA_PRUNING_MARGIN = 650;
 constexpr double LMR_BASE      = 0.78;      // dari 0.85 → lebih aman
 constexpr double LMR_DIVISOR   = 1.68;      // dari 1.5  → lebih halus
 
-constexpr int LMR_MIN_DEPTH        = 4;     // naik dari 3
+constexpr int LMR_MIN_DEPTH        = 3;     // naik dari 4
 constexpr int LMR_CUTNODE_BONUS    = 2;     // turun dari 3
 constexpr int LMR_CUTOFF_CNT_BONUS = 1;
 constexpr int LMR_ALLNODE_SCALE    = 1;

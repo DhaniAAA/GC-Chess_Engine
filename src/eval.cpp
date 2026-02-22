@@ -1567,8 +1567,8 @@ int evaluate(const Board& board, int alpha, int beta) {
         int lazyScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
         lazyScore = board.side_to_move() == WHITE ? lazyScore : -lazyScore;
 
-        constexpr int LAZY_MARGIN = 600;
-        if (lazyScore >= beta + LAZY_MARGIN || lazyScore <= alpha - LAZY_MARGIN) {
+        constexpr int LAZY_MARGIN = 700;
+        if (lazyScore >= beta + LAZY_MARGIN) {
             return lazyScore;
         }
     }

@@ -302,7 +302,8 @@ void MovePicker::score_captures() {
             }
         } else {
             if (MoveGen::gives_check(board, m)) {
-                sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
+                sm.score = SCORE_WINNING_CAP + see_value + 1000;
+                badCaptures.add(m, sm.score);
             } else {
                 sm.score = SCORE_LOSING_CAP + see_value;
                 if (captureHist && captured != NO_PIECE) {

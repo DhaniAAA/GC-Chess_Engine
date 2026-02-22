@@ -280,27 +280,46 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
             return GameResult::draw;
         }
 
-        int static_eval;
-        Move best_move = select_search_move(board, static_eval, thread_id);
+        // search_score adalah STM-relative (positif = bagus untuk pemain yang bergerak)
+        int search_score;
+        Move best_move = select_search_move(board, search_score, thread_id);
 
         if (best_move == MOVE_NONE) {
             best_move = moves[0].move;
-            static_eval = 0;
+            search_score = 0;
         }
 
-        if (should_record_position(board, static_eval, static_eval, ply, best_move, thread_id)) {
-            entries.push_back(encode_position(board, static_eval, GameResult::ongoing));
+        // Hitung static eval terpisah untuk filtering (juga STM-relative)
+        int static_eval = m_searchers[thread_id]->evaluate(board);
+
+        // Konversi search_score ke perspektif WHITE untuk disimpan di binpack
+        int score_white = (board.side_to_move() == WHITE) ? search_score : -search_score;
+
+        if (should_record_position(board, static_eval, search_score, ply, best_move, thread_id)) {
+            entries.push_back(encode_position(board, score_white, GameResult::ongoing));
             m_stats.positions_generated++;
         } else {
             m_stats.positions_filtered++;
         }
 
-        int abs_score = std::abs(static_eval);
+        // Jika search menemukan forced mate, langsung adjudicate
+        // (tidak perlu tunggu adjudicate_count berturut-turut)
+        if (std::abs(search_score) >= VALUE_MATE_IN_MAX_PLY) {
+            bool stm_wins = search_score > 0;
+            bool white_wins = (board.side_to_move() == WHITE) ? stm_wins : !stm_wins;
+            return white_wins ? GameResult::white_wins : GameResult::black_wins;
+        }
+
+        // search_score STM-relative: positif = pemain yang bergerak menang
+        int abs_score = std::abs(search_score);
 
         if (abs_score >= m_config.adjudicate_score) {
             adjudicate_count++;
             if (adjudicate_count >= m_config.adjudicate_count) {
-                return static_eval > 0 ? GameResult::white_wins : GameResult::black_wins;
+                // search_score > 0 berarti STM menang
+                bool stm_wins = search_score > 0;
+                bool white_wins = (board.side_to_move() == WHITE) ? stm_wins : !stm_wins;
+                return white_wins ? GameResult::white_wins : GameResult::black_wins;
             }
         } else {
             adjudicate_count = 0;
@@ -348,8 +367,15 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
     Search& searcher = *m_searchers[thread_id];
     searcher.start(board, limits);
 
-    score = searcher.evaluate(board);
+    // Ambil search score dari iterative deepening (STM-relative)
+    // BUKAN searcher.evaluate(board) yang hanya static eval!
+    score = searcher.best_score();
     Move best = searcher.best_move();
+
+    // Fallback jika score tidak tersedia
+    if (score == VALUE_NONE) {
+        score = searcher.evaluate(board);
+    }
 
     return best;
 }
@@ -367,6 +393,18 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
         return false;
     }
 
+    // [MODERN] Skip posisi dengan mate score — NNUE tidak bisa representasikan infinity.
+    // search_score dari alpha-beta, jika >= VALUE_MATE_IN_MAX_PLY berarti forced mate.
+    if (std::abs(search_score) >= VALUE_MATE_IN_MAX_PLY) {
+        return false;
+    }
+
+    // [MODERN] Skip posisi dengan terlalu sedikit piece (KvK, KvKP, etc)
+    // Endgame trivial lebih baik ditangani tablebase, bukan NNUE.
+    if (popcount(board.pieces()) <= 3) {
+        return false;
+    }
+
     if (m_config.skip_captures && best_move != MOVE_NONE && board.is_capture(best_move)) {
         return false;
     }
@@ -379,9 +417,12 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
 
     if (m_config.qsearch_margin > 0) {
         Search& searcher = *m_searchers[thread_id];
-        int qsearch_score = searcher.qsearch_score(board);
+        int qscore = searcher.qsearch_score(board);   // White perspective
 
-        int qsearch_diff = std::abs(static_eval - qsearch_score);
+        // static_eval adalah STM-relative, konversi ke White agar apple-to-apple
+        int static_eval_white = (board.side_to_move() == WHITE) ? static_eval : -static_eval;
+
+        int qsearch_diff = std::abs(static_eval_white - qscore);
         if (qsearch_diff > m_config.qsearch_margin) {
             return false;
         }
