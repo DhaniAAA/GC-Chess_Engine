@@ -112,15 +112,35 @@ void DataGenerator::run() {
     std::cout << "Threads       : " << m_config.threads << std::endl;
     std::cout << "Hash          : " << m_config.hash_mb << " MB" << std::endl;
     std::cout << "Depth         : " << m_config.depth << std::endl;
+    if (m_config.nodes > 0) {
+        std::cout << "Nodes limit   : " << m_config.nodes << std::endl;
+    } else if (m_config.soft_nodes > 0) {
+        std::cout << "Soft nodes    : " << m_config.soft_nodes << std::endl;
+    } else {
+        std::cout << "Nodes limit   : unlimited (pure depth)" << std::endl;
+    }
     std::cout << "Games target  : " << m_config.games << std::endl;
     std::cout << "Opening book  : " << (m_config.use_book && book_loaded ?
                                         m_config.book_path + " (loaded, depth " + std::to_string(m_config.book_depth) + ")" :
                                         "disabled") << std::endl;
     std::cout << "Random plies  : " << m_config.random_plies << std::endl;
+    std::cout << "MultiPV       : " << m_config.random_multi_pv
+              << (m_config.random_multi_pv > 1 ? " (top-N eval-scored)" : " (pure random)") << std::endl;
     std::cout << "QSearch margin: " << m_config.qsearch_margin << " cp" << std::endl;
     std::cout << "Search margin : " << m_config.search_margin << " cp" << std::endl;
     std::cout << "Max score     : " << m_config.max_score << " cp" << std::endl;
     std::cout << "Eval limit    : " << (m_config.eval_limit > 0 ? std::to_string(m_config.eval_limit) + " cp" : "disabled") << std::endl;
+    {
+        bool pure = m_config.score_lambda > 1.0f - 1e-6f;
+        bool full_result = m_config.score_lambda < 1e-6f;
+        std::cout << "Score lambda  : " << std::fixed << std::setprecision(2) << m_config.score_lambda;
+        if (pure)              std::cout << " (pure search score)";
+        else if (full_result)  std::cout << " (pure game result)";
+        else                   std::cout << " [WDL MIXING AKTIF]";
+        std::cout << std::endl;
+        if (!pure) std::cout << "WDL scale     : " << m_config.wdl_scale << " cp" << std::endl;
+    }
+    std::cout << "Rule50 decay  : " << (m_config.use_rule50_decay ? "enabled" : "disabled") << std::endl;
     std::cout << "Format        : binpack" << std::endl;
     std::cout << "Output        : " << m_config.output << std::endl;
     std::cout << "================================\n" << std::endl;
@@ -205,19 +225,56 @@ void DataGenerator::worker_thread(int thread_id) {
         }
 
         for (auto& entry : local_entries) {
+            // [1] Assign result label + WDL ground-truth untuk mixing
+            float wdl_result = 0.5f;
             switch (result) {
-                case GameResult::white_wins:
-                    entry.result = 2;
-                    break;
-                case GameResult::black_wins:
-                    entry.result = 0;
-                    break;
-                case GameResult::draw:
-                    entry.result = 1;
-                    break;
-                default:
-                    entry.result = 1;
-                    break;
+                case GameResult::white_wins: entry.result = 2; wdl_result = 1.0f; break;
+                case GameResult::black_wins: entry.result = 0; wdl_result = 0.0f; break;
+                case GameResult::draw:       entry.result = 1; wdl_result = 0.5f; break;
+                default:                     entry.result = 1; wdl_result = 0.5f; break;
+            }
+
+            // [2] Score Mixing (Lambda-weighted WDL) + Rule50 Decay
+            //
+            // Standar modern NNUE training:
+            //   target_wdl = λ * sigmoid(search_score / scale)
+            //              + (1-λ) * game_result_wdl
+            //
+            // Score disimpan kembali ke centipawns via logit transform
+            // sehingga kompatibel dengan trainer yang menggunakan centipawns.
+            const bool do_mix = m_config.score_lambda < 1.0f - 1e-6f;
+            const bool do_r50 = m_config.use_rule50_decay && entry.rule50 > 0;
+
+            if (do_mix || do_r50) {
+                float cp = static_cast<float>(entry.score);
+
+                // Rule50 decay: kurangi kepastian eval mendekati 50-move draw.
+                // Posisi rule50=49 diharapkan draw, lepas dari material.
+                if (do_r50) {
+                    float decay = (100.0f - static_cast<float>(entry.rule50)) / 100.0f;
+                    cp *= decay;
+                }
+
+                if (do_mix) {
+                    const float scale = static_cast<float>(m_config.wdl_scale);
+
+                    // Konversi search score ke WDL probability via sigmoid
+                    float wdl_eval = 1.0f / (1.0f + std::exp(-cp / scale));
+
+                    // Mix: λ * eval_wdl + (1-λ) * result_wdl
+                    float mixed_wdl = m_config.score_lambda * wdl_eval
+                                    + (1.0f - m_config.score_lambda) * wdl_result;
+
+                    // Clamp sebelum logit untuk cegah ±infinity
+                    mixed_wdl = std::clamp(mixed_wdl, 1e-6f, 1.0f - 1e-6f);
+
+                    // Konversi balik ke centipawns via inverse sigmoid (logit)
+                    cp = std::log(mixed_wdl / (1.0f - mixed_wdl)) * scale;
+                }
+
+                entry.score = static_cast<int16_t>(
+                    std::clamp(static_cast<int>(std::round(cp)), -32000, 32000)
+                );
             }
         }
 
@@ -252,7 +309,12 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
 
     int random_moves_made = 0;
     while (random_moves_made < m_config.random_plies && state_idx < 510) {
-        Move m = select_random_move(board, thread_id);
+        // Jika random_multi_pv > 1: pilih dari top-N moves (lebih beragam tapi sane)
+        // Jika random_multi_pv <= 1: pilih move acak dari semua legal moves
+        Move m = (m_config.random_multi_pv > 1)
+                 ? select_multipv_move(board, thread_id)
+                 : select_random_move(board, thread_id);
+
         if (m == MOVE_NONE) {
             if (board.in_check()) {
                 return board.side_to_move() == WHITE ? GameResult::black_wins : GameResult::white_wins;
@@ -270,6 +332,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         MoveGen::generate_legal(board, moves);
 
         if (moves.size() == 0) {
+            m_stats.total_plies += ply;
             if (board.in_check()) {
                 return board.side_to_move() == WHITE ? GameResult::black_wins : GameResult::white_wins;
             }
@@ -277,6 +340,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         }
 
         if (board.is_draw(ply)) {
+            m_stats.total_plies += ply;
             return GameResult::draw;
         }
 
@@ -305,6 +369,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         // Jika search menemukan forced mate, langsung adjudicate
         // (tidak perlu tunggu adjudicate_count berturut-turut)
         if (std::abs(search_score) >= VALUE_MATE_IN_MAX_PLY) {
+            m_stats.total_plies += ply;
             bool stm_wins = search_score > 0;
             bool white_wins = (board.side_to_move() == WHITE) ? stm_wins : !stm_wins;
             return white_wins ? GameResult::white_wins : GameResult::black_wins;
@@ -316,6 +381,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         if (abs_score >= m_config.adjudicate_score) {
             adjudicate_count++;
             if (adjudicate_count >= m_config.adjudicate_count) {
+                m_stats.total_plies += ply;
                 // search_score > 0 berarti STM menang
                 bool stm_wins = search_score > 0;
                 bool white_wins = (board.side_to_move() == WHITE) ? stm_wins : !stm_wins;
@@ -328,6 +394,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         if (ply >= m_config.adjudicate_draw_ply && abs_score < m_config.adjudicate_draw) {
             draw_count++;
             if (draw_count >= m_config.adjudicate_draw_count) {
+                m_stats.total_plies += ply;
                 return GameResult::draw;
             }
         } else {
@@ -353,6 +420,58 @@ Move DataGenerator::select_random_move(Board& board, int thread_id) {
 
     int idx = rand_int(thread_id, moves.size());
     return moves[idx].move;
+}
+
+// Pilih move secara acak dari top-N moves berdasarkan quick static eval.
+// Ini menghasilkan opening yang lebih beragam dibanding pure random (semua legal move)
+// tapi lebih sane dibanding hanya memilih best move.
+// Setiap move di-make, di-eval dengan static eval, lalu di-undo.
+Move DataGenerator::select_multipv_move(Board& board, int thread_id) {
+    MoveList moves;
+    MoveGen::generate_legal(board, moves);
+
+    if (moves.size() == 0) {
+        return MOVE_NONE;
+    }
+
+    int n = std::min(m_config.random_multi_pv, static_cast<int>(moves.size()));
+    if (n <= 1) {
+        // Fallback ke pure random jika n <= 1
+        return moves[rand_int(thread_id, moves.size())].move;
+    }
+
+    // Score setiap move dengan static eval setelah make-move
+    struct ScoredMove {
+        Move move;
+        int  score;
+    };
+
+    std::vector<ScoredMove> scored;
+    scored.reserve(moves.size());
+
+    Search& searcher = *m_searchers[thread_id];
+    StateInfo si;
+
+    for (const auto& em : moves) {
+        board.do_move(em.move, si);
+        // Negasi karena evaluate() adalah STM-relative:
+        // setelah do_move, STM = lawan kita, jadi eval positif = buruk buat kita
+        int score = -searcher.evaluate(board);
+        board.undo_move(em.move);
+        scored.push_back({em.move, score});
+    }
+
+    // Partial sort — hanya perlu top-N, bukan sort semua
+    std::partial_sort(
+        scored.begin(),
+        scored.begin() + n,
+        scored.end(),
+        [](const ScoredMove& a, const ScoredMove& b) { return a.score > b.score; }
+    );
+
+    // Pilih secara uniform dari top-N
+    int idx = rand_int(thread_id, n);
+    return scored[idx].move;
 }
 
 Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) {
@@ -502,11 +621,10 @@ void DataGenerator::write_entries(const std::vector<TrainingEntry>& entries) {
         }
     }
 
-    static std::atomic<uint64_t> write_count{0};
-    write_count += entries.size();
-    if (write_count >= static_cast<uint64_t>(m_config.flush_interval)) {
+    m_write_count += entries.size();
+    if (m_write_count >= static_cast<uint64_t>(m_config.flush_interval)) {
         if (m_output.is_open()) m_output.flush();
-        write_count = 0;
+        m_write_count = 0;
     }
 }
 
@@ -541,8 +659,9 @@ void start(const DataGenConfig& config) {
 
     g_generator = std::make_unique<DataGenerator>(config);
 
-    std::thread([config]() {
-        g_generator->run();
+    DataGenerator* gen_ptr = g_generator.get();
+    std::thread([gen_ptr]() {
+        gen_ptr->run();
     }).detach();
 }
 
@@ -578,6 +697,8 @@ DataGenConfig parse_config(std::istringstream& is) {
             is >> config.depth;
         } else if (token == "nodes") {
             is >> config.nodes;
+        } else if (token == "softnodes" || token == "soft_nodes") {
+            is >> config.soft_nodes;
         } else if (token == "games") {
             is >> config.games;
         } else if (token == "random") {
@@ -611,6 +732,18 @@ DataGenConfig parse_config(std::istringstream& is) {
             config.skip_in_check = false;
         } else if (token == "no_tactical_filter") {
             config.skip_tactical_bestmove = false;
+        } else if (token == "multipv") {
+            is >> config.random_multi_pv;
+        } else if (token == "lambda" || token == "wdl_lambda" || token == "score_lambda") {
+            is >> config.score_lambda;
+            config.score_lambda = std::clamp(config.score_lambda, 0.0f, 1.0f);
+        } else if (token == "wdl_scale") {
+            is >> config.wdl_scale;
+            config.wdl_scale = std::max(1, config.wdl_scale);
+        } else if (token == "rule50_decay") {
+            config.use_rule50_decay = true;
+        } else if (token == "no_rule50_decay") {
+            config.use_rule50_decay = false;
         }
     }
 
@@ -620,6 +753,7 @@ DataGenConfig parse_config(std::istringstream& is) {
     config.random_plies = std::max(0, std::min(config.random_plies, 20));
     config.book_depth = std::max(0, std::min(config.book_depth, 30));
     config.hash_mb = std::max(1, std::min(config.hash_mb, 32768));
+    config.random_multi_pv = std::max(1, std::min(config.random_multi_pv, 64));
 
     return config;
 }
@@ -884,12 +1018,14 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "Total entries: " << total_entries << std::endl;
     std::cout << "Filters:" << std::endl;
     std::cout << "  skip_in_check  : " << (config.skip_in_check ? "true" : "false") << std::endl;
+    std::cout << "  skip_tactical  : " << (config.skip_tactical_bestmove ? "true (depth=" + std::to_string(config.tactical_search_depth) + ")" : "false") << std::endl;
     std::cout << "  qsearch_margin : " << config.qsearch_margin << " cp" << std::endl;
     std::cout << "  max_score      : " << config.max_score << " cp" << std::endl;
     std::cout << "  eval_limit     : " << (config.eval_limit > 0 ? std::to_string(config.eval_limit) + " cp" : "disabled") << std::endl;
     std::cout << "==============================" << std::endl;
 
     std::unique_ptr<Search> searcher = std::make_unique<Search>();
+    searcher->set_silent(true);
 
     stats = FilterStats{};
     auto start_time = std::chrono::steady_clock::now();
@@ -909,23 +1045,55 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
 
             int stored_score = entry.score;
 
+            // [1] Filter: posisi dengan terlalu sedikit piece (KvK, KvKP, dll)
+            // Endgame trivial lebih baik ditangani tablebase, bukan NNUE.
+            if (popcount(board.pieces()) <= 3) {
+                stats.filtered_few_pieces++;
+                continue;
+            }
+
+            // [2] Filter: posisi dalam check
             if (config.skip_in_check && board.in_check()) {
                 stats.filtered_check++;
                 continue;
             }
 
+            // [3] Filter: mate score — NNUE tidak bisa representasikan
+            if (std::abs(stored_score) >= VALUE_MATE_IN_MAX_PLY) {
+                stats.filtered_mate++;
+                continue;
+            }
+
+            // [4] Filter: skor terlalu ekstrem
             if (std::abs(stored_score) > config.max_score) {
                 stats.filtered_score++;
                 continue;
             }
 
+            // [5] Filter: qsearch stability
+            // BUGFIX: static_eval (STM-relative) dikonversi ke White-perspective
+            // agar perbandingan apple-to-apple dengan qsearch_score (White-perspective)
             if (config.qsearch_margin > 0) {
-                int static_eval = searcher->evaluate(board);
-
-                int qsearch_score = searcher->qsearch_score(board);
-                int qsearch_diff = std::abs(static_eval - qsearch_score);
+                int static_eval_stm = searcher->evaluate(board);       // STM-relative
+                int qsearch_score   = searcher->qsearch_score(board);  // White-perspective
+                int static_eval_white = (board.side_to_move() == WHITE)
+                                        ? static_eval_stm : -static_eval_stm;
+                int qsearch_diff = std::abs(static_eval_white - qsearch_score);
                 if (qsearch_diff > config.qsearch_margin) {
                     stats.filtered_qsearch++;
+                    continue;
+                }
+            }
+
+            // [6] Filter: tactical bestmove (capture/promosi sebagai best move)
+            // Catatan: Membutuhkan search — aktifkan dengan token "tactical_filter".
+            if (config.skip_tactical_bestmove) {
+                SearchLimits limits;
+                limits.depth = config.tactical_search_depth;
+                searcher->start(board, limits);
+                Move best = searcher->best_move();
+                if (best != MOVE_NONE && (board.is_capture(best) || best.is_promotion())) {
+                    stats.filtered_tactical++;
                     continue;
                 }
             }
@@ -980,8 +1148,11 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
               << " (" << std::setprecision(1) << (100.0 * stats.passed / stats.total_read) << "%)" << std::endl;
     std::cout << "Filtered by:" << std::endl;
     std::cout << "  In-check     : " << stats.filtered_check << std::endl;
+    std::cout << "  Mate score   : " << stats.filtered_mate << std::endl;
+    std::cout << "  Few pieces   : " << stats.filtered_few_pieces << std::endl;
     std::cout << "  Extreme score: " << stats.filtered_score << std::endl;
     std::cout << "  QSearch      : " << stats.filtered_qsearch << std::endl;
+    std::cout << "  Tactical     : " << stats.filtered_tactical << std::endl;
     if (config.eval_limit > 0) {
         std::cout << "Clamped by eval_limit: " << stats.clamped_eval_limit << std::endl;
     }
@@ -1002,7 +1173,7 @@ FilterConfig parse_filter_config(std::istringstream& is) {
             is >> config.output_path;
         } else if (token == "threads") {
             is >> config.threads;
-        } else if (token == "on" || token == "qsearch") {
+        } else if (token == "qsearch" || token == "qsearch_margin") {
             is >> config.qsearch_margin;
         } else if (token == "max_score" || token == "maxscore") {
             is >> config.max_score;
@@ -1010,8 +1181,12 @@ FilterConfig parse_filter_config(std::istringstream& is) {
             is >> config.eval_limit;
         } else if (token == "no_check_filter") {
             config.skip_in_check = false;
+        } else if (token == "tactical_filter") {
+            config.skip_tactical_bestmove = true;
         } else if (token == "no_tactical_filter") {
             config.skip_tactical_bestmove = false;
+        } else if (token == "tactical_depth") {
+            is >> config.tactical_search_depth;
         }
     }
 

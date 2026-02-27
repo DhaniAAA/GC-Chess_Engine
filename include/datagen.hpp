@@ -61,6 +61,17 @@ struct DataGenConfig {
     int qsearch_margin = 60;
     int search_margin = 70;
 
+    // === Score Mixing (Lambda-weighted WDL) ===
+    // Standar modern: gabungkan search eval dengan game result dalam WDL probability space.
+    //   score_lambda = 1.0 : pure search score (default, backward compatible)
+    //   score_lambda = 0.5 : campuran 50% eval + 50% game result (direkomendasikan)
+    //   score_lambda = 0.0 : pure game result
+    float score_lambda = 1.0f;
+    int   wdl_scale    = 400;   // Centipawn scale sigmoid: sigmoid(cp/scale)
+                                // ~400 cp = ~73% win probability (referensi: Stockfish model)
+    bool  use_rule50_decay = false; // Scale eval dengan (100-rule50)/100 sebelum mixing
+                                    // Mengajarkan NNUE bahwa posisi mendekati 50-move draw = netral
+
     std::string output = "data/training.binpack";
     int flush_interval = 10000;
 
@@ -121,6 +132,7 @@ private:
 
     std::ofstream m_output;
     std::mutex m_output_mutex;
+    uint64_t m_write_count = 0;
 
     void worker_thread(int thread_id);
     GameResult play_game(std::vector<TrainingEntry>& entries, int thread_id);
@@ -128,6 +140,7 @@ private:
     TrainingEntry encode_position(const Board& board, int score, GameResult result);
 
     Move select_random_move(Board& board, int thread_id);
+    Move select_multipv_move(Board& board, int thread_id);
     Move select_search_move(Board& board, int& score, int thread_id);
 
     bool should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id);
@@ -175,7 +188,8 @@ struct FilterConfig {
     int threads = 1;
 
     bool skip_in_check = true;
-    bool skip_tactical_bestmove = true;
+    bool skip_tactical_bestmove = false;  // Expensive for post-hoc; enable with "tactical_filter" token
+    int tactical_search_depth = 1;        // Depth search untuk tactical filter post-hoc
     int qsearch_margin = 60;
     int search_margin = 0;
     int max_score = 2500;
