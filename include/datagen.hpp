@@ -14,6 +14,67 @@
 
 namespace DataGen {
 
+// ============================================================================
+// ZobristHashSet — Open-addressing flat hash table untuk deduplication.
+// Jauh lebih hemat RAM vs std::unordered_set:
+//   std::unordered_set: ~40 bytes/elemen (node-based, heap alloc per entry)
+//   ZobristHashSet    :  ~8 bytes/elemen (flat array of uint64_t)
+// Untuk 100M posisi: 800MB vs ~4GB — hemat 5x!
+//
+// Menggunakan linear probing dengan load factor 50%.
+// Sentinel: 0 = empty slot, UINT64_MAX = reserved (jangan masukkan key ini).
+// ============================================================================
+class ZobristHashSet {
+public:
+    explicit ZobristHashSet(size_t capacity = 0) {
+        if (capacity > 0) {
+            // Round up ke power-of-2 untuk bitmask
+            size_t sz = 1;
+            while (sz < capacity * 2) sz <<= 1;  // Load factor 50%
+            m_table.assign(sz, EMPTY);
+            m_mask = sz - 1;
+        }
+    }
+
+    // Coba insert key. Return true jika berhasil (belum ada), false jika duplikat.
+    bool insert(uint64_t key) {
+        if (m_table.empty()) return true;  // Disabled mode: always pass
+        if (key == EMPTY) key = EMPTY_ALT; // Remap sentinel
+
+        size_t idx = hash(key) & m_mask;
+        while (true) {
+            uint64_t slot = m_table[idx];
+            if (slot == EMPTY) {
+                m_table[idx] = key;
+                return true;   // Posisi baru
+            }
+            if (slot == key) {
+                return false;  // Duplikat
+            }
+            idx = (idx + 1) & m_mask;  // Linear probing
+        }
+    }
+
+    void clear() {
+        std::fill(m_table.begin(), m_table.end(), EMPTY);
+    }
+
+    size_t capacity() const { return m_table.size(); }
+    size_t memory_bytes() const { return m_table.size() * sizeof(uint64_t); }
+
+private:
+    static constexpr uint64_t EMPTY     = 0ULL;
+    static constexpr uint64_t EMPTY_ALT = 0xDEADBEEFDEADBEEFULL; // Remap key==0
+
+    // Fibonacci hashing untuk distribusi yang baik
+    static size_t hash(uint64_t key) {
+        return static_cast<size_t>(key * 0x9E3779B97F4A7C15ULL >> 32);
+    }
+
+    std::vector<uint64_t> m_table;
+    size_t m_mask = 0;
+};
+
 #pragma pack(push, 1)
 struct TrainingEntry {
     uint8_t packed_board[32];
@@ -53,23 +114,19 @@ struct DataGenConfig {
     int adjudicate_draw_ply = 80;
 
     bool skip_in_check = true;
-    bool skip_captures = true;
-    bool skip_tactical_bestmove = true;
-    int max_score = 2500;
-    int eval_limit = 0;
+    bool skip_captures = false;          // Dinonaktifkan — redundan dengan skip_tactical_bestmove
+    bool skip_tactical_bestmove = true;  // Filter komprehensif: skip jika bestmove adalah capture/promosi
+    int  min_pieces = 5;                 // Skip endgame trivial: ≤5 piece (dari ≤3 sebelumnya)
+    int  max_score = 2000;
+    int  eval_limit = 0;
 
-    int qsearch_margin = 60;
+    int qsearch_margin = 100;
     int search_margin = 70;
 
-    // === Score Mixing (Lambda-weighted WDL) ===
-    // Standar modern: gabungkan search eval dengan game result dalam WDL probability space.
-    //   score_lambda = 1.0 : pure search score (default, backward compatible)
-    //   score_lambda = 0.5 : campuran 50% eval + 50% game result (direkomendasikan)
-    //   score_lambda = 0.0 : pure game result
     float score_lambda = 1.0f;
     int   wdl_scale    = 400;   // Centipawn scale sigmoid: sigmoid(cp/scale)
                                 // ~400 cp = ~73% win probability (referensi: Stockfish model)
-    bool  use_rule50_decay = false; // Scale eval dengan (100-rule50)/100 sebelum mixing
+    bool  use_rule50_decay = true; // Scale eval dengan (100-rule50)/100 sebelum mixing
                                     // Mengajarkan NNUE bahwa posisi mendekati 50-move draw = netral
 
     std::string output = "data/training.binpack";
@@ -89,6 +146,7 @@ struct DataGenStats {
     std::atomic<uint64_t> games_draws{0};
     std::atomic<uint64_t> positions_generated{0};
     std::atomic<uint64_t> positions_filtered{0};
+    std::atomic<uint64_t> positions_deduped{0};  // Posisi duplikat yang dibuang
     std::atomic<uint64_t> total_plies{0};
 
     void reset() {
@@ -99,6 +157,7 @@ struct DataGenStats {
         games_draws = 0;
         positions_generated = 0;
         positions_filtered = 0;
+        positions_deduped = 0;
         total_plies = 0;
     }
 
@@ -143,7 +202,8 @@ private:
     Move select_multipv_move(Board& board, int thread_id);
     Move select_search_move(Board& board, int& score, int thread_id);
 
-    bool should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id);
+    bool should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id,
+                                 ZobristHashSet& seen_hashes);
 
     void write_entries(const std::vector<TrainingEntry>& entries);
     void flush_output();
@@ -188,12 +248,14 @@ struct FilterConfig {
     int threads = 1;
 
     bool skip_in_check = true;
-    bool skip_tactical_bestmove = false;  // Expensive for post-hoc; enable with "tactical_filter" token
-    int tactical_search_depth = 1;        // Depth search untuk tactical filter post-hoc
-    int qsearch_margin = 60;
-    int search_margin = 0;
-    int max_score = 2500;
-    int eval_limit = 0;
+    bool skip_tactical_bestmove = false;  // Expensive for post-hoc; enable dengan token "tactical_filter"
+    int  tactical_search_depth = 1;       // Depth search untuk tactical filter post-hoc
+    int  qsearch_margin = 60;
+    int  search_margin = 0;
+    int  max_score = 2000;                // Turun dari 2500 — sesuai standar modern
+    int  min_pieces = 5;                  // Skip endgame trivial ≤5 piece
+    int  eval_limit = 0;
+    bool deduplicate = true;              // Buang posisi dengan Zobrist hash yang sama
 
     int report_interval = 100000;
 };
@@ -207,6 +269,7 @@ struct FilterStats {
     size_t filtered_score = 0;
     size_t filtered_mate = 0;
     size_t filtered_few_pieces = 0;
+    size_t filtered_duplicate = 0;  // Posisi duplikat (same Zobrist hash)
     size_t clamped_eval_limit = 0;
 };
 

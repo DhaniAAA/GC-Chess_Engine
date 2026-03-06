@@ -15,7 +15,7 @@ inline int futility_margin(int depth, bool improving) {
 
 inline int lmp_threshold(int depth, bool improving) {
     int base = 2 + depth * 2;
-    return improving ? base : base + 2;
+    return improving ? base + 2 : base;
 }
 
 inline int razoring_margin(int depth) {
@@ -46,8 +46,7 @@ constexpr int HISTORY_LEAF_PRUNING_MARGIN = 6000;
 constexpr int COUNTER_HIST_PRUNING_DEPTH = 4;
 constexpr int COUNTER_HIST_PRUNING_MARGIN = 3000;
 
-constexpr int FOLLOWUP_HIST_PRUNING_DEPTH = 3;
-constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
+
 
 // ============================================================================
 // Extension Parameters
@@ -68,13 +67,7 @@ constexpr int MATE_THREAT_EXT_MIN_DEPTH = 4;
 
 constexpr int PV_EXT_MIN_DEPTH = 7;
 
-// ============================================================================
-// Multi-Cut Parameters
-// ============================================================================
 
-constexpr int MULTI_CUT_DEPTH = 12;
-constexpr int MULTI_CUT_COUNT = 3;
-constexpr int MULTI_CUT_REQUIRED = 2;
 
 // ============================================================================
 // ProbCut Parameters
@@ -171,14 +164,7 @@ constexpr int FRAC_EXT_PV_MOVE = 50;          // First PV move: 0.5 ply
 constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply
 constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 ply
 
-// ============================================================================
-// Post-LMR Adjustment Parameters
-// Uses STANDARD PLY system (1 = 1 ply) - NOT centiplie
-// ============================================================================
 
-constexpr int POST_LMR_WORSENING_THRESHOLD = 2;  // LMR reduction must be >= 2 ply
-constexpr int POST_LMR_WORSENING_REDUCTION = 1;  // Additional 1 ply reduction
-constexpr int POST_LMR_MIN_DEPTH = 3;            // Only apply at depth >= 3
 
 // ============================================================================
 // Dynamic SEE Thresholds
@@ -208,7 +194,6 @@ constexpr int HISTORY_MALUS_MAX       = 1680;
 
 constexpr int CONT_HIST_1PLY_WEIGHT = 2;
 constexpr int CONT_HIST_2PLY_WEIGHT = 1;
-constexpr int CONT_HIST_4PLY_WEIGHT = 1;
 
 constexpr int CAPTURE_HIST_BONUS_SCALE = 6;
 constexpr int CAPTURE_HIST_MALUS_SCALE = 6;

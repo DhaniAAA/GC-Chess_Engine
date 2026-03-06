@@ -24,6 +24,7 @@ void DataGenStats::print() const {
     uint64_t games = games_completed.load();
     uint64_t pos = positions_generated.load();
     uint64_t filtered = positions_filtered.load();
+    uint64_t deduped = positions_deduped.load();
     uint64_t plies = total_plies.load();
 
     std::cout << "\n=== Data Generation Statistics ===" << std::endl;
@@ -36,6 +37,7 @@ void DataGenStats::print() const {
               << " (" << (games > 0 ? games_draws.load() * 100.0 / games : 0) << "%)" << std::endl;
     std::cout << "Positions saved  : " << pos << std::endl;
     std::cout << "Positions filtered: " << filtered << std::endl;
+    std::cout << "Positions deduped: " << deduped << std::endl;
     std::cout << "Avg plies/game   : " << (games > 0 ? plies / games : 0) << std::endl;
     std::cout << "Avg pos/game     : " << (games > 0 ? pos / games : 0) << std::endl;
     std::cout << "==================================" << std::endl;
@@ -288,6 +290,10 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
     StateInfo state_stack[512];
     int state_idx = 0;
 
+    // ZobristHashSet per-game untuk dedup transposisi (ukuran kecil: maks ~400 ply/game)
+    // Kapasitas 512 = cukup untuk 1 game penuh (flat array ~4KB, cache-friendly)
+    ZobristHashSet seen_hashes(256);
+
     Board board;
     board.set(Board::StartFEN, &state_stack[state_idx++]);
 
@@ -359,7 +365,7 @@ GameResult DataGenerator::play_game(std::vector<TrainingEntry>& entries, int thr
         // Konversi search_score ke perspektif WHITE untuk disimpan di binpack
         int score_white = (board.side_to_move() == WHITE) ? search_score : -search_score;
 
-        if (should_record_position(board, static_eval, search_score, ply, best_move, thread_id)) {
+        if (should_record_position(board, static_eval, search_score, ply, best_move, thread_id, seen_hashes)) {
             entries.push_back(encode_position(board, score_white, GameResult::ongoing));
             m_stats.positions_generated++;
         } else {
@@ -499,7 +505,8 @@ Move DataGenerator::select_search_move(Board& board, int& score, int thread_id) 
     return best;
 }
 
-bool DataGenerator::should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id) {
+bool DataGenerator::should_record_position(Board& board, int static_eval, int search_score, int ply, Move best_move, int thread_id,
+                                             ZobristHashSet& seen_hashes) {
     if (ply < m_config.min_ply) {
         return false;
     }
@@ -513,17 +520,17 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
     }
 
     // [MODERN] Skip posisi dengan mate score — NNUE tidak bisa representasikan infinity.
-    // search_score dari alpha-beta, jika >= VALUE_MATE_IN_MAX_PLY berarti forced mate.
     if (std::abs(search_score) >= VALUE_MATE_IN_MAX_PLY) {
         return false;
     }
 
-    // [MODERN] Skip posisi dengan terlalu sedikit piece (KvK, KvKP, etc)
-    // Endgame trivial lebih baik ditangani tablebase, bukan NNUE.
-    if (popcount(board.pieces()) <= 3) {
+    // [MODERN] Skip posisi endgame trivial berdasarkan min_pieces yang bisa dikonfigurasi.
+    // Default: <=5 piece (dari sebelumnya <=3). Mencakup KBvKP, KRvKP, dll.
+    if (popcount(board.pieces()) <= m_config.min_pieces) {
         return false;
     }
 
+    // skip_captures dinonaktifkan (redundan dengan skip_tactical_bestmove)
     if (m_config.skip_captures && best_move != MOVE_NONE && board.is_capture(best_move)) {
         return false;
     }
@@ -552,6 +559,14 @@ bool DataGenerator::should_record_position(Board& board, int static_eval, int se
         if (search_diff > m_config.search_margin) {
             return false;
         }
+    }
+
+    // [DEDUP] Skip jika posisi ini (Zobrist key) sudah muncul dalam game saat ini.
+    // Mencegah posisi yang sama masuk dua kali akibat transposisi.
+    uint64_t pos_key = board.key();
+    if (!seen_hashes.insert(pos_key)) {
+        m_stats.positions_deduped++;
+        return false;
     }
 
     return true;
@@ -744,6 +759,11 @@ DataGenConfig parse_config(std::istringstream& is) {
             config.use_rule50_decay = true;
         } else if (token == "no_rule50_decay") {
             config.use_rule50_decay = false;
+        } else if (token == "min_pieces") {
+            is >> config.min_pieces;
+            config.min_pieces = std::max(2, config.min_pieces);  // minimal 2 raja harus ada
+        } else if (token == "min_ply") {
+            is >> config.min_ply;
         }
     }
 
@@ -1021,6 +1041,8 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  skip_tactical  : " << (config.skip_tactical_bestmove ? "true (depth=" + std::to_string(config.tactical_search_depth) + ")" : "false") << std::endl;
     std::cout << "  qsearch_margin : " << config.qsearch_margin << " cp" << std::endl;
     std::cout << "  max_score      : " << config.max_score << " cp" << std::endl;
+    std::cout << "  min_pieces     : " << config.min_pieces << " pieces" << std::endl;
+    std::cout << "  deduplicate    : " << (config.deduplicate ? "true" : "false") << std::endl;
     std::cout << "  eval_limit     : " << (config.eval_limit > 0 ? std::to_string(config.eval_limit) + " cp" : "disabled") << std::endl;
     std::cout << "==============================" << std::endl;
 
@@ -1029,6 +1051,24 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
 
     stats = FilterStats{};
     auto start_time = std::chrono::steady_clock::now();
+
+    // Set Zobrist hash untuk deduplication global di seluruh dataset.
+    // Menggunakan unordered_set — O(1) average per lookup/insert.
+    // Perlu ~8 bytes per posisi yang lolos: 100M posisi ≈ ~800MB RAM.
+    // Gunakan "no_dedup" token untuk menonaktifkan jika RAM terbatas.
+    // ZobristHashSet global untuk dedup seluruh dataset.
+    // Open-addressing flat array: ~8 bytes/slot (vs ~40 bytes/node di std::unordered_set).
+    // Untuk 100M posisi pada load 50%: 200M slots × 8B = ~1.6GB.
+    ZobristHashSet global_seen_hashes;
+    if (config.deduplicate) {
+        // Estimasi posisi yang akan lolos filter lain sebelum dedup (~80% dari total)
+        size_t estimated_unique = static_cast<size_t>(total_entries * 0.8);
+        // Batasi alokasi awal ke 128M slots (~1GB) agar tidak OOM
+        size_t alloc_capacity = std::min(estimated_unique, size_t(128'000'000));
+        global_seen_hashes = ZobristHashSet(alloc_capacity);
+        std::cout << "  dedup hash set : " << (global_seen_hashes.memory_bytes() / 1024 / 1024)
+                  << " MB pre-allocated (" << alloc_capacity << " slots)" << std::endl;
+    }
 
     TrainingEntry entry;
     StateInfo si;
@@ -1045,9 +1085,8 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
 
             int stored_score = entry.score;
 
-            // [1] Filter: posisi dengan terlalu sedikit piece (KvK, KvKP, dll)
-            // Endgame trivial lebih baik ditangani tablebase, bukan NNUE.
-            if (popcount(board.pieces()) <= 3) {
+            // [1] Filter: posisi dengan terlalu sedikit piece — threshold bisa dikonfigurasi
+            if (popcount(board.pieces()) <= static_cast<int>(config.min_pieces)) {
                 stats.filtered_few_pieces++;
                 continue;
             }
@@ -1109,6 +1148,17 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
                 }
             }
 
+            // [7] Filter: deduplikasi global via Zobrist key.
+            // Posisi identik dari game/opening berbeda dibuang.
+            // Nonaktifkan dengan token "no_dedup" jika RAM terbatas.
+            if (config.deduplicate) {
+                uint64_t pos_key = board.key();
+                if (!global_seen_hashes.insert(pos_key)) {
+                    stats.filtered_duplicate++;
+                    continue;
+                }
+            }
+
             output.write(reinterpret_cast<const char*>(&clamped_entry), sizeof(clamped_entry));
             stats.passed++;
 
@@ -1153,6 +1203,7 @@ bool filter_binpack(const FilterConfig& config, FilterStats& stats) {
     std::cout << "  Extreme score: " << stats.filtered_score << std::endl;
     std::cout << "  QSearch      : " << stats.filtered_qsearch << std::endl;
     std::cout << "  Tactical     : " << stats.filtered_tactical << std::endl;
+    std::cout << "  Duplicate    : " << stats.filtered_duplicate << std::endl;
     if (config.eval_limit > 0) {
         std::cout << "Clamped by eval_limit: " << stats.clamped_eval_limit << std::endl;
     }
@@ -1187,6 +1238,13 @@ FilterConfig parse_filter_config(std::istringstream& is) {
             config.skip_tactical_bestmove = false;
         } else if (token == "tactical_depth") {
             is >> config.tactical_search_depth;
+        } else if (token == "min_pieces") {
+            is >> config.min_pieces;
+            config.min_pieces = std::max(2, config.min_pieces);
+        } else if (token == "no_dedup" || token == "nodedup") {
+            config.deduplicate = false;
+        } else if (token == "dedup") {
+            config.deduplicate = true;
         }
     }
 

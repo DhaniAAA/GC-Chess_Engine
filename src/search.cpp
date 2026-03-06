@@ -75,8 +75,7 @@ Search::Search() : stopped(false), searching(false), isPondering(false), rootBes
         stack[i].tripleExtensions = 0;
         stack[i].fractionalExt = 0;
         stack[i].nullMovePruned = false;
-        stack[i].inLMR = false;
-        stack[i].reduction = 0;
+
         stack[i].contHistory = nullptr;
     }
 }
@@ -446,9 +445,9 @@ void Search::iterative_deepening(Board& board) {
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
 
                 if (score <= alpha || score >= beta) {
-                    if (failCount >= 1) {
-                        TT.new_search();
-                    }
+                    // Note: TT.new_search() was removed here - it was invalidating
+                    // all previous TT entries on aspiration fails, severely degrading
+                    // hash table effectiveness.
                 }
 
                 if (score <= alpha) {
@@ -943,23 +942,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 improving = true;
             }
         } else {
-            improving = true;
+            improving = false;
         }
     }
 
     if (inCheck) improving = false;
 
-    int postLMRReduction = 0;
-    if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
-        int parentReduction = stack[ply + 1].reduction;
-        int parentEval = stack[ply + 1].staticEval;
 
-        if (parentReduction >= POST_LMR_WORSENING_THRESHOLD &&
-            parentEval != VALUE_NONE && ss->staticEval != VALUE_NONE &&
-            ss->staticEval <= -parentEval) {
-            postLMRReduction = POST_LMR_WORSENING_REDUCTION;
-        }
-    }
 
     if (!pvNode && !inCheck && depth <= RAZORING_MAX_DEPTH && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
@@ -1051,46 +1040,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                                     stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
                                                     stack[ply].contHistory : nullptr;
-    const ContinuationHistoryEntry* contHist4ply = (ply >= 4 && ply - 2 >= 0 && stack[ply - 2].contHistory) ?
-                                                    stack[ply - 2].contHistory : nullptr;
 
-    if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && ttMove != MOVE_NONE) {
-        int multiCutCount = 0;
-        int movesTried = 0;
 
-        MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                            contHist1ply, contHist2ply, &captureHist, contHist4ply);
-        Move m;
-
-        while ((m = mcPicker.next_move()) != MOVE_NONE && movesTried < MULTI_CUT_COUNT + 2) {
-            if (!MoveGen::is_legal(board, m)) {
-                continue;
-            }
-
-            ++movesTried;
-
-            StateInfo si;
-            board.do_move(m, si);
-
-            int mcDepth = depth - 1 - MULTI_CUT_DEPTH / 2;
-            int mcScore = -search(board, -beta, -beta + 1, mcDepth, !cutNode);
-
-            board.undo_move(m);
-
-            if (stopped) return 0;
-
-            if (mcScore >= beta) {
-                ++multiCutCount;
-                if (multiCutCount >= MULTI_CUT_REQUIRED) {
-                    return beta;
-                }
-            }
-
-            if (movesTried >= MULTI_CUT_COUNT) {
-                break;
-            }
-        }
-    }
 
     if (!pvNode && !inCheck && depth >= PROBCUT_DEPTH &&
         std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
@@ -1135,7 +1086,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    int searchDepth = depth - postLMRReduction;
+    int searchDepth = depth;
     if (searchDepth < 1 && depth >= 1) searchDepth = 1;
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
@@ -1163,7 +1114,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     const bool rootNode = (ply == 0);
 
     MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                  contHist1ply, contHist2ply, &captureHist, contHist4ply);
+                  contHist1ply, contHist2ply, &captureHist);
 
     size_t rootMoveIdx = 0;
     Move m;
@@ -1233,16 +1184,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
         bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck;
 
-        bool previousWasViolent = false;
-        if (previousMove != MOVE_NONE) {
-            previousWasViolent = !board.empty(previousMove.to()) ||
-                                  previousMove.is_enpassant() ||
-                                  inCheck;
-        }
-        bool losingMaterial = (!inCheck && correctedStaticEval != VALUE_NONE &&
-                               correctedStaticEval < -300);
-        bool inViolentSequence = previousWasViolent && losingMaterial;
-        bool tacticalBypass = mateThreat || inViolentSequence;
+        bool tacticalBypass = mateThreat;
 
         if (!pvNode && !inCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
@@ -1309,15 +1251,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                             continue;
                         }
                     }
-                    if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
-                        const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                        PieceType pt = type_of(movedPiece);
-                        int followupScore = contHist4ply->get(pt, m.to());
 
-                        if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
-                            continue;
-                        }
-                    }
                     if (depth <= SEE_QUIET_MAX_DEPTH) {
                         int seeThreshold = improving ?
                             -SEE_QUIET_IMPROVING_FACTOR * depth :
@@ -1556,10 +1490,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 if (contHist2ply) {
                     statScore += contHist2ply->get(pt, m.to());
                 }
-                if (ply >= 4 && stack[ply - 2].contHistory) {
-                    const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                    statScore += contHist4ply->get(pt, m.to());
-                }
+
 
                 reduction -= std::clamp(statScore / HISTORY_LMR_DIVISOR,
                                         -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
@@ -1569,10 +1500,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
                 if (mateThreat) {
                     reduction /= LMR_NMP_THREAT_DIVISOR;
-                }
-
-                if (inViolentSequence) {
-                    reduction = std::min(reduction, 1);
                 }
 
                 if (isTacticalQuiet) {
@@ -1606,7 +1533,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
             }
 
-            if (captureNearKing_lmr && (mateThreat || inViolentSequence)) {
+            if (captureNearKing_lmr && mateThreat) {
                 reduction = 0;
                 lmrApplied = false;
             }
@@ -1638,9 +1565,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (moveCount == 1) {
             score = -search(board, -beta, -alpha, newDepth, false);
         } else {
-            ss->inLMR = (reduction > 0);
-            ss->reduction = reduction;
-
             score = -search(board, -alpha - 1, -alpha, newDepth - reduction, true);
 
             if (score > alpha && reduction > 0) {
@@ -1662,8 +1586,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
 
                 if (score > alpha) {
-                    ss->inLMR = false;
-                    ss->reduction = 0;
                     score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
                 }
             }
@@ -1672,8 +1594,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
 
-            ss->inLMR = false;
-            ss->reduction = 0;
         }
 
         board.undo_move(m);
@@ -1753,10 +1673,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         if (contHist2ply) {
                             const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), statBonus * CONT_HIST_2PLY_WEIGHT);
                         }
-                        if (ply >= 4 && stack[ply - 2].contHistory) {
-                            const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
-                            const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(pt, m.to(), statBonus * CONT_HIST_4PLY_WEIGHT);
-                        }
+
 
                         for (int i = 0; i < quietCount - 1; ++i) {
                             if (quietsSearched[i] != m) {

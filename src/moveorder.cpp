@@ -149,10 +149,9 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
                        const HistoryTable& ht, Move prevMove,
                        const ContinuationHistoryEntry* contHist1,
                        const ContinuationHistoryEntry* contHist2,
-                       const CaptureHistory* ch,
-                       const ContinuationHistoryEntry* contHist4)
+                       const CaptureHistory* ch)
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
-      contHist1ply(contHist1), contHist2ply(contHist2), contHist4ply(contHist4),
+      contHist1ply(contHist1), contHist2ply(contHist2),
       captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), quietCheckCount(0), currentIdx(0), equalCaptureIdx(0), quietCheckIdx(0),
       badCaptureIdx(0), ply(p), stage(STAGE_TT_MOVE) {
@@ -174,7 +173,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
 
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), contHist4ply(nullptr), captureHist(nullptr),
+      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(nullptr),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -187,7 +186,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryT
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht,
                        const CaptureHistory* ch)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), contHist4ply(nullptr), captureHist(ch),
+      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -376,9 +375,8 @@ void MovePicker::score_quiets() {
             int histScore = history.get(us, m);
             int cont1 = contHist1ply ? contHist1ply->get(pt, to) : 0;
             int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
-            int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
 
-            sm.score = 2 * histScore + cont1 + cont2 + cont4 + tacticalBonus;
+            sm.score = 2 * histScore + cont1 + cont2 + tacticalBonus;
         }
 
         if (m.is_promotion()) {

@@ -629,12 +629,10 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                                            thread->stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* ch2 = (ply >= 2 && ply < MAX_PLY + 4 && thread->stack[ply].contHistory) ?
                                            thread->stack[ply].contHistory : nullptr;
-    const ContinuationHistoryEntry* ch4 = (ply >= 4 && ply - 2 >= 0 && thread->stack[ply - 2].contHistory) ?
-                                           thread->stack[ply - 2].contHistory : nullptr;
 
     MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
                   thread->history, thread->previousMove,
-                  ch1, ch2, &thread->captureHist, ch4);
+                  ch1, ch2, &thread->captureHist);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
@@ -757,9 +755,7 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                         if (ch2) {
                             const_cast<ContinuationHistoryEntry*>(ch2)->update(pt, m.to(), statBonus * CONT_HIST_2PLY_WEIGHT);
                         }
-                        if (ch4) {
-                            const_cast<ContinuationHistoryEntry*>(ch4)->update(pt, m.to(), statBonus * CONT_HIST_4PLY_WEIGHT);
-                        }
+
 
                         // Penalize other quiet moves
                         for (int i = 0; i < quietCount - 1; ++i) {
