@@ -541,6 +541,15 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         staticEval = evaluate(board);
     }
 
+    bool improving = false;
+    if (!inCheck && staticEval != VALUE_NONE) {
+        if (ply >= 2 && thread->stack[ply].staticEval != VALUE_NONE) {
+            improving = staticEval >= thread->stack[ply].staticEval;
+        } else {
+            improving = true;
+        }
+    }
+
     if (!pvNode && !inCheck && depth <= 3 && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
         int razorMarg = razoring_margin(predictedDepth);
@@ -554,7 +563,7 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     }
 
     if (!pvNode && !inCheck && depth <= RFP_MAX_DEPTH && depth >= 1) {
-        int rfpMarg = rfp_margin(depth, true);
+        int rfpMarg = rfp_margin(depth, improving);
         if (staticEval - rfpMarg >= beta
             && staticEval < VALUE_MATE_IN_MAX_PLY
             && std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
@@ -602,12 +611,6 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
     }
 
     int searchDepth = depth;
-    if (!ttMove && depth >= 6 && (pvNode || cutNode)) {
-        alpha_beta(thread, board, alpha, beta, depth - 2, cutNode, ply);
-        tte = TT.probe(board.key(), ttHit);
-        ttMove = ttHit ? tte->move() : MOVE_NONE;
-    }
-
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
             searchDepth -= 1;
@@ -629,10 +632,14 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
                                            thread->stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* ch2 = (ply >= 2 && ply < MAX_PLY + 4 && thread->stack[ply].contHistory) ?
                                            thread->stack[ply].contHistory : nullptr;
+    const ContinuationHistoryEntry* ch3 = (ply >= 3 && ply - 1 >= 0 && thread->stack[ply - 1].contHistory) ?
+                                           thread->stack[ply - 1].contHistory : nullptr;
+    const ContinuationHistoryEntry* ch4 = (ply >= 4 && ply - 2 >= 0 && thread->stack[ply - 2].contHistory) ?
+                                           thread->stack[ply - 2].contHistory : nullptr;
 
     MovePicker mp(board, ttMoves, ttMoveCount, ply, thread->killers, thread->counterMoves,
                   thread->history, thread->previousMove,
-                  ch1, ch2, &thread->captureHist);
+                  ch1, ch2, &thread->captureHist, ch3, ch4);
     Move m;
 
     while ((m = mp.next_move()) != MOVE_NONE) {
@@ -646,13 +653,26 @@ int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
         bool givesCheck = MoveGen::gives_check(board, m);
 
         if (!pvNode && !inCheck && depth <= 7 && !isCapture && !isPromotion &&
-            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > lmp_threshold(depth, true)) {
+            bestScore > VALUE_MATED_IN_MAX_PLY && moveCount > lmp_threshold(depth, improving)) {
             continue;
         }
 
         if (!pvNode && !inCheck && depth <= 6 && depth >= 1 && !isCapture &&
             !isPromotion && bestScore > VALUE_MATED_IN_MAX_PLY && !givesCheck) {
-            if (staticEval + futility_margin(depth, true) <= alpha) continue;
+            if (staticEval + futility_margin(depth, improving) <= alpha) continue;
+        }
+
+        if (!pvNode && !inCheck && depth <= 4 && !isCapture && !isPromotion &&
+            bestScore > VALUE_MATED_IN_MAX_PLY) {
+            int histScore = thread->history.get(board.side_to_move(), m);
+            if (histScore < -3000 * depth) continue;
+        }
+
+        if (!pvNode && !inCheck && depth <= 4 && !isCapture && !isPromotion &&
+            ch1 && moveCount > 5) {
+            PieceType pt = type_of(board.piece_on(m.from()));
+            int cmScore = ch1->get(pt, m.to());
+            if (cmScore < -3000 * depth) continue;
         }
 
         if (!pvNode && depth <= 4 && isCapture && !SEE::see_ge(board, m, -50 * depth)) {
@@ -836,13 +856,19 @@ int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply) {
         if (!MoveGen::is_legal(board, m)) continue;
         ++moveCount;
 
+        PieceType capturedPt = type_of(board.piece_on(m.to()));
+        bool captureGivesCheck = MoveGen::gives_check(board, m);
+
         if (!inCheck && !m.is_promotion()) {
-            int captureValue = PieceValue[type_of(board.piece_on(m.to()))];
-            if (staticEval + captureValue + 200 < alpha) continue;
+            if (capturedPt != QUEEN && capturedPt != ROOK) {
+                int captureValue = PieceValue[capturedPt];
+                if (staticEval + captureValue + 200 < alpha) continue;
+            }
         }
 
-        PieceType capturedPt = type_of(board.piece_on(m.to()));
-        if (!inCheck && capturedPt != QUEEN && !SEE::see_ge(board, m, 0)) continue;
+        if (!inCheck && capturedPt != QUEEN && !captureGivesCheck && !m.is_promotion()) {
+            if (!SEE::see_ge(board, m, 0)) continue;
+        }
 
         StateInfo si;
         board.do_move(m, si);

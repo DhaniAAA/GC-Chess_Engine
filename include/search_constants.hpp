@@ -15,7 +15,7 @@ inline int futility_margin(int depth, bool improving) {
 
 inline int lmp_threshold(int depth, bool improving) {
     int base = 2 + depth * 2;
-    return improving ? base + 2 : base;
+    return improving ? base : base + 2;
 }
 
 inline int razoring_margin(int depth) {
@@ -46,7 +46,8 @@ constexpr int HISTORY_LEAF_PRUNING_MARGIN = 6000;
 constexpr int COUNTER_HIST_PRUNING_DEPTH = 4;
 constexpr int COUNTER_HIST_PRUNING_MARGIN = 3000;
 
-
+constexpr int FOLLOWUP_HIST_PRUNING_DEPTH = 3;
+constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 // ============================================================================
 // Extension Parameters
@@ -111,17 +112,17 @@ constexpr int DELTA_PRUNING_MARGIN = 650;
 // Base formula: R = LMR_BASE + ln(depth) * ln(moveNumber) / LMR_DIVISOR
 // ============================================================================
 
-constexpr double LMR_BASE      = 0.78;      // dari 0.85 → lebih aman
-constexpr double LMR_DIVISOR   = 1.68;      // dari 1.5  → lebih halus
+constexpr double LMR_BASE      = 0.60;      // dari 0.78 → lebih agresif
+constexpr double LMR_DIVISOR   = 1.50;      // dari 1.68 → lebih agresif
 
-constexpr int LMR_MIN_DEPTH        = 3;     // naik dari 4
-constexpr int LMR_CUTNODE_BONUS    = 2;     // turun dari 3
+constexpr int LMR_MIN_DEPTH        = 3;
+constexpr int LMR_CUTNODE_BONUS    = 2;
 constexpr int LMR_CUTOFF_CNT_BONUS = 1;
 constexpr int LMR_ALLNODE_SCALE    = 1;
 
-// LMR for late captures (lighter reduction than quiet LMR)
-constexpr int LMR_CAPTURE_MIN_MOVE = 4;       // Only reduce captures after move 4
-constexpr int LMR_CAPTURE_REDUCTION = 1;      // Fixed reduction for captures
+// LMR for late captures (dengan history adjustment)
+constexpr int LMR_CAPTURE_MIN_MOVE = 4;
+constexpr int LMR_CAPTURE_REDUCTION = 1;
 
 // NMP-threat interaction: halve LMR when NMP detected a mate threat
 constexpr int LMR_NMP_THREAT_DIVISOR = 2;
@@ -164,6 +165,23 @@ constexpr int FRAC_EXT_PV_MOVE = 50;          // First PV move: 0.5 ply
 constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply
 constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 ply
 
+// ============================================================================
+// Multi-Cut Parameters
+// ============================================================================
+
+constexpr int MULTI_CUT_DEPTH = 16;
+constexpr int MULTI_CUT_COUNT = 3;
+constexpr int MULTI_CUT_REQUIRED = 2;
+
+// ============================================================================
+// Post-LMR Adjustment Parameters
+// Uses STANDARD PLY system (1 = 1 ply) - NOT centiplie
+// ============================================================================
+
+constexpr int POST_LMR_WORSENING_THRESHOLD = 2;  // LMR reduction must be >= 2 ply
+constexpr int POST_LMR_WORSENING_REDUCTION = 1;  // Additional 1 ply reduction
+constexpr int POST_LMR_MIN_DEPTH = 3;            // Only apply at depth >= 3
+
 
 
 // ============================================================================
@@ -194,6 +212,8 @@ constexpr int HISTORY_MALUS_MAX       = 1680;
 
 constexpr int CONT_HIST_1PLY_WEIGHT = 2;
 constexpr int CONT_HIST_2PLY_WEIGHT = 1;
+constexpr int CONT_HIST_3PLY_WEIGHT = 1;
+constexpr int CONT_HIST_4PLY_WEIGHT = 1;
 
 constexpr int CAPTURE_HIST_BONUS_SCALE = 6;
 constexpr int CAPTURE_HIST_MALUS_SCALE = 6;

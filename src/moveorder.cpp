@@ -149,9 +149,11 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
                        const HistoryTable& ht, Move prevMove,
                        const ContinuationHistoryEntry* contHist1,
                        const ContinuationHistoryEntry* contHist2,
-                       const CaptureHistory* ch)
+                       const CaptureHistory* ch,
+                       const ContinuationHistoryEntry* contHist3,
+                       const ContinuationHistoryEntry* contHist4)
     : board(b), history(ht), killers(&kt), counterMoves(&cm),
-      contHist1ply(contHist1), contHist2ply(contHist2),
+      contHist1ply(contHist1), contHist2ply(contHist2), contHist3ply(contHist3), contHist4ply(contHist4),
       captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), quietCheckCount(0), currentIdx(0), equalCaptureIdx(0), quietCheckIdx(0),
       badCaptureIdx(0), ply(p), stage(STAGE_TT_MOVE) {
@@ -173,7 +175,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
 
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(nullptr),
+      contHist1ply(nullptr), contHist2ply(nullptr), contHist3ply(nullptr), contHist4ply(nullptr), captureHist(nullptr),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -186,7 +188,7 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryT
 MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryTable& ht,
                        const CaptureHistory* ch)
     : board(b), history(ht), killers(nullptr), counterMoves(nullptr),
-      contHist1ply(nullptr), contHist2ply(nullptr), captureHist(ch),
+      contHist1ply(nullptr), contHist2ply(nullptr), contHist3ply(nullptr), contHist4ply(nullptr), captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
       stage(STAGE_QS_TT_MOVE) {
@@ -214,6 +216,8 @@ void MovePicker::score_captures() {
     PROFILE_SCOPE("score_captures");
 
     const int moveCount = static_cast<int>(moves.size());
+    Square enemyKingSq = board.king_square(~board.side_to_move());
+    Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
 
     for (int idx = 0; idx < moveCount; ++idx) {
         auto& sm = moves[idx];
@@ -243,25 +247,12 @@ void MovePicker::score_captures() {
         PieceType attackerPt = type_of(attacker);
 
         int mvvLva = mvv_lva(board, m);
-
         int valueDiff = PieceValue[capturedPt] - PieceValue[attackerPt];
 
-        bool likelyGoodCapture = false;
-        bool needsSEE = true;
-
-        if (valueDiff >= 200) {
-            likelyGoodCapture = true;
-            needsSEE = false;
-        }
-        else if (valueDiff >= -50 && valueDiff <= 50) {
-            needsSEE = true;
-        }
-        else {
-            needsSEE = true;
-        }
-
+        bool likelyGoodCapture = (valueDiff >= 200);
         bool givesCheck = false;
-        if (needsSEE || valueDiff < 0) {
+
+        if (!likelyGoodCapture) {
             givesCheck = MoveGen::gives_check(board, m);
             if (givesCheck) {
                 sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
@@ -272,58 +263,46 @@ void MovePicker::score_captures() {
             }
         }
 
-        if (!needsSEE && likelyGoodCapture) {
+        if (likelyGoodCapture) {
             sm.score = SCORE_WINNING_CAP + mvvLva;
             if (captureHist && captured != NO_PIECE) {
                 sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
             }
         } else {
-        int see_value = SEE::evaluate(board, m);
-
-        if (see_value >= 0) {
-            if (std::abs(see_value) <= 50 && capturedPt == attackerPt) {
-                sm.score = SCORE_EQUAL_CAP + mvvLva;
-                switch (capturedPt) {
-                    case QUEEN:  sm.score += EQUAL_CAP_QUEEN_BONUS;  break;
-                    case ROOK:   sm.score += EQUAL_CAP_ROOK_BONUS;   break;
-                    case BISHOP: sm.score += EQUAL_CAP_BISHOP_BONUS; break;
-                    case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
-                    default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
-                }
-                if (captureHist && captured != NO_PIECE) {
-                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
+            if (SEE::see_ge(board, m, 0)) {
+                if (std::abs(valueDiff) <= 50 && capturedPt == attackerPt) {
+                    sm.score = SCORE_EQUAL_CAP + mvvLva;
+                    switch (capturedPt) {
+                        case QUEEN:  sm.score += EQUAL_CAP_QUEEN_BONUS;  break;
+                        case ROOK:   sm.score += EQUAL_CAP_ROOK_BONUS;   break;
+                        case BISHOP: sm.score += EQUAL_CAP_BISHOP_BONUS; break;
+                        case KNIGHT: sm.score += EQUAL_CAP_KNIGHT_BONUS; break;
+                        default:     sm.score += EQUAL_CAP_PAWN_BONUS;   break;
+                    }
+                    if (captureHist && captured != NO_PIECE) {
+                        sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
+                    }
+                } else {
+                    sm.score = SCORE_WINNING_CAP + mvvLva;
+                    if (captureHist && captured != NO_PIECE) {
+                        sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
+                    }
                 }
             } else {
-                sm.score = SCORE_WINNING_CAP + mvvLva;
-                if (captureHist && captured != NO_PIECE) {
-                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
-                }
-            }
-        } else {
-            if (MoveGen::gives_check(board, m)) {
-                sm.score = SCORE_WINNING_CAP + see_value + 1000;
-                badCaptures.add(m, sm.score);
-            } else {
-                sm.score = SCORE_LOSING_CAP + see_value;
+                sm.score = SCORE_LOSING_CAP;
                 if (captureHist && captured != NO_PIECE) {
                     sm.score += captureHist->get(attacker, m.to(), capturedPt) / 64;
                 }
                 badCaptures.add(m, sm.score);
             }
         }
-        }
 
-        {
-            Square enemyKingSq = board.king_square(~board.side_to_move());
-            Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
-            bool nearKing = (enemyKingZone & square_bb(m.to()));
-
-            if (nearKing) {
-                if (SEE::see_ge(board, m, 0)) {
-                    sm.score += 5000;
-                } else {
-                    sm.score += 2500;
-                }
+        bool nearKing = (enemyKingZone & square_bb(m.to()));
+        if (nearKing) {
+            if (SEE::see_ge(board, m, 0)) {
+                sm.score += 5000;
+            } else {
+                sm.score += 2500;
             }
         }
     }
@@ -375,8 +354,10 @@ void MovePicker::score_quiets() {
             int histScore = history.get(us, m);
             int cont1 = contHist1ply ? contHist1ply->get(pt, to) : 0;
             int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
+            int cont3 = contHist3ply ? contHist3ply->get(pt, to) : 0;
+            int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
 
-            sm.score = 2 * histScore + cont1 + cont2 + tacticalBonus;
+            sm.score = 2 * histScore + cont1 + cont2 + cont3 + cont4 + tacticalBonus;
         }
 
         if (m.is_promotion()) {

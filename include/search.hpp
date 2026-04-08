@@ -93,6 +93,8 @@ struct SearchStack {
     bool ttPv;
     bool ttHit;
     bool nullMovePruned;
+    bool inLMR;
+    int reduction;
     int cutoffCnt;
     ContinuationHistoryEntry* contHistory;
 };

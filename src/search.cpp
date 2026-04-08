@@ -75,7 +75,8 @@ Search::Search() : stopped(false), searching(false), isPondering(false), rootBes
         stack[i].tripleExtensions = 0;
         stack[i].fractionalExt = 0;
         stack[i].nullMovePruned = false;
-
+        stack[i].inLMR = false;
+        stack[i].reduction = 0;
         stack[i].contHistory = nullptr;
     }
 }
@@ -329,25 +330,22 @@ void Search::iterative_deepening(Board& board) {
     int overallBestScore = -VALUE_INFINITE;
     overallBestPV.clear();
 
-    constexpr int IID_DEPTH = 3;
+    constexpr int IID_DEPTH = 2;
     {
         rootDepth = IID_DEPTH;
 
-        for (auto& rm : rootMoves) {
-            StateInfo si;
-            board.do_move(rm.move, si);
-            int iidScore = -search(board, -VALUE_INFINITE, VALUE_INFINITE, IID_DEPTH - 1, false);
-            board.undo_move(rm.move);
-
-            if (stopped) break;
-
-            rm.score = iidScore;
-            rm.previousScore = iidScore;
-        }
+        StateInfo si;
+        board.do_move(rootMoves[0].move, si);
+        int iidScore = -search(board, -VALUE_INFINITE, VALUE_INFINITE, IID_DEPTH - 1, false);
+        board.undo_move(rootMoves[0].move);
 
         if (!stopped) {
-            std::stable_sort(rootMoves.begin(), rootMoves.end());
-            rootBestMove = rootMoves[0].move;
+            rootMoves[0].score = iidScore;
+            rootMoves[0].previousScore = iidScore;
+        }
+
+        for (size_t i = 1; i < rootMoves.size(); ++i) {
+            rootMoves[i].previousScore = rootMoves[i].score;
         }
     }
 
@@ -942,13 +940,23 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 improving = true;
             }
         } else {
-            improving = false;
+            improving = true;
         }
     }
 
     if (inCheck) improving = false;
 
+    int postLMRReduction = 0;
+    if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
+        int parentReduction = stack[ply + 1].reduction;
+        int parentEval = stack[ply + 1].staticEval;
 
+        if (parentReduction >= POST_LMR_WORSENING_THRESHOLD &&
+            parentEval != VALUE_NONE && ss->staticEval != VALUE_NONE &&
+            ss->staticEval <= -parentEval) {
+            postLMRReduction = POST_LMR_WORSENING_REDUCTION;
+        }
+    }
 
     if (!pvNode && !inCheck && depth <= RAZORING_MAX_DEPTH && depth >= 1) {
         int predictedDepth = std::max(1, depth - 1);
@@ -1040,14 +1048,55 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                                     stack[ply + 1].contHistory : nullptr;
     const ContinuationHistoryEntry* contHist2ply = (ply >= 2 && ply < MAX_PLY + 4 && stack[ply].contHistory) ?
                                                     stack[ply].contHistory : nullptr;
+    const ContinuationHistoryEntry* contHist3ply = (ply >= 3 && ply - 1 >= 0 && stack[ply - 1].contHistory) ?
+                                                    stack[ply - 1].contHistory : nullptr;
+    const ContinuationHistoryEntry* contHist4ply = (ply >= 4 && ply - 2 >= 0 && stack[ply - 2].contHistory) ?
+                                                    stack[ply - 2].contHistory : nullptr;
 
+    if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && ttMove != MOVE_NONE) {
+        int multiCutCount = 0;
+        int movesTried = 0;
 
+        MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
+                            contHist1ply, contHist2ply, &captureHist, contHist3ply, contHist4ply);
+        Move m;
+
+        while ((m = mcPicker.next_move()) != MOVE_NONE && movesTried < MULTI_CUT_COUNT + 2) {
+            if (!MoveGen::is_legal(board, m)) {
+                continue;
+            }
+
+            ++movesTried;
+
+            StateInfo si;
+            board.do_move(m, si);
+
+            int mcDepth = depth / 3;
+            if (mcDepth < 1) mcDepth = 1;
+            int mcScore = -search(board, -beta, -beta + 1, mcDepth, !cutNode);
+
+            board.undo_move(m);
+
+            if (stopped) return 0;
+
+            if (mcScore >= beta) {
+                ++multiCutCount;
+                if (multiCutCount >= MULTI_CUT_REQUIRED) {
+                    return beta;
+                }
+            }
+
+            if (movesTried >= MULTI_CUT_COUNT) {
+                break;
+            }
+        }
+    }
 
     if (!pvNode && !inCheck && depth >= PROBCUT_DEPTH &&
         std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
 
-        int probCutBeta = beta + PROBCUT_MARGIN;
-        int probCutDepth = depth - 4;
+        int probCutBeta = beta + 100 + 50 * depth;
+        int probCutDepth = std::max(1, depth - 4);
 
         MoveList captures;
         MoveGen::generate_captures(board, captures);
@@ -1086,7 +1135,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
     }
 
-    int searchDepth = depth;
+    int searchDepth = depth - postLMRReduction;
     if (searchDepth < 1 && depth >= 1) searchDepth = 1;
     if (!ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
@@ -1114,7 +1163,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     const bool rootNode = (ply == 0);
 
     MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                  contHist1ply, contHist2ply, &captureHist);
+                  contHist1ply, contHist2ply, &captureHist, contHist3ply, contHist4ply);
 
     size_t rootMoveIdx = 0;
     Move m;
@@ -1184,7 +1233,16 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         }
         bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck;
 
-        bool tacticalBypass = mateThreat;
+        bool previousWasViolent = false;
+        if (previousMove != MOVE_NONE) {
+            previousWasViolent = !board.empty(previousMove.to()) ||
+                                  previousMove.is_enpassant() ||
+                                  inCheck;
+        }
+        bool losingMaterial = (!inCheck && correctedStaticEval != VALUE_NONE &&
+                               correctedStaticEval < -300);
+        bool inViolentSequence = previousWasViolent && losingMaterial;
+        bool tacticalBypass = mateThreat || inViolentSequence;
 
         if (!pvNode && !inCheck && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
@@ -1248,6 +1306,15 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         int cmHistScore = contHist1ply->get(pt, m.to());
 
                         if (cmHistScore < -COUNTER_HIST_PRUNING_MARGIN * depth) {
+                            continue;
+                        }
+                    }
+                    if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
+                        const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
+                        PieceType pt = type_of(movedPiece);
+                        int followupScore = contHist4ply->get(pt, m.to());
+
+                        if (followupScore < -FOLLOWUP_HIST_PRUNING_MARGIN * depth) {
                             continue;
                         }
                     }
@@ -1490,8 +1557,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 if (contHist2ply) {
                     statScore += contHist2ply->get(pt, m.to());
                 }
-
-
+                if (contHist3ply) {
+                    statScore += contHist3ply->get(pt, m.to());
+                }
+                if (contHist4ply) {
+                    statScore += contHist4ply->get(pt, m.to());
+                }
                 reduction -= std::clamp(statScore / HISTORY_LMR_DIVISOR,
                                         -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
 
@@ -1500,6 +1571,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
                 if (mateThreat) {
                     reduction /= LMR_NMP_THREAT_DIVISOR;
+                }
+
+                if (inViolentSequence) {
+                    reduction = std::min(reduction, 1);
                 }
 
                 if (isTacticalQuiet) {
@@ -1531,9 +1606,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 if (!captureNearKing_lmr) {
                     reduction += 1;
                 }
+            } else {
+                int capHistScore = captureHist.get(movedPiece, m.to(), type_of(board.piece_on(m.to()))) / 1000;
+                reduction -= std::clamp(capHistScore, -1, 1);
             }
 
-            if (captureNearKing_lmr && mateThreat) {
+            if (captureNearKing_lmr && (mateThreat || inViolentSequence)) {
                 reduction = 0;
                 lmrApplied = false;
             }
@@ -1565,6 +1643,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         if (moveCount == 1) {
             score = -search(board, -beta, -alpha, newDepth, false);
         } else {
+            ss->inLMR = (reduction > 0);
+            ss->reduction = reduction;
+
             score = -search(board, -alpha - 1, -alpha, newDepth - reduction, true);
 
             if (score > alpha && reduction > 0) {
@@ -1586,6 +1667,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
 
                 if (score > alpha) {
+                    ss->inLMR = false;
+                    ss->reduction = 0;
                     score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
                 }
             }
@@ -1594,6 +1677,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
 
+            ss->inLMR = false;
+            ss->reduction = 0;
         }
 
         board.undo_move(m);
@@ -1673,6 +1758,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         if (contHist2ply) {
                             const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(pt, m.to(), statBonus * CONT_HIST_2PLY_WEIGHT);
                         }
+                        if (contHist3ply) {
+                            const_cast<ContinuationHistoryEntry*>(contHist3ply)->update(pt, m.to(), statBonus * CONT_HIST_3PLY_WEIGHT);
+                        }
+                        if (contHist4ply) {
+                            const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(pt, m.to(), statBonus * CONT_HIST_4PLY_WEIGHT);
+                        }
 
 
                         for (int i = 0; i < quietCount - 1; ++i) {
@@ -1688,6 +1779,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                                 }
                                 if (contHist2ply) {
                                     const_cast<ContinuationHistoryEntry*>(contHist2ply)->update(qpt, qto, -statMalus * CONT_HIST_2PLY_WEIGHT);
+                                }
+                                if (contHist3ply) {
+                                    const_cast<ContinuationHistoryEntry*>(contHist3ply)->update(qpt, qto, -statMalus * CONT_HIST_3PLY_WEIGHT);
+                                }
+                                if (contHist4ply) {
+                                    const_cast<ContinuationHistoryEntry*>(contHist4ply)->update(qpt, qto, -statMalus * CONT_HIST_4PLY_WEIGHT);
                                 }
                             }
                         }
