@@ -1,0 +1,974 @@
+#include "uci.hpp"
+#include "movegen.hpp"
+#include "tt.hpp"
+#include "thread.hpp"
+#include "profiler.hpp"
+#include "datagen.hpp"
+#include "moveorder.hpp"
+#include <iostream>
+#include <algorithm>
+#include <chrono>
+#include <functional>
+#include <iomanip>
+#include "tuning.hpp"
+#include "tests.hpp"
+
+
+namespace UCI {
+
+EngineOptions options;
+TimeManager timeMgr;
+
+const std::string ENGINE_NAME = "GC-Engine";
+const std::string ENGINE_AUTHOR = "Dhani";
+const std::string ENGINE_VERSION = "1.2";
+
+static StateInfo stateInfoStack[512];
+static int stateStackIdx = 0;
+
+UCIHandler::UCIHandler() : searching(false) {
+    stateStackIdx = 0;
+    board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+    stateStackIdx++;
+}
+
+UCIHandler::~UCIHandler() {
+    wait_for_search();
+}
+
+void UCIHandler::loop() {
+    std::string line, token;
+
+    try {
+        while (std::getline(std::cin, line)) {
+            std::istringstream is(line);
+            is >> std::skipws >> token;
+
+            if (token.empty()) continue;
+
+            if (token == "uci") {
+                cmd_uci();
+            } else if (token == "isready") {
+                cmd_isready();
+            } else if (token == "ucinewgame") {
+                cmd_ucinewgame();
+            } else if (token == "position") {
+                cmd_position(is);
+            } else if (token == "go") {
+                cmd_go(is);
+            } else if (token == "stop") {
+                cmd_stop();
+            } else if (token == "quit") {
+                cmd_quit();
+                break;
+            } else if (token == "setoption") {
+                cmd_setoption(is);
+            } else if (token == "perft") {
+                cmd_perft(is);
+            } else if (token == "divide") {
+                cmd_divide(is);
+            } else if (token == "d") {
+                cmd_d();
+            } else if (token == "eval") {
+                cmd_eval();
+            } else if (token == "ponderhit") {
+                cmd_ponderhit();
+            } else if (token == "bench") {
+                cmd_bench(is);
+            } else if (token == "datagen") {
+                cmd_datagen(is);
+            } else if (token == "wac") {
+                cmd_wac(is);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Engine Error: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Engine Error: Unknown exception" << std::endl;
+    }
+}
+
+void UCIHandler::cmd_uci() {
+    std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << std::endl;
+    std::cout << "id author " << ENGINE_AUTHOR << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "option name Hash type spin default " << options.hash << " min 1 max 4096" << std::endl;
+    std::cout << "option name Table Memory type spin default 64 min 1 max 1024" << std::endl;
+    std::cout << "option name Threads type spin default 1 min 1 max 128" << std::endl;
+    std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
+    std::cout << "option name Ponder type check default true" << std::endl;
+    std::cout << "option name Move Overhead type spin default 10 min 0 max 5000" << std::endl;
+    std::cout << "option name OwnBook type check default true" << std::endl;
+    std::cout << "option name Book File type string default book.bin" << std::endl;
+    std::cout << "option name SyzygyPath type string default <empty>" << std::endl;
+
+    std::cout << "option name Contempt type spin default 20 min -100 max 100" << std::endl;
+    std::cout << "option name Dynamic Contempt type check default true" << std::endl;
+
+    std::cout << "option name PawnValueMG type spin default " << Tuning::PawnValue.mg << " min 0 max 2000" << std::endl;
+    std::cout << "option name PawnValueEG type spin default " << Tuning::PawnValue.eg << " min 0 max 2000" << std::endl;
+    std::cout << "option name KnightValueMG type spin default " << Tuning::KnightValue.mg << " min 0 max 2000" << std::endl;
+    std::cout << "option name KnightValueEG type spin default " << Tuning::KnightValue.eg << " min 0 max 2000" << std::endl;
+    std::cout << "option name BishopValueMG type spin default " << Tuning::BishopValue.mg << " min 0 max 2000" << std::endl;
+    std::cout << "option name BishopValueEG type spin default " << Tuning::BishopValue.eg << " min 0 max 2000" << std::endl;
+    std::cout << "option name RookValueMG type spin default " << Tuning::RookValue.mg << " min 0 max 2000" << std::endl;
+    std::cout << "option name RookValueEG type spin default " << Tuning::RookValue.eg << " min 0 max 2000" << std::endl;
+    std::cout << "option name QueenValueMG type spin default " << Tuning::QueenValue.mg << " min 0 max 5000" << std::endl;
+    std::cout << "option name QueenValueEG type spin default " << Tuning::QueenValue.eg << " min 0 max 5000" << std::endl;
+    std::cout << "option name RookOpenFileBonusMG type spin default " << Tuning::RookOpenFileBonus.mg << " min 0 max 500" << std::endl;
+    std::cout << "option name RookOpenFileBonusEG type spin default " << Tuning::RookOpenFileBonus.eg << " min 0 max 500" << std::endl;
+    std::cout << "option name KingSafetyWeight type spin default " << Tuning::KingSafetyWeight << " min 0 max 200" << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "uciok" << std::endl;
+    std::cout.flush();
+}
+
+void UCIHandler::cmd_isready() {
+    std::cout << "readyok" << std::endl;
+    std::cout.flush();
+}
+
+void UCIHandler::cmd_ucinewgame() {
+    wait_for_search();
+    TT.clear();
+    stateStackIdx = 0;
+    board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+    stateStackIdx++;
+    Searcher.clear_history();
+    Threads.clear_all_history();
+}
+
+void UCIHandler::cmd_position(std::istringstream& is) {
+    wait_for_search();
+
+    std::string token;
+    is >> token;
+
+    stateStackIdx = 0;
+
+    if (token == "startpos") {
+        board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
+        stateStackIdx++;
+        is >> token;
+    } else if (token == "fen") {
+        std::string fen;
+        while (is >> token && token != "moves") {
+            fen += token + " ";
+        }
+        board.set(fen, &stateInfoStack[stateStackIdx]);
+        stateStackIdx++;
+    }
+
+    if (token == "moves") {
+        parse_moves(is);
+    }
+}
+
+void UCIHandler::parse_moves(std::istringstream& is) {
+    std::string token;
+    while (is >> token) {
+        Move m = string_to_move(token);
+
+        if (m != MOVE_NONE) {
+            Square from = m.from();
+            Square to = m.to();
+            Piece pc = board.piece_on(from);
+
+            if (pc == NO_PIECE) {
+                continue;
+            }
+            if (type_of(pc) == KING) {
+                if (std::abs(file_of(from) - file_of(to)) > 1) {
+                    m = Move::make_castling(from, to);
+                }
+            } else if (type_of(pc) == PAWN) {
+                if (to == board.en_passant_square()) {
+                    m = Move::make_enpassant(from, to);
+                }
+            }
+
+            if (MoveGen::is_legal(board, m) && stateStackIdx < 511) {
+                board.do_move(m, stateInfoStack[stateStackIdx++]);
+            }
+        }
+    }
+}
+
+void UCIHandler::cmd_go(std::istringstream& is) {
+    wait_for_search();
+
+    SearchLimits limits;
+    std::string token;
+
+    int wtime = 0, btime = 0, winc = 0, binc = 0, movestogo = 0;
+
+    while (is >> token) {
+        if (token == "wtime") {
+            is >> wtime;
+        } else if (token == "btime") {
+            is >> btime;
+        } else if (token == "winc") {
+            is >> winc;
+        } else if (token == "binc") {
+            is >> binc;
+        } else if (token == "movestogo") {
+            is >> movestogo;
+        } else if (token == "depth") {
+            is >> limits.depth;
+        } else if (token == "nodes") {
+            is >> limits.nodes;
+        } else if (token == "movetime") {
+            is >> limits.movetime;
+        } else if (token == "infinite") {
+            limits.infinite = true;
+        } else if (token == "ponder") {
+            limits.ponder = true;
+        }
+    }
+
+    Color us = board.side_to_move();
+    int timeLeft = (us == WHITE) ? wtime : btime;
+    int increment = (us == WHITE) ? winc : binc;
+    if (timeLeft > 0 && !limits.infinite && limits.movetime == 0) {
+        timeMgr.init(us, timeLeft, increment, movestogo, 0);
+        limits.time[us] = timeLeft;
+        limits.inc[us] = increment;
+        limits.movestogo = movestogo;
+    }
+
+    start_search(limits);
+}
+
+void UCIHandler::start_search(const SearchLimits& limits) {
+    searching = true;
+    isPondering = limits.ponder;
+
+    std::string searchFen = board.fen();
+
+    Searcher.set_pondering(limits.ponder);
+
+    if (limits.ponder) {
+        options.ponderAttempts++;
+    }
+    searchThread = std::thread([this, limits, searchFen]() {
+        StateInfo searchSi;
+        Board searchBoard;
+        searchBoard.set(searchFen, &searchSi);
+
+        Searcher.start(searchBoard, limits);
+
+        Move bestMove = Searcher.best_move();
+
+        StateInfo validationSi;
+        Board validationBoard;
+        validationBoard.set(searchFen, &validationSi);
+
+        MoveList legalMoves;
+        MoveGen::generate_legal(validationBoard, legalMoves);
+
+        bool moveFound = false;
+        for (size_t i = 0; i < legalMoves.size(); ++i) {
+            Move legalMove = legalMoves[i].move;
+
+            if (legalMove.from() == bestMove.from() &&
+                legalMove.to() == bestMove.to()) {
+
+                if (legalMove.is_promotion()) {
+                    if (bestMove.is_promotion()) {
+                        if (legalMove.promotion_type() == bestMove.promotion_type()) {
+                            bestMove = legalMove;
+                            moveFound = true;
+                            break;
+                        }
+                    } else {
+                        if (legalMove.promotion_type() == QUEEN) {
+                            bestMove = legalMove;
+                            moveFound = true;
+                            break;
+                        }
+                    }
+                } else {
+                    bestMove = legalMove;
+                    moveFound = true;
+                    break;
+                }
+            }
+        }
+
+        if (bestMove == MOVE_NONE || !moveFound) {
+            if (!legalMoves.empty()) {
+                bestMove = legalMoves[0].move;
+            } else {
+                bestMove = MOVE_NONE;
+            }
+        }
+
+        std::cout << "bestmove " << move_to_string(bestMove);
+
+        Move ponderMove = Searcher.ponder_move();
+        if (ponderMove != MOVE_NONE && bestMove != MOVE_NONE && options.ponder) {
+            StateInfo si;
+            validationBoard.do_move(bestMove, si);
+
+            if (MoveGen::is_pseudo_legal(validationBoard, ponderMove) &&
+                MoveGen::is_legal(validationBoard, ponderMove)) {
+                std::cout << " ponder " << move_to_string(ponderMove);
+
+                expectedPonderMove = ponderMove;
+                ponderFen = validationBoard.fen();
+                options.lastPonderMove = ponderMove;
+            } else {
+                expectedPonderMove = MOVE_NONE;
+                ponderFen = "";
+            }
+        } else {
+            expectedPonderMove = MOVE_NONE;
+            ponderFen = "";
+        }
+
+        std::cout << std::endl;
+        std::cout.flush();
+
+        isPondering = false;
+        Searcher.set_pondering(false);
+        searching = false;
+    });
+}
+
+void UCIHandler::wait_for_search() {
+    if (searchThread.joinable()) {
+        Searcher.stop();
+        searchThread.join();
+    }
+}
+
+void UCIHandler::cmd_stop() {
+    isPondering = false;
+    Searcher.set_pondering(false);
+    Searcher.stop();
+    wait_for_search();
+}
+
+void UCIHandler::cmd_ponderhit() {
+    if (isPondering && Searcher.is_pondering()) {
+        options.ponderHits++;
+        Searcher.on_ponderhit();
+        isPondering = false;
+    }
+}
+
+void UCIHandler::cmd_quit() {
+    cmd_stop();
+}
+
+void UCIHandler::cmd_setoption(std::istringstream& is) {
+    std::string token, name, value;
+
+    is >> token;
+
+    while (is >> token && token != "value") {
+        name += (name.empty() ? "" : " ") + token;
+    }
+
+    while (is >> token) {
+        value += (value.empty() ? "" : " ") + token;
+    }
+    if (name == "Hash") {
+        options.hash = std::stoi(value);
+        TT.resize(options.hash);
+    } else if (name == "Threads") {
+        options.threads = std::stoi(value);
+        Threads.set_thread_count(options.threads);
+    } else if (name == "MultiPV") {
+        options.multiPV = std::stoi(value);
+    } else if (name == "Ponder") {
+        options.ponder = (value == "true");
+    } else if (name == "Move Overhead") {
+        options.moveOverhead = std::stoi(value);
+    } else if (name == "Book File") {
+        options.bookPath = value;
+        Book::book.load(value);
+    } else if (name == "SyzygyPath") {
+        options.syzygyPath = value;
+        Tablebase::TB.init(value);
+    }
+    else if (name == "PawnValueMG") Tuning::PawnValue.mg = std::stoi(value);
+    else if (name == "PawnValueEG") Tuning::PawnValue.eg = std::stoi(value);
+    else if (name == "KnightValueMG") Tuning::KnightValue.mg = std::stoi(value);
+    else if (name == "KnightValueEG") Tuning::KnightValue.eg = std::stoi(value);
+    else if (name == "BishopValueMG") Tuning::BishopValue.mg = std::stoi(value);
+    else if (name == "BishopValueEG") Tuning::BishopValue.eg = std::stoi(value);
+    else if (name == "RookValueMG") Tuning::RookValue.mg = std::stoi(value);
+    else if (name == "RookValueEG") Tuning::RookValue.eg = std::stoi(value);
+    else if (name == "QueenValueMG") Tuning::QueenValue.mg = std::stoi(value);
+    else if (name == "QueenValueEG") Tuning::QueenValue.eg = std::stoi(value);
+    else if (name == "RookOpenFileBonusMG") Tuning::RookOpenFileBonus.mg = std::stoi(value);
+    else if (name == "RookOpenFileBonusEG") Tuning::RookOpenFileBonus.eg = std::stoi(value);
+    else if (name == "KingSafetyWeight") Tuning::KingSafetyWeight = std::stoi(value);
+    else if (name == "Contempt") options.contempt = std::stoi(value);
+    else if (name == "Dynamic Contempt") options.dynamicContempt = (value == "true");
+}
+
+void UCIHandler::cmd_perft(std::istringstream& is) {
+    int depth = 6;
+    is >> depth;
+
+    std::function<U64(Board&, int)> perft = [&](Board& b, int d) -> U64 {
+        if (d == 0) return 1;
+
+        U64 nodes = 0;
+        MoveList moves;
+        MoveGen::generate_all(b, moves);
+
+        for (int i = 0; i < moves.size(); ++i) {
+            Move m = moves[i].move;
+            if (!MoveGen::is_legal(b, m)) continue;
+
+            StateInfo si;
+            b.do_move(m, si);
+            nodes += perft(b, d - 1);
+            b.undo_move(m);
+        }
+
+        return nodes;
+    };
+
+    auto start = std::chrono::steady_clock::now();
+    U64 nodes = perft(board, depth);
+    auto end = std::chrono::steady_clock::now();
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    U64 nps = elapsed > 0 ? nodes * 1000 / elapsed : nodes;
+
+    std::cout << "Nodes: " << nodes << std::endl;
+    std::cout << "Time: " << elapsed << " ms" << std::endl;
+    std::cout << "NPS: " << nps << std::endl;
+}
+
+void UCIHandler::cmd_divide(std::istringstream& is) {
+    int depth;
+    is >> depth;
+
+    std::cout << "Divide depth " << depth << std::endl;
+
+    auto start = std::chrono::steady_clock::now();
+    U64 totalNodes = 0;
+
+    MoveList moves;
+    MoveGen::generate_all(board, moves);
+
+    std::function<U64(Board&, int)> perft_recursive = [&](Board& b, int d) -> U64 {
+        if (d == 0) return 1;
+        U64 nodes = 0;
+        MoveList mvs;
+        MoveGen::generate_all(b, mvs);
+        for (int i = 0; i < mvs.size(); ++i) {
+            Move m = mvs[i].move;
+            if (!MoveGen::is_legal(b, m)) continue;
+            StateInfo si;
+            b.do_move(m, si);
+            nodes += perft_recursive(b, d - 1);
+            b.undo_move(m);
+        }
+        return nodes;
+    };
+
+    for (int i = 0; i < moves.size(); ++i) {
+        Move m = moves[i].move;
+        if (!MoveGen::is_legal(board, m)) continue;
+
+        StateInfo si;
+        board.do_move(m, si);
+        U64 nodes = perft_recursive(board, depth - 1);
+        board.undo_move(m);
+
+        std::cout << move_to_string(m) << ": " << nodes << std::endl;
+        totalNodes += nodes;
+    }
+
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "\nNodes: " << totalNodes << std::endl;
+    std::cout << "Time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms" << std::endl;
+}
+
+void UCIHandler::cmd_d() {
+    std::cout << board.pretty();
+    std::cout << std::endl;
+    std::cout << "FEN: " << board.fen() << std::endl;
+    std::cout << "Key: " << std::hex << board.key() << std::dec << std::endl;
+}
+
+void UCIHandler::cmd_eval() {
+    int score = Searcher.evaluate(board);
+    std::cout << "Evaluation: " << score << " cp" << std::endl;
+    std::cout << "Side to move: " << (board.side_to_move() == WHITE ? "White" : "Black") << std::endl;
+}
+
+void UCIHandler::cmd_bench(std::istringstream& is) {
+    int depth = 13;
+    int numThreads = 1;
+    int hashMB = 16;
+    std::string token;
+    if (is >> token) depth = std::stoi(token);
+    if (is >> token) numThreads = std::stoi(token);
+    if (is >> token) hashMB = std::stoi(token);
+
+    depth = std::max(1, std::min(depth, 40));
+    numThreads = std::max(1, std::min(numThreads, 128));
+    hashMB = std::max(1, std::min(hashMB, 4096));
+    int oldHash = options.hash;
+    int oldThreads = options.threads;
+    TT.resize(hashMB);
+    Threads.set_thread_count(numThreads);
+
+    std::cout << "\n===============================================" << std::endl;
+    std::cout << "     GC-Engine Benchmark" << std::endl;
+    std::cout << "===============================================" << std::endl;
+    std::cout << "Depth: " << depth << std::endl;
+    std::cout << "Threads: " << numThreads << std::endl;
+    std::cout << "Hash: " << hashMB << " MB" << std::endl;
+    std::cout << "===============================================\n" << std::endl;
+
+    const char* positions[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+        "8/8/4k3/3p4/3P1K2/8/8/8 w - - 0 1",
+        "r1bqr1k1/pp1nbppp/2p2n2/3p2B1/3P4/2NBP3/PPQ1NPPP/R3K2R w KQ - 3 10",
+        "r1bq1rk1/ppppbppp/2n2n2/4p3/2P5/5NP1/PP1PPPBP/RNBQ1RK1 w - - 5 6"
+    };
+
+    const int numPositions = sizeof(positions) / sizeof(positions[0]);
+
+    U64 totalNodes = 0;
+    U64 totalTbHits = 0;
+    int totalSelDepth = 0;
+    int maxSelDepth = 0;
+
+    auto startTotal = std::chrono::steady_clock::now();
+
+    TT.clear();
+    Searcher.clear_history();
+    Threads.clear_all_history();
+
+    for (int i = 0; i < numPositions; ++i) {
+        StateInfo si;
+        Board benchBoard;
+        benchBoard.set(positions[i], &si);
+
+        std::cout << "Position " << (i + 1) << "/" << numPositions;
+        std::cout << ": " << positions[i] << std::endl;
+
+        SearchLimits benchLimits;
+        benchLimits.depth = depth;
+        benchLimits.nodes = 100000000;
+
+        auto posStart = std::chrono::steady_clock::now();
+        Searcher.start(benchBoard, benchLimits);
+        auto posEnd = std::chrono::steady_clock::now();
+
+        const SearchStats& stats = Searcher.stats();
+
+        auto posTime = std::chrono::duration_cast<std::chrono::milliseconds>(posEnd - posStart).count();
+        U64 posNps = posTime > 0 ? stats.nodes * 1000 / posTime : stats.nodes;
+
+        std::cout << "  Nodes: " << stats.nodes
+                  << " | Time: " << posTime << "ms"
+                  << " | NPS: " << posNps
+                  << " | SelDepth: " << stats.selDepth << std::endl;
+        std::cout << std::endl;
+
+        totalNodes += stats.nodes;
+        totalTbHits += stats.tbHits;
+        totalSelDepth += stats.selDepth;
+        maxSelDepth = std::max(maxSelDepth, stats.selDepth);
+    }
+
+    auto endTotal = std::chrono::steady_clock::now();
+    auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTotal - startTotal).count();
+    U64 avgNps = totalTime > 0 ? totalNodes * 1000 / totalTime : totalNodes;
+    double avgSelDepth = static_cast<double>(totalSelDepth) / numPositions;
+
+    std::cout << "===============================================" << std::endl;
+    std::cout << "                  RESULTS" << std::endl;
+    std::cout << "===============================================" << std::endl;
+    std::cout << "Total Nodes   : " << totalNodes << std::endl;
+    std::cout << "Total Time    : " << totalTime << " ms" << std::endl;
+    std::cout << "Nodes/Second  : " << avgNps << std::endl;
+    std::cout << "TB Hits       : " << totalTbHits << std::endl;
+    std::cout << "Avg SelDepth  : " << std::fixed << std::setprecision(1) << avgSelDepth << std::endl;
+    std::cout << "Max SelDepth  : " << maxSelDepth << std::endl;
+    std::cout << "Positions     : " << numPositions << std::endl;
+    std::cout << "===============================================" << std::endl;
+    std::cout << std::endl;
+
+    std::cout << totalNodes << " nodes " << avgNps << " nps" << std::endl;
+
+    Profiler::print_results();
+    ProfilerAnalysis::analyze_bottlenecks();
+    TT.resize(oldHash);
+    Threads.set_thread_count(oldThreads);
+}
+
+void UCIHandler::cmd_datagen(std::istringstream& is) {
+    std::string subcommand;
+    is >> subcommand;
+
+    if (subcommand == "stop") {
+        if (DataGen::is_running()) {
+            DataGen::stop();
+            std::cout << "Data generation stopped." << std::endl;
+        } else {
+            std::cout << "No data generation running." << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "status") {
+        if (DataGen::is_running()) {
+            std::cout << "Data generation is running." << std::endl;
+            DataGen::get_stats().print();
+        } else {
+            std::cout << "No data generation running." << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "view") {
+        std::string path = "data/training.binpack";
+        size_t count = 10;
+        size_t offset = 0;
+
+        std::string token;
+        while (is >> token) {
+            if (token == "file" || token == "path") {
+                is >> path;
+            } else if (token == "count" || token == "n") {
+                is >> count;
+            } else if (token == "offset" || token == "skip") {
+                is >> offset;
+            } else {
+                path = token;
+            }
+        }
+
+        DataGen::view_binpack_file(path, count, offset);
+        return;
+    }
+
+    if (subcommand == "convert") {
+        std::string binpack_path = "data/training.binpack";
+        std::string epd_path = "data/training.epd";
+        size_t max_entries = 0;
+
+        std::string token;
+        while (is >> token) {
+            if (token == "input" || token == "binpack") {
+                is >> binpack_path;
+            } else if (token == "output" || token == "epd") {
+                is >> epd_path;
+            } else if (token == "max" || token == "limit") {
+                is >> max_entries;
+            } else {
+                binpack_path = token;
+            }
+        }
+
+        DataGen::convert_to_epd(binpack_path, epd_path, max_entries);
+        return;
+    }
+
+    if (subcommand == "stats") {
+        std::string path = "data/training.binpack";
+        std::string token;
+        if (is >> token) {
+            path = token;
+        }
+
+        DataGen::FileStats stats;
+        if (DataGen::get_file_stats(path, stats)) {
+            std::cout << "\n=== Training Data Statistics ===" << std::endl;
+            std::cout << "File: " << path << std::endl;
+            std::cout << "Total entries: " << stats.total_entries << std::endl;
+            std::cout << "White wins: " << stats.white_wins
+                      << " (" << (stats.total_entries > 0 ? stats.white_wins * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Black wins: " << stats.black_wins
+                      << " (" << (stats.total_entries > 0 ? stats.black_wins * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Draws: " << stats.draws
+                      << " (" << (stats.total_entries > 0 ? stats.draws * 100.0 / stats.total_entries : 0) << "%)" << std::endl;
+            std::cout << "Score range: [" << stats.min_score << ", " << stats.max_score << "]" << std::endl;
+            std::cout << "Average score: " << (stats.total_entries > 0 ? stats.total_score / (int64_t)stats.total_entries : 0) << std::endl;
+            std::cout << "================================\n" << std::endl;
+        } else {
+            std::cerr << "Error: Cannot read file " << path << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "filter") {
+        DataGen::FilterConfig config = DataGen::parse_filter_config(is);
+
+        if (config.input_path.empty()) {
+            std::cerr << "Error: No input file specified. Use 'datagen filter input <path>'" << std::endl;
+            return;
+        }
+
+        DataGen::FilterStats stats;
+        if (DataGen::filter_binpack(config, stats)) {
+            std::cout << "Filter completed successfully!" << std::endl;
+        } else {
+            std::cerr << "Filter failed!" << std::endl;
+        }
+        return;
+    }
+
+    if (subcommand == "help" || subcommand == "?") {
+        std::cout << "\n=== Data Generation Commands ===" << std::endl;
+        std::cout << "datagen start [options]  - Start NNUE training data generation" << std::endl;
+        std::cout << "datagen stop             - Stop data generation" << std::endl;
+        std::cout << "datagen status           - Show generation statistics" << std::endl;
+        std::cout << "datagen filter [opts]    - Post-hoc filter existing binpack" << std::endl;
+        std::cout << "datagen view [file]      - View entries in a binpack file" << std::endl;
+        std::cout << "datagen stats [file]     - Show binpack file statistics" << std::endl;
+        std::cout << "datagen convert [opts]   - Convert binpack to EPD text format" << std::endl;
+
+        std::cout << "\n--- Options for 'datagen start' ---" << std::endl;
+        std::cout << "  [Search & Game]" << std::endl;
+        std::cout << "  threads <n>          - Worker threads (default: 2)" << std::endl;
+        std::cout << "  hash <mb>            - Hash table size in MB (default: 64)" << std::endl;
+        std::cout << "  depth <n>            - Search depth per position (default: 8)" << std::endl;
+        std::cout << "  softnodes <n>        - Soft node limit (default: 5000, 0=depth only)" << std::endl;
+        std::cout << "  nodes <n>            - Hard node limit (default: 0=disabled)" << std::endl;
+        std::cout << "  games <n>            - Total games to generate (default: 100000)" << std::endl;
+        std::cout << "  maxply <n>           - Max game length in plies (default: 400)" << std::endl;
+        std::cout << "  output <path>        - Output file path (default: data/training.binpack)" << std::endl;
+        std::cout << "\n  [Opening]" << std::endl;
+        std::cout << "  book <path>          - Opening book file (default: book/Perfect2023.bin)" << std::endl;
+        std::cout << "  bookdepth <n>        - Max book depth in half-moves (default: 12)" << std::endl;
+        std::cout << "  nobook               - Disable opening book (pure random opening)" << std::endl;
+        std::cout << "  random <n>           - Random opening plies after book (default: 8)" << std::endl;
+        std::cout << "  multipv <n>          - Random from top-N moves in opening (default: 2)" << std::endl;
+        std::cout << "                         1=pure random, 2+=eval-scored (more sane)" << std::endl;
+        std::cout << "\n  [Adjudication]" << std::endl;
+        std::cout << "  resign <cp>          - Adjudicate win if |score|>=cp for 4 plies (default: 2500)" << std::endl;
+        std::cout << "  drawscore <cp>       - Adjudicate draw if |score|<=cp (default: 5)" << std::endl;
+        std::cout << "\n  [Position Filters]" << std::endl;
+        std::cout << "  min_ply <n>          - Skip positions before ply N (default: 24)" << std::endl;
+        std::cout << "  min_pieces <n>       - Skip if piece count <= N (default: 5)" << std::endl;
+        std::cout << "  qsearch <cp>         - Skip if |static_eval - qsearch| > cp (default: 60)" << std::endl;
+        std::cout << "  search_margin <cp>   - Skip if |static_eval - search| > cp (default: 70)" << std::endl;
+        std::cout << "  max_score <cp>       - Skip if |static_eval| > cp (default: 2000)" << std::endl;
+        std::cout << "  eval_limit <cp>      - Clamp stored scores to +/-cp (default: disabled)" << std::endl;
+        std::cout << "  no_check_filter      - Allow positions where king is in check" << std::endl;
+        std::cout << "  no_tactical_filter   - Allow positions where bestmove is capture/promo" << std::endl;
+        std::cout << "\n  [Score Mixing -- Modern NNUE Standard]" << std::endl;
+        std::cout << "  lambda <f>           - WDL mixing: 1.0=pure eval, 0.5=50/50, 0.0=pure result" << std::endl;
+        std::cout << "                         (default: 1.0 = backward compat; recommend 0.5)" << std::endl;
+        std::cout << "  wdl_scale <cp>       - Sigmoid scale for cp->WDL (default: 400)" << std::endl;
+        std::cout << "                         400cp ~= 73% win probability" << std::endl;
+        std::cout << "  rule50_decay         - Scale eval by (100-rule50)/100 before mixing" << std::endl;
+        std::cout << "                         (default: enabled -- teaches draw near 50-move rule)" << std::endl;
+        std::cout << "  no_rule50_decay      - Disable rule50 decay" << std::endl;
+
+        std::cout << "\n--- Options for 'datagen filter' ---" << std::endl;
+        std::cout << "  input <path>         - Input binpack file (REQUIRED)" << std::endl;
+        std::cout << "  output <path>        - Output path (default: <input>_filtered.binpack)" << std::endl;
+        std::cout << "\n  [Filters -- all active by default unless noted]" << std::endl;
+        std::cout << "  qsearch <cp>         - Skip if |static_eval - qsearch| > cp (default: 60)" << std::endl;
+        std::cout << "  max_score <cp>       - Skip if |stored_score| > cp (default: 2000)" << std::endl;
+        std::cout << "  min_pieces <n>       - Skip if piece count <= N (default: 5)" << std::endl;
+        std::cout << "  eval_limit <cp>      - Clamp scores to +/-cp without discarding (default: off)" << std::endl;
+        std::cout << "  no_check_filter      - Allow in-check positions (default: filtered)" << std::endl;
+        std::cout << "  tactical_filter      - Skip if bestmove is capture/promo (needs search!)" << std::endl;
+        std::cout << "  tactical_depth <n>   - Search depth for tactical filter (default: 1)" << std::endl;
+        std::cout << "  no_dedup             - Disable Zobrist deduplication (saves RAM)" << std::endl;
+        std::cout << "                         Default: enabled (~8 bytes/position in RAM)" << std::endl;
+
+        std::cout << "\n--- Options for 'datagen view' ---" << std::endl;
+        std::cout << "  <path>               - Binpack file to inspect (positional)" << std::endl;
+        std::cout << "  count <n>            - Entries to display (default: 10)" << std::endl;
+        std::cout << "  offset <n>           - Skip first N entries (default: 0)" << std::endl;
+
+        std::cout << "\n--- Options for 'datagen convert' ---" << std::endl;
+        std::cout << "  input <path>         - Source binpack file" << std::endl;
+        std::cout << "  output <path>        - Destination EPD file" << std::endl;
+        std::cout << "  max <n>              - Max entries to convert (0=all)" << std::endl;
+
+        std::cout << "\n--- Examples ---" << std::endl;
+        std::cout << "  # Basic datagen (depth 8, 1M games, 8 threads)" << std::endl;
+        std::cout << "  datagen start threads 8 depth 8 games 1000000" << std::endl;
+        std::cout << "  # Modern NNUE (score mixing + rule50 decay + multipv)" << std::endl;
+        std::cout << "  datagen start threads 16 depth 8 games 5000000 lambda 0.5 rule50_decay multipv 2" << std::endl;
+        std::cout << "  # Large scale (Kaggle)" << std::endl;
+        std::cout << "  datagen start threads 224 hash 8192 depth 8 games 10000000 lambda 0.5 rule50_decay" << std::endl;
+        std::cout << "  # Filter: quiet + dedup + max 2000cp" << std::endl;
+        std::cout << "  datagen filter input data/training.binpack qsearch 60 max_score 2000" << std::endl;
+        std::cout << "  # Filter: disable dedup (low RAM mode)" << std::endl;
+        std::cout << "  datagen filter input data/training.binpack no_dedup" << std::endl;
+        std::cout << "  # Filter: + tactical filter (slow, high quality)" << std::endl;
+        std::cout << "  datagen filter input data/training.binpack tactical_filter tactical_depth 2" << std::endl;
+        std::cout << "  # View & inspect" << std::endl;
+        std::cout << "  datagen view data/training.binpack count 20" << std::endl;
+        std::cout << "  datagen stats data/training.binpack" << std::endl;
+        std::cout << "  datagen convert input data/training.binpack output data/training.epd" << std::endl;
+        std::cout << "================================\n" << std::endl;
+        return;
+    }
+
+    if (subcommand == "start" || !subcommand.empty()) {
+        if (DataGen::is_running()) {
+            std::cout << "Data generation already running. Use 'datagen stop' first." << std::endl;
+            return;
+        }
+        std::string remaining;
+        if (subcommand != "start") {
+            remaining = subcommand + " ";
+        }
+        std::string token;
+        while (is >> token) {
+            remaining += token + " ";
+        }
+
+        std::istringstream config_stream(remaining);
+        DataGen::DataGenConfig config = DataGen::parse_config(config_stream);
+
+        DataGen::start(config);
+        std::cout << "Data generation started in background." << std::endl;
+        std::cout << "Format: binpack" << std::endl;
+        std::cout << "Output: " << config.output << std::endl;
+        std::cout << "Use 'datagen status' to check progress, 'datagen stop' to cancel." << std::endl;
+        return;
+    }
+
+    std::cout << "Unknown datagen command. Use 'datagen help' for usage." << std::endl;
+}
+
+void UCIHandler::cmd_wac(std::istringstream& is) {
+    wait_for_search();
+
+    int depth = 10;
+    int timeLimitMs = 0;
+    int startPos = 1;
+    int endPos = 0;  // 0 = all
+    bool verbose = true;
+    bool quiet = false;
+
+    std::string token;
+    while (is >> token) {
+        if (token == "depth" || token == "d") {
+            is >> depth;
+            timeLimitMs = 0;  // Depth takes priority
+        } else if (token == "time" || token == "t" || token == "movetime") {
+            is >> timeLimitMs;
+            depth = 0;  // Time takes priority
+        } else if (token == "start" || token == "from") {
+            is >> startPos;
+        } else if (token == "end" || token == "to") {
+            is >> endPos;
+        } else if (token == "quiet" || token == "q") {
+            quiet = true;
+            verbose = false;
+        } else if (token == "verbose" || token == "v") {
+            verbose = true;
+            quiet = false;
+        } else if (token == "help" || token == "?") {
+            std::cout << "\n=== WAC Test Suite Commands ===" << std::endl;
+            std::cout << "wac                  - Run all positions at depth 10" << std::endl;
+            std::cout << "wac depth <n>        - Search to specified depth" << std::endl;
+            std::cout << "wac time <ms>        - Search for specified milliseconds" << std::endl;
+            std::cout << "wac start <n> end <m> - Test positions n through m" << std::endl;
+            std::cout << "wac quiet            - Only show summary, not individual results" << std::endl;
+            std::cout << "wac verbose          - Show all individual results (default)" << std::endl;
+            std::cout << "\nExamples:" << std::endl;
+            std::cout << "  wac depth 12       - Run all at depth 12" << std::endl;
+            std::cout << "  wac time 1000      - Run all with 1 second per position" << std::endl;
+            std::cout << "  wac start 1 end 50 - Run only positions 1-50" << std::endl;
+            std::cout << "  wac depth 8 quiet  - Run at depth 8, summary only" << std::endl;
+            std::cout << "================================\n" << std::endl;
+            return;
+        } else {
+            // Try parsing as a number for quick depth setting
+            try {
+                depth = std::stoi(token);
+                timeLimitMs = 0;
+            } catch (...) {
+                // Ignore unknown token
+            }
+        }
+    }
+
+    Tests::run_wac_test(depth, timeLimitMs, startPos, endPos, verbose);
+}
+
+TimeManager::TimeManager()
+    : optimalTime(0), maximumTime(0), startTime(0),
+      incrementTime(0), movesToGo(0), stability(1.0) {}
+
+void TimeManager::init(Color us, int timeLeft, int increment, int mtg, int moveTime) {
+    (void)us;
+
+    incrementTime = increment;
+    movesToGo = mtg > 0 ? mtg : 40;
+
+    if (moveTime > 0) {
+        optimalTime = moveTime - UCI::options.moveOverhead;
+        maximumTime = moveTime - UCI::options.moveOverhead;
+        return;
+    }
+
+    int overhead = UCI::options.moveOverhead;
+    int safeTime = std::max(1, timeLeft - overhead);
+
+    int baseTime = safeTime / movesToGo;
+
+    baseTime += increment * 3 / 4;
+
+    optimalTime = std::min(baseTime, safeTime / 2);
+
+    maximumTime = std::min(safeTime * 3 / 4, baseTime * 3);
+
+    optimalTime = std::max(10, optimalTime);
+    maximumTime = std::max(50, maximumTime);
+
+    stability = 1.0;
+}
+
+bool TimeManager::should_stop(int elapsed, int depth, bool bestMoveStable) {
+    if (depth < 1) return false;
+
+    if (elapsed >= maximumTime) return true;
+
+    int adjustedOptimal = static_cast<int>(optimalTime * stability);
+
+    if (bestMoveStable && elapsed >= adjustedOptimal / 2) {
+        return true;
+    }
+
+    if (elapsed >= adjustedOptimal) {
+        return true;
+    }
+
+    return false;
+}
+
+void TimeManager::adjust(bool scoreDropped, bool bestMoveChanged) {
+    if (scoreDropped) {
+        stability = std::min(2.0, stability * 1.2);
+    }
+
+    if (bestMoveChanged) {
+        stability = std::min(2.0, stability * 1.1);
+    } else {
+        stability = std::max(0.5, stability * 0.95);
+    }
+}
+
+}
