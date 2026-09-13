@@ -21,10 +21,6 @@ public:
         return z ^ (z >> 31);
     }
 
-    U64 sparse() {
-        return next() & next() & next();
-    }
-
 private:
     U64 state;
 };
@@ -42,25 +38,6 @@ void init() {
                 PieceSquare[pc][sq] = 0;
             }
         }
-    }
-
-    for (int cr = 0; cr < CASTLING_RIGHT_NB; ++cr) {
-        Castling[cr] = 0;
-
-        Key k = 0;
-        if (cr & WHITE_OO)  k ^= rng.next();
-        else rng.next();
-
-        if (cr & WHITE_OOO) k ^= rng.next();
-        else rng.next();
-
-        if (cr & BLACK_OO)  k ^= rng.next();
-        else rng.next();
-
-        if (cr & BLACK_OOO) k ^= rng.next();
-        else rng.next();
-
-        Castling[cr] = k;
     }
 
     Key castling_right_keys[4];

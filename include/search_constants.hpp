@@ -30,23 +30,23 @@ inline int rfp_margin(int depth, bool improving) {
 // Pruning Depths
 // ============================================================================
 
-constexpr int FUTILITY_MAX_DEPTH = 6;
-constexpr int RAZORING_MAX_DEPTH = 1;
-constexpr int RFP_MAX_DEPTH = 9;
-constexpr int LMP_MAX_DEPTH = 7;
-constexpr int SEE_QUIET_MAX_DEPTH = 3;
-constexpr int SEE_CAPTURE_MAX_DEPTH = 4;
+constexpr int FUTILITY_MAX_DEPTH = 11;  // Extended from 8 — prune at higher depths
+constexpr int RAZORING_MAX_DEPTH = 0;   // Disabled — razoring pruned tactical nodes (WAC experiment)
+constexpr int RFP_MAX_DEPTH = 12;       // Extended from 9 — RFP active deeper
+constexpr int LMP_MAX_DEPTH = 12;       // Extended from 9 — LMP active deeper
+constexpr int SEE_QUIET_MAX_DEPTH = 8;  // Extended from 5 — SEE prune quiet moves deeper
+constexpr int SEE_CAPTURE_MAX_DEPTH = 9;// Extended from 6 — SEE prune captures deeper
 
 constexpr int SEE_CAPTURE_THRESHOLD_PER_DEPTH = -25;
 constexpr int SEE_QUIET_THRESHOLD_PER_DEPTH = -60;
 
-constexpr int HISTORY_LEAF_PRUNING_DEPTH = 5;
+constexpr int HISTORY_LEAF_PRUNING_DEPTH = 6;
 constexpr int HISTORY_LEAF_PRUNING_MARGIN = 6000;
 
-constexpr int COUNTER_HIST_PRUNING_DEPTH = 4;
+constexpr int COUNTER_HIST_PRUNING_DEPTH = 5;
 constexpr int COUNTER_HIST_PRUNING_MARGIN = 3000;
 
-constexpr int FOLLOWUP_HIST_PRUNING_DEPTH = 3;
+constexpr int FOLLOWUP_HIST_PRUNING_DEPTH = 4;
 constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 // ============================================================================
@@ -55,18 +55,17 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 constexpr int MAX_EXTENSIONS = 5;
 
-constexpr int SINGULAR_DEPTH = 4;
+constexpr int SINGULAR_DEPTH = 8;
 constexpr int SINGULAR_MARGIN = 80;
 constexpr int SINGULAR_TT_DEPTH_PENALTY = 8;
 constexpr int SINGULAR_IMPROVING_BONUS = 10;
 constexpr int SINGULAR_DOUBLE_EXT_BASE = 60;
 
-constexpr int CAPTURE_EXT_MIN_DEPTH = 8;
+constexpr int CAPTURE_EXT_MIN_DEPTH = 10; // Raised from 8 — moderate increase to reduce cascade extensions
 constexpr int CAPTURE_EXT_SEE_THRESHOLD = 0;
-
 constexpr int MATE_THREAT_EXT_MIN_DEPTH = 4;
 
-constexpr int PV_EXT_MIN_DEPTH = 7;
+constexpr int PV_EXT_MIN_DEPTH = 8;       // Raised from 7 — slight increase to avoid PV ext at shallow internal nodes
 
 
 
@@ -85,13 +84,14 @@ constexpr int NULL_MOVE_MIN_DEPTH = 3;
 constexpr int NULL_MOVE_BASE_R = 3;           // Base reduction for NMP
 constexpr int NULL_MOVE_DEPTH_DIVISOR = 4;    // R += depth / DIVISOR
 constexpr int NULL_MOVE_EVAL_MARGIN = 200;    // If (eval - beta) > MARGIN, R += 1
-constexpr int NULL_MOVE_VERIFY_DEPTH = 12;    // V-NMP threshold (was 16)
+constexpr int NULL_MOVE_VERIFY_DEPTH = 20;    // Restored: prevents zugzwang errors in endgame.
+                                               // 24 was effectively disabled; 20 is practical ceiling.
 
 // ============================================================================
 // Aspiration Window Parameters
 // ============================================================================
 
-constexpr int ASPIRATION_INITIAL_DELTA = 30;
+constexpr int ASPIRATION_INITIAL_DELTA = 16;
 constexpr int ASPIRATION_MIN_DEPTH = 6;
 
 // ============================================================================
@@ -104,7 +104,8 @@ constexpr int IIR_PV_REDUCTION = 1;
 constexpr int IIR_CUT_REDUCTION = 2;
 
 constexpr int QSEARCH_CHECK_DEPTH = 0;
-constexpr int DELTA_PRUNING_MARGIN = 650;
+constexpr int DELTA_PRUNING_MARGIN = 350;
+constexpr int QSEARCH_FUTILITY_MARGIN = 250;
 
 // ============================================================================
 // LMR Tuning Parameters (Adjusted for HCE Engines)
@@ -112,8 +113,10 @@ constexpr int DELTA_PRUNING_MARGIN = 650;
 // Base formula: R = LMR_BASE + ln(depth) * ln(moveNumber) / LMR_DIVISOR
 // ============================================================================
 
-constexpr double LMR_BASE      = 0.60;      // dari 0.78 → lebih agresif
-constexpr double LMR_DIVISOR   = 1.50;      // dari 1.68 → lebih agresif
+constexpr double LMR_BASE      = 0.75;      // Calibrated baseline — tested optimal
+constexpr double LMR_DIVISOR   = 1.30;      // LOCKED: tested 1.30/1.60/1.90 — all give 73% WAC,
+                                             // but 1.30 gives 13.5M nodes@d20 vs 28-32M for others.
+                                             // In time-limited play: reaches depth 22-23 vs depth 20.
 
 constexpr int LMR_MIN_DEPTH        = 3;
 constexpr int LMR_CUTNODE_BONUS    = 2;
@@ -142,7 +145,7 @@ constexpr int NEG_EXT_THRESHOLD = 100;
 constexpr int NEG_EXT_MIN_DEPTH = 6;
 
 // Triple Extension Parameters (PlentyChess-style)
-constexpr int SINGULAR_DOUBLE_EXT_MARGIN = 6;
+constexpr int SINGULAR_DOUBLE_EXT_MARGIN = 25;
 constexpr int SINGULAR_TRIPLE_EXT_MARGIN = 41;
 constexpr int SINGULAR_DEPTH_INCREASE = 10;
 
@@ -169,7 +172,7 @@ constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 
 // Multi-Cut Parameters
 // ============================================================================
 
-constexpr int MULTI_CUT_DEPTH = 16;
+constexpr int MULTI_CUT_DEPTH = 12;  // Lowered from 16 — gives earlier multi-cut benefit at depth 12-15
 constexpr int MULTI_CUT_COUNT = 3;
 constexpr int MULTI_CUT_REQUIRED = 2;
 

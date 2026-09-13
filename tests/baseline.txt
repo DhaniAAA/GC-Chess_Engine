@@ -1,0 +1,43 @@
+# Baseline regression untuk GC-Chess Engine
+# ==========================================
+# Isi nilai setelah menjalankan masing-masing suite pada build yang diketahui
+# bagus, lalu bandingkan manual (atau via script) setelah perubahan search.
+#
+# Cara mengisi ulang:
+#   echo bench | output/main.exe                       -> catat nodes/time
+#   echo "wac depth 10 quiet" | output/main.exe        -> catat pass rate
+#   echo "bk depth 12 quiet" | output/main.exe         -> catat pass rate
+#   python tests/run_integration.py                    -> harus semua PASS
+#   python tests/run_time_guard.py                     -> harus 0 pelanggaran
+#
+# Panduan ambang:
+#   - bench nodes: selisih > 3% = perilaku search berubah (perlu SPRT)
+#   - WAC depth 10 : turun > 2 posisi = indikasi regression taktik
+#   - BK  depth 12 : turun > 1 posisi  = indikasi regression strategi
+#   - integration/time-guard: TIDAK BOLEH ada kegagalan sama sekali
+
+[bench]
+command = bench (output/main.exe, 2026-08-16, build post SEE-fix)
+depth = 13
+threads = 1
+hash_mb = 16
+nodes  = 17456598
+nps    = 872480
+
+[wac]
+command = wac depth 10 quiet
+passed = 218
+total = 299
+
+[bratko_kopec]
+command = bk depth 12 quiet
+passed = 10
+total = 24
+
+[integration]
+command = python tests/run_integration.py
+result = 13/13 PASS (2026-08-16, setelah fix FEN mate-in-1 #2)
+
+[time_guard]
+command = python tests/run_time_guard.py
+violations = 0 (2026-08-16, setelah FEN berraja)

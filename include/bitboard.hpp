@@ -32,9 +32,6 @@ constexpr Bitboard NOT_FILE_H_BB = ~FILE_H_BB;
 constexpr Bitboard NOT_FILE_AB_BB = ~(FILE_A_BB | FILE_B_BB);
 constexpr Bitboard NOT_FILE_GH_BB = ~(FILE_G_BB | FILE_H_BB);
 
-extern Bitboard FileBB[FILE_NB];
-extern Bitboard RankBB[RANK_NB];
-extern Bitboard SquareBB[SQUARE_NB];
 extern Bitboard BetweenBB[SQUARE_NB][SQUARE_NB];
 extern Bitboard LineBB[SQUARE_NB][SQUARE_NB];
 

@@ -87,7 +87,11 @@ int SEE::evaluate(const Board& board, Move m) {
         ++depth;
         gain[depth] = PieceValue[attacker] - gain[depth - 1];
 
-        if (std::max(-gain[depth - 1], gain[depth]) < 0) {
+        // Jangan prune dengan "max(-gain[d-1], gain[d]) < 0": prune itu
+        // keliru ketika pihak berikutnya masih punya recapture yang
+        // MENGURANGI kerugian (mis. Bxe5 fxe5 dxe5: -130, bukan -230).
+        // Batasi hanya oleh kapasitas gain[].
+        if (depth >= 31) {
             break;
         }
 
@@ -156,7 +160,9 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, int p,
       contHist1ply(contHist1), contHist2ply(contHist2), contHist3ply(contHist3), contHist4ply(contHist4),
       captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), quietCheckCount(0), currentIdx(0), equalCaptureIdx(0), quietCheckIdx(0),
-      badCaptureIdx(0), ply(p), stage(STAGE_TT_MOVE) {
+      badCaptureIdx(0), ply(p), stage(STAGE_TT_MOVE),
+      hasMoveInfo(false), givesCheckInfo(false), attacksKingZoneInfo(false),
+      hasSeeZero(false), seeZeroInfo(false), lastFlags(0) {
 
     for (int i = 0; i < 3; ++i) {
         ttMoves[i] = (i < count) ? tm[i] : MOVE_NONE;
@@ -178,7 +184,9 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryT
       contHist1ply(nullptr), contHist2ply(nullptr), contHist3ply(nullptr), contHist4ply(nullptr), captureHist(nullptr),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
-      stage(STAGE_QS_TT_MOVE) {
+      stage(STAGE_QS_TT_MOVE),
+      hasMoveInfo(false), givesCheckInfo(false), attacksKingZoneInfo(false),
+      hasSeeZero(false), seeZeroInfo(false), lastFlags(0) {
 
     for (int i = 0; i < 3; ++i) {
         ttMoves[i] = (i < count) ? tm[i] : MOVE_NONE;
@@ -191,7 +199,9 @@ MovePicker::MovePicker(const Board& b, const Move* tm, int count, const HistoryT
       contHist1ply(nullptr), contHist2ply(nullptr), contHist3ply(nullptr), contHist4ply(nullptr), captureHist(ch),
       ttMoveCount(count), ttMoveIdx(0), killer1(MOVE_NONE), killer2(MOVE_NONE),
       counterMove(MOVE_NONE), quietCheckCount(0), currentIdx(0), badCaptureIdx(0), ply(0),
-      stage(STAGE_QS_TT_MOVE) {
+      stage(STAGE_QS_TT_MOVE),
+      hasMoveInfo(false), givesCheckInfo(false), attacksKingZoneInfo(false),
+      hasSeeZero(false), seeZeroInfo(false), lastFlags(0) {
 
     for (int i = 0; i < 3; ++i) {
         ttMoves[i] = (i < count) ? tm[i] : MOVE_NONE;
@@ -227,6 +237,9 @@ void MovePicker::score_captures() {
             PREFETCH_READ(&moves[idx + 2]);
         }
 
+        bool givesCheck = MoveGen::gives_check(board, m);
+        flags[idx] = givesCheck ? FLAG_GIVES_CHECK : 0;
+
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
             Piece captured = board.piece_on(m.to());
@@ -250,11 +263,10 @@ void MovePicker::score_captures() {
         int valueDiff = PieceValue[capturedPt] - PieceValue[attackerPt];
 
         bool likelyGoodCapture = (valueDiff >= 200);
-        bool givesCheck = false;
 
         if (!likelyGoodCapture) {
-            givesCheck = MoveGen::gives_check(board, m);
-            if (givesCheck) {
+            if (givesCheck && SEE::see_ge(board, m, 0)) {
+                flags[idx] |= FLAG_SEE_GE_ZERO;
                 sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
                 if (captureHist && captured != NO_PIECE) {
                     sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
@@ -265,11 +277,13 @@ void MovePicker::score_captures() {
 
         if (likelyGoodCapture) {
             sm.score = SCORE_WINNING_CAP + mvvLva;
+            flags[idx] |= FLAG_SEE_GE_ZERO;
             if (captureHist && captured != NO_PIECE) {
                 sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
             }
         } else {
             if (SEE::see_ge(board, m, 0)) {
+                flags[idx] |= FLAG_SEE_GE_ZERO;
                 if (std::abs(valueDiff) <= 50 && capturedPt == attackerPt) {
                     sm.score = SCORE_EQUAL_CAP + mvvLva;
                     switch (capturedPt) {
@@ -329,15 +343,21 @@ void MovePicker::score_quiets() {
 
         int tacticalBonus = 0;
 
+        uint8_t mFlags = 0;
+
         Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
         Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
         if (attacksAfter & kingZone) {
+            mFlags |= FLAG_ATTACKS_KING_ZONE;
             tacticalBonus += 5000;
         }
 
         if (MoveGen::gives_check(board, m)) {
+            mFlags |= FLAG_GIVES_CHECK;
             tacticalBonus += 8000;
         }
+
+        flags[idx] = mFlags;
 
         if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
             !aligned(m.from(), to, enemyKing)) {
@@ -397,12 +417,29 @@ Move MovePicker::pick_best() {
     if (currentIdx >= moves.size()) {
         return MOVE_NONE;
     }
-    return moves.pick_best(currentIdx++);
+    int bestIdx = currentIdx;
+    for (int i = currentIdx + 1; i < moves.size(); ++i) {
+        if (moves[i].score > moves[bestIdx].score) {
+            bestIdx = i;
+        }
+    }
+    if (bestIdx != currentIdx) {
+        std::swap(moves[currentIdx], moves[bestIdx]);
+        std::swap(flags[currentIdx], flags[bestIdx]);
+    }
+    return moves[currentIdx++].move;
 }
 
 Move MovePicker::next_move() {
     PROFILE_SCOPE("next_move");
     Move m;
+
+    hasMoveInfo = false;
+    givesCheckInfo = false;
+    attacksKingZoneInfo = false;
+    hasSeeZero = false;
+    seeZeroInfo = false;
+    lastFlags = 0;
 
     switch (stage) {
         case STAGE_TT_MOVE:
@@ -431,40 +468,10 @@ Move MovePicker::next_move() {
                     currentIdx--;
                     break;
                 }
-                return m;
-            }
-            ++stage;
-            [[fallthrough]];
-
-        case STAGE_GENERATE_QUIET_CHECKS:
-            {
-                quietChecks.clear();
-                quietCheckCount = 0;
-                MoveGen::generate_checking_moves(board, quietChecks);
-
-                MoveList filteredChecks;
-                for (size_t i = 0; i < quietChecks.size(); ++i) {
-                    Move qm = quietChecks[i].move;
-                    if (!is_tt_move(qm)) {
-                        filteredChecks.add(qm, 0);
-                        if (quietCheckCount < MAX_QUIET_CHECKS) {
-                            quietCheckMoves[quietCheckCount++] = qm;
-                        }
-                    }
-                }
-                quietChecks = filteredChecks;
-
-                score_quiet_checks();
-                quietCheckIdx = 0;
-            }
-            ++stage;
-            [[fallthrough]];
-
-        case STAGE_QUIET_CHECKS:
-            while (quietCheckIdx < quietChecks.size()) {
-                m = quietChecks.pick_best(quietCheckIdx++);
-                if (is_tt_move(m)) continue;
-                if (m == killer1 || m == killer2 || m == counterMove) continue;
+                hasMoveInfo = true;
+                lastFlags = flags[currentIdx - 1];
+                givesCheckInfo = (flags[currentIdx - 1] & FLAG_GIVES_CHECK) != 0;
+                attacksKingZoneInfo = false;
                 return m;
             }
             ++stage;
@@ -496,6 +503,44 @@ Move MovePicker::next_move() {
                 board.empty(counterMove.to())) {
                 return counterMove;
             }
+            [[fallthrough]];
+
+        case STAGE_GENERATE_QUIET_CHECKS:
+            {
+                quietChecks.clear();
+                quietCheckCount = 0;
+                MoveGen::generate_checking_moves(board, quietChecks);
+
+                MoveList filteredChecks;
+                for (size_t i = 0; i < quietChecks.size(); ++i) {
+                    Move qm = quietChecks[i].move;
+                    if (!is_tt_move(qm) && qm != killer1 && qm != killer2 && qm != counterMove &&
+                        SEE::see_ge(board, qm, 0)) {
+                        filteredChecks.add(qm, 0);
+                        if (quietCheckCount < MAX_QUIET_CHECKS) {
+                            quietCheckMoves[quietCheckCount++] = qm;
+                        }
+                    }
+                }
+                quietChecks = filteredChecks;
+
+                score_quiet_checks();
+                quietCheckIdx = 0;
+            }
+            ++stage;
+            [[fallthrough]];
+
+        case STAGE_QUIET_CHECKS:
+            while (quietCheckIdx < quietChecks.size()) {
+                m = quietChecks.pick_best(quietCheckIdx++);
+                if (is_tt_move(m)) continue;
+                if (m == killer1 || m == killer2 || m == counterMove) continue;
+                hasMoveInfo = true;
+                givesCheckInfo = true;
+                attacksKingZoneInfo = false;
+                return m;
+            }
+            ++stage;
             [[fallthrough]];
 
         case STAGE_GENERATE_QUIETS:
@@ -534,6 +579,10 @@ Move MovePicker::next_move() {
                 }
                 if (is_quiet_check(m)) continue;
 
+                hasMoveInfo = true;
+                lastFlags = flags[currentIdx - 1];
+                givesCheckInfo = (flags[currentIdx - 1] & FLAG_GIVES_CHECK) != 0;
+                attacksKingZoneInfo = (flags[currentIdx - 1] & FLAG_ATTACKS_KING_ZONE) != 0;
                 return m;
             }
             ++stage;
@@ -543,6 +592,9 @@ Move MovePicker::next_move() {
             while (badCaptureIdx < badCaptures.size()) {
                 m = badCaptures.pick_best(badCaptureIdx++);
                 if (is_tt_move(m)) continue;
+                hasMoveInfo = true;
+                givesCheckInfo = false;
+                attacksKingZoneInfo = false;
                 return m;
             }
             ++stage;
@@ -572,6 +624,13 @@ Move MovePicker::next_move() {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
                 if (moves[currentIdx - 1].score <= SCORE_LOSING_CAP + 1000) break;
+
+                hasMoveInfo = true;
+                lastFlags = flags[currentIdx - 1];
+                givesCheckInfo = (flags[currentIdx - 1] & FLAG_GIVES_CHECK) != 0;
+                attacksKingZoneInfo = false;
+                hasSeeZero = true;
+                seeZeroInfo = (flags[currentIdx - 1] & FLAG_SEE_GE_ZERO) != 0;
                 return m;
             }
             ++stage;

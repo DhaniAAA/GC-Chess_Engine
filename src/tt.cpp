@@ -74,19 +74,36 @@ TTEntry* TranspositionTable::probe(Key key, bool& found) {
     U16 key16 = static_cast<U16>(key >> 48);
     U32 key32 = static_cast<U32>(key >> 16);  // CRITICAL FIX: Extract key32 for verification
 
+    // Depth-preferred probe: scan the whole cluster and return the DEEPEST
+    // matching entry. The old code returned the first match (or the first
+    // empty slot) it found, which could miss deeper matches stored in later
+    // slots (e.g. concurrent LazySMP threads storing the same key twice).
+    TTEntry* match = nullptr;
+    int matchDepth = -1;
+    TTEntry* firstEmpty = nullptr;
+
     for (int i = 0; i < TTCluster::ENTRIES_PER_CLUSTER; ++i) {
         // CRITICAL FIX: Verify BOTH key16 AND key32 to prevent collisions
         // Old: Only checked key16 (1/65K collision rate)
         // New: Check key16 + key32 (1/281 trillion collision rate)
         if (entry[i].key16 == key16 && entry[i].key32 == key32) {
-            found = true;
-            return &entry[i];
+            if (entry[i].depth8 > matchDepth) {
+                match = &entry[i];
+                matchDepth = entry[i].depth8;
+            }
+        } else if (!firstEmpty && entry[i].key16 == 0) {
+            firstEmpty = &entry[i];
         }
+    }
 
-        if (entry[i].key16 == 0) {
-            found = false;
-            return &entry[i];
-        }
+    if (match) {
+        found = true;
+        return match;
+    }
+
+    if (firstEmpty) {
+        found = false;
+        return firstEmpty;
     }
 
     TTEntry* replace = &entry[0];
@@ -134,15 +151,17 @@ void TranspositionTable::get_moves(Key key, Move* moves, int& count) {
         }
     }
 
-    // Step 2: Sort by depth descending (highest depth first)
-    for (int i = 0; i < numCandidates - 1; ++i) {
-        for (int j = i + 1; j < numCandidates; ++j) {
-            if (candidates[j].depth > candidates[i].depth) {
-                MoveDepth tmp = candidates[i];
-                candidates[i] = candidates[j];
-                candidates[j] = tmp;
-            }
+    // Step 2: Sort by depth descending, highest depth first.
+    // At most 4 candidates, so a small insertion sort beats the old
+    // bubble sort in both moves and comparisons.
+    for (int i = 1; i < numCandidates; ++i) {
+        MoveDepth cur = candidates[i];
+        int j = i - 1;
+        while (j >= 0 && candidates[j].depth < cur.depth) {
+            candidates[j + 1] = candidates[j];
+            --j;
         }
+        candidates[j + 1] = cur;
     }
 
     // Step 3: Add to output with strict deduplication

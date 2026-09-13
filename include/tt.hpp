@@ -34,7 +34,6 @@ struct alignas(16) TTEntry {
     int depth() const { return depth8; }
     Bound bound() const { return Bound(genBound8 & 0x3); }
     U8 generation() const { return genBound8 >> 2; }
-    bool is_pv() const { return isPv8 != 0; }
 
     void save(Key k, int s, int e, Bound b, int d, Move m, U8 gen, bool pv = false) {
         U16 k16 = static_cast<U16>(k >> 48);
@@ -84,14 +83,6 @@ public:
         #endif
     }
 
-    void prefetch2(Key key) {
-        #if defined(_MM_HINT_T1)
-        _mm_prefetch((const char*)first_entry(key), _MM_HINT_T1);
-        #elif defined(__GNUC__)
-        __builtin_prefetch(first_entry(key), 0, 2);
-        #endif
-    }
-
     void new_search() { generation8 += 4; }
 
     TTEntry* probe(Key key, bool& found);
@@ -120,6 +111,9 @@ constexpr int VALUE_NONE = 32001;
 constexpr int VALUE_INFINITE = 32002;
 
 inline int score_to_tt(int score, int ply) {
+    if (score == VALUE_NONE || score >= VALUE_INFINITE) {
+        return score;
+    }
     if (score >= VALUE_MATE_IN_MAX_PLY) {
         return score + ply;
     }
@@ -130,6 +124,9 @@ inline int score_to_tt(int score, int ply) {
 }
 
 inline int score_from_tt(int score, int ply) {
+    if (score == VALUE_NONE || score >= VALUE_INFINITE) {
+        return score;
+    }
     if (score >= VALUE_MATE_IN_MAX_PLY) {
         return score - ply;
     }

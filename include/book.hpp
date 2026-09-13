@@ -170,9 +170,6 @@ public:
 
     bool is_loaded() const { return loaded; }
 
-    size_t size() const { return entries.size(); }
-    void set_variety(bool v) { variety = v; }
-
     Move probe(const Board& board) const {
         if (!loaded) return MOVE_NONE;
 
@@ -220,28 +217,6 @@ public:
             [](const auto& a, const auto& b) { return a.second < b.second; });
 
         return best->first;
-    }
-
-    std::vector<std::pair<Move, int>> get_moves(const Board& board) const {
-        std::vector<std::pair<Move, int>> moves;
-        if (!loaded) return moves;
-
-        U64 key = polyglot_key(board);
-
-        auto lower = std::lower_bound(entries.begin(), entries.end(), key,
-            [](const BookEntry& e, U64 k) { return e.key < k; });
-
-        for (auto it = lower; it != entries.end() && it->key == key; ++it) {
-            Move m = decode_polyglot_move(board, it->move);
-            if (m != MOVE_NONE) {
-                moves.push_back({m, it->weight});
-            }
-        }
-
-        std::sort(moves.begin(), moves.end(),
-            [](const auto& a, const auto& b) { return a.second > b.second; });
-
-        return moves;
     }
 
 private:

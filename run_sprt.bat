@@ -100,6 +100,20 @@ cutechess-cli ^
 
 echo.
 echo Test completed. Results saved to %OUTPUT_PGN%
+
+REM Time-forfeit guard: scan PGN untuk kekalahan/kemenangan karena waktu.
+REM APA PUN time-forfeit pada SPRT = indikasi bug time management.
+where python >nul 2>&1
+if not errorlevel 1 (
+    python tests\check_forfeits.py "%OUTPUT_PGN%"
+    if errorlevel 1 (
+        echo.
+        echo *********************************************
+        echo  PERINGATAN: time-forfeit terdeteksi!
+        echo  Jangan merge sebelum penyebab diinvestigasi.
+        echo *********************************************
+    )
+)
 goto :end
 
 :error

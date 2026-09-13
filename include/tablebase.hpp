@@ -146,17 +146,10 @@ inline bool is_known_draw(const Board& board) {
 }
 
 inline int scale_factor(const Board& board) {
-    int whitePawns = popcount(board.pieces(WHITE, PAWN));
-    int blackPawns = popcount(board.pieces(BLACK, PAWN));
-
-    if (whitePawns == 0 && blackPawns == 0) {
-        return 32;
-    }
-
-    if (whitePawns == 0 || blackPawns == 0) {
-        return 64;
-    }
-
+    // The previous implementation scaled down the evaluation if one or both sides
+    // had no pawns, which caused wild score fluctuations in the endgame (e.g., 
+    // a mating net with Q+R vs K would have its score divided by 4). 
+    // It's safer to rely on the base evaluation and `is_known_draw` for accuracy.
     return 128;
 }
 

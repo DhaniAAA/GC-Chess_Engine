@@ -262,7 +262,7 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
             moves.add(Move::make(from, to));
         }
 
-        if (discoveredBlockers & from) {
+        if (discoveredBlockers & square_bb(from)) {
             Bitboard discMoves = attacks & empty & ~knightCheckSqs;
             while (discMoves) {
                 Square to = pop_lsb(discMoves);
@@ -284,7 +284,7 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
             moves.add(Move::make(from, to));
         }
 
-        if (discoveredBlockers & from) {
+        if (discoveredBlockers & square_bb(from)) {
             Bitboard discMoves = attacks & empty & ~bishopCheckSqs;
             while (discMoves) {
                 Square to = pop_lsb(discMoves);
@@ -306,7 +306,7 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
             moves.add(Move::make(from, to));
         }
 
-        if (discoveredBlockers & from) {
+        if (discoveredBlockers & square_bb(from)) {
             Bitboard discMoves = attacks & empty & ~rookCheckSqs;
             while (discMoves) {
                 Square to = pop_lsb(discMoves);
@@ -343,10 +343,10 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
 
         Square to1 = Square(from + push);
         if (board.empty(to1)) {
-            if (pawnCheckSqs & to1) {
+            if (pawnCheckSqs & square_bb(to1)) {
                 moves.add(Move::make(from, to1));
             }
-            else if ((discoveredBlockers & from) && !aligned(from, to1, theirKing)) {
+            else if ((discoveredBlockers & square_bb(from)) && !aligned(from, to1, theirKing)) {
                 moves.add(Move::make(from, to1));
             }
 
@@ -354,10 +354,10 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
             if ((us == WHITE && fromRank == RANK_2) || (us == BLACK && fromRank == RANK_7)) {
                 Square to2 = Square(to1 + push);
                 if (board.empty(to2)) {
-                    if (pawnCheckSqs & to2) {
+                    if (pawnCheckSqs & square_bb(to2)) {
                         moves.add(Move::make(from, to2));
                     }
-                    else if ((discoveredBlockers & from) && !aligned(from, to2, theirKing)) {
+                    else if ((discoveredBlockers & square_bb(from)) && !aligned(from, to2, theirKing)) {
                         moves.add(Move::make(from, to2));
                     }
                 }
@@ -372,7 +372,7 @@ void MoveGen::generate_checking_moves(const Board& board, MoveList& moves) {
         while (kingMoves) {
             Square to = pop_lsb(kingMoves);
             if (!aligned(ksq, to, theirKing)) {
-                Bitboard occ = (occupied ^ ksq) | to;
+                Bitboard occ = (occupied ^ square_bb(ksq)) | square_bb(to);
                 if (!(board.attackers_to(to, occ) & board.pieces(them))) {
                     moves.add(Move::make(ksq, to));
                 }
@@ -428,16 +428,46 @@ bool MoveGen::is_legal(const Board& board, Move m) {
         return false;
     }
 
-    if (board.pieces(us) & to) {
+    if (board.pieces(us) & square_bb(to)) {
         return false;
     }
 
     Color them = ~us;
+    PieceType pt = type_of(pc);
+
+    // Promotion must be a pawn reaching the last rank with a matching
+    // push/double-push/capture pattern. Without this, a stale TT/killer/
+    // counter move carrying promotion bits for another piece would make
+    // do_move transmute the piece (e.g. king -> queen) and corrupt search.
+    if (m.is_promotion()) {
+        if (pt != PAWN) return false;
+        Rank to_rank = rank_of(to);
+        if (us == WHITE && to_rank != RANK_8) return false;
+        if (us == BLACK && to_rank != RANK_1) return false;
+        Direction push = pawn_push(us);
+        bool isPush = (to == Square(from + push)) && board.empty(to);
+        bool isDouble = false;
+        Rank from_rank = (us == WHITE) ? RANK_2 : RANK_7;
+        if (rank_of(from) == from_rank && to == Square(from + push + push) &&
+            board.empty(Square(from + push)) && board.empty(to)) {
+            isDouble = true;
+        }
+        bool isCap = ((pawn_attacks_bb(us, from) & square_bb(to)) != 0) &&
+                     ((board.pieces(them) & square_bb(to)) != 0);
+        if (!isPush && !isDouble && !isCap) return false;
+    }
+
+    // No legal chess move ever captures the enemy king. Reject explicitly so
+    // a stale TT/killer move can never put a kingless position into search.
+    if (to == board.king_square(them)) {
+        return false;
+    }
+
     Square ksq = board.king_square(us);
 
     if (m.is_enpassant()) {
         Square captured_sq = to - pawn_push(us);
-        Bitboard occupied = (board.pieces() ^ from ^ captured_sq) | to;
+        Bitboard occupied = (board.pieces() ^ square_bb(from) ^ square_bb(captured_sq)) | square_bb(to);
 
         return !(rook_attacks_bb(ksq, occupied) & board.pieces(them, ROOK, QUEEN)) &&
                !(bishop_attacks_bb(ksq, occupied) & board.pieces(them, BISHOP, QUEEN));
@@ -470,7 +500,7 @@ bool MoveGen::is_legal(const Board& board, Move m) {
             }
             return true;
         }
-        Bitboard occupied = board.pieces() ^ from;
+        Bitboard occupied = board.pieces() ^ square_bb(from);
         return !(board.attackers_to(to, occupied) & board.pieces(them));
     }
 
@@ -484,12 +514,12 @@ bool MoveGen::is_legal(const Board& board, Move m) {
         Square checker_sq = lsb(checkers);
         Bitboard target = between_bb(ksq, checker_sq) | checkers;
 
-        if (!(target & to)) {
+        if (!(target & square_bb(to))) {
             return false;
         }
     }
 
-    if (board.blockers_for_king(us) & from) {
+    if (board.blockers_for_king(us) & square_bb(from)) {
         return aligned(from, to, ksq);
     }
 
@@ -525,17 +555,17 @@ bool MoveGen::gives_check(const Board& board, Move m) {
         pt = m.promotion_type();
     }
 
-    if (board.check_squares(pt) & to) {
+    if (board.check_squares(pt) & square_bb(to)) {
         return true;
     }
 
-    if ((board.blockers_for_king(~us) & from) && !aligned(from, to, their_king)) {
+    if ((board.blockers_for_king(~us) & square_bb(from)) && !aligned(from, to, their_king)) {
         return true;
     }
 
     if (m.is_enpassant()) {
         Square captured = to - pawn_push(us);
-        Bitboard occupied = (board.pieces() ^ from ^ captured) | to;
+        Bitboard occupied = (board.pieces() ^ square_bb(from) ^ square_bb(captured)) | square_bb(to);
 
         return (rook_attacks_bb(their_king, occupied) & board.pieces(us, ROOK, QUEEN)) ||
                (bishop_attacks_bb(their_king, occupied) & board.pieces(us, BISHOP, QUEEN));
@@ -543,7 +573,7 @@ bool MoveGen::gives_check(const Board& board, Move m) {
 
     if (m.is_castling()) {
         Square rook_to = (to > from) ? Square(to - 1) : Square(to + 1);
-        Bitboard occupied = (board.pieces() ^ from) | to | rook_to;
+        Bitboard occupied = (board.pieces() ^ square_bb(from)) | square_bb(to) | square_bb(rook_to);
         return rook_attacks_bb(their_king, occupied) & rook_to;
     }
 
@@ -562,11 +592,18 @@ bool MoveGen::is_pseudo_legal(const Board& board, Move m) {
         return false;
     }
 
-    if (board.pieces(us) & to) {
+    if (board.pieces(us) & square_bb(to)) {
         return false;
     }
 
     PieceType pt = type_of(pc);
+
+    // Promotion flag is only valid for pawns. A stale TT/killer/counter move
+    // may carry promotion bits for a non-pawn piece; accepting it would make
+    // do_move transmute the piece (e.g. king -> queen) and corrupt the board.
+    if (m.is_promotion() && pt != PAWN) {
+        return false;
+    }
 
     if (pt == PAWN) {
         Direction push = pawn_push(us);
@@ -578,7 +615,7 @@ bool MoveGen::is_pseudo_legal(const Board& board, Move m) {
         }
 
         if (m.is_enpassant()) {
-            return to == board.en_passant_square() && (pawn_attacks_bb(us, from) & to);
+            return to == board.en_passant_square() && (pawn_attacks_bb(us, from) & square_bb(to));
         }
 
         if (to == from + push && board.empty(to)) {
@@ -591,7 +628,7 @@ bool MoveGen::is_pseudo_legal(const Board& board, Move m) {
             return true;
         }
 
-        if ((pawn_attacks_bb(us, from) & to) && (board.pieces(~us) & to)) {
+        if ((pawn_attacks_bb(us, from) & square_bb(to)) && (board.pieces(~us) & square_bb(to))) {
             return true;
         }
 
@@ -613,5 +650,5 @@ bool MoveGen::is_pseudo_legal(const Board& board, Move m) {
     }
 
     Bitboard attacks = attacks_bb(pt, from, board.pieces());
-    return attacks & to;
+    return (attacks & square_bb(to)) != 0;
 }

@@ -345,19 +345,12 @@ Bitboard passed_pawn_mask(Color c, Square s);
 Square pawn_push(Color c, Square s);
 bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns);
 
-EvalScore eval_material_pst(const Board& board, Color c);
 EvalScore eval_pawn_structure(const Board& board, Color c);
-EvalScore eval_pieces(const Board& board, Color c);
-EvalScore eval_king_safety(const Board& board, Color c);
 EvalScore eval_space(const Board& board, Color c);
 
 EvalScore eval_material_imbalance(const Board& board, Color c);
 EvalScore eval_pawn_levers(const Board& board, Color c, EvalContext& ctx);
 EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx);
-
-EvalScore eval_piece_activity(const Board& board, Color c, EvalContext& ctx);
-
-EvalScore eval_king_safety_advanced(const Board& board, Color c, EvalContext& ctx);
 
 int get_centralization_index(Square sq);
 int get_file_centralization(File f);
@@ -409,7 +402,6 @@ extern PawnTable pawnTable;
 
 int evaluate(const Board& board, int alpha, int beta);
 int evaluate(const Board& board);
-int evaluate_no_cache(const Board& board);
 int material_balance(const Board& board);
 
 }

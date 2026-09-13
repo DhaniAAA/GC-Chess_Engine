@@ -155,10 +155,13 @@ struct RootMove {
     U64 subtreeNodes = 0;
     U64 prevSubtreeNodes = 0;
     PVLine pv;
+    bool selectiveSkip = false;   // Selective search: skip this move (search at depth 1)
+    int  selectiveDepth = 0;      // Selective search: additional depth reduction
 
     RootMove() = default;
     explicit RootMove(Move m) : move(m), score(-VALUE_INFINITE), previousScore(-VALUE_INFINITE),
-                                 selDepth(0), subtreeNodes(0), prevSubtreeNodes(0) {
+                                 selDepth(0), subtreeNodes(0), prevSubtreeNodes(0),
+                                 selectiveSkip(false), selectiveDepth(0) {
         pv.clear();
     }
 
@@ -187,8 +190,6 @@ public:
 
     void set_pondering(bool p) { isPondering = p; }
 
-    bool is_searching() const { return searching; }
-
     Move best_move() const { return rootBestMove; }
 
     int best_score() const { return rootBestScore; }
@@ -197,18 +198,10 @@ public:
 
     const SearchStats& stats() const { return searchStats; }
 
-    using InfoCallback = void(*)(const SearchInfo&);
-    void set_info_callback(InfoCallback cb) { infoCallback = cb; }
-
-    void set_silent(bool silent) { silentMode = silent; }
-    bool is_silent() const { return silentMode; }
-
     void clear_history();
 
     int evaluate(const Board& board);
     int evaluate(const Board& board, int alpha, int beta);
-
-    int qsearch_score(Board& board);
 
 private:
     void iterative_deepening(Board& board);
@@ -222,6 +215,7 @@ private:
     bool should_stop() const;
 
     void report_info(Board& board, int depth, int score, const PVLine& pv, int multiPVIdx = 1);
+    void compute_selective_budget(int depth);  // Selective search: allocate node budget per root move
 
     KillerTable killers;
     MateKillerTable mateKillers;
@@ -233,7 +227,6 @@ private:
     MoveOrderStats moveOrderStats;
 
     std::atomic<bool> stopped;
-    std::atomic<bool> searching;
     std::atomic<bool> isPondering;
     bool silentMode = false;
     SearchLimits limits;
@@ -269,7 +262,7 @@ private:
     Move pvTable[MAX_PLY][MAX_PLY];
     PVLine pvLines[MAX_PLY];
 
-    InfoCallback infoCallback = nullptr;
+    void(*infoCallback)(const SearchInfo&) = nullptr;
 };
 
 extern Search Searcher;

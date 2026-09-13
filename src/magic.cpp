@@ -82,43 +82,43 @@ Bitboard compute_attacks(PieceType pt, Square sq, Bitboard occupied) {
         for (int f = fl + 1; f <= 7; ++f) {
             Square s = make_square(File(f), Rank(rk));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int f = fl - 1; f >= 0; --f) {
             Square s = make_square(File(f), Rank(rk));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int r = rk + 1; r <= 7; ++r) {
             Square s = make_square(File(fl), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int r = rk - 1; r >= 0; --r) {
             Square s = make_square(File(fl), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
     } else {
         for (int f = fl + 1, r = rk + 1; f <= 7 && r <= 7; ++f, ++r) {
             Square s = make_square(File(f), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int f = fl - 1, r = rk + 1; f >= 0 && r <= 7; --f, ++r) {
             Square s = make_square(File(f), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int f = fl + 1, r = rk - 1; f <= 7 && r >= 0; ++f, --r) {
             Square s = make_square(File(f), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
         for (int f = fl - 1, r = rk - 1; f >= 0 && r >= 0; --f, --r) {
             Square s = make_square(File(f), Rank(r));
             attacks |= square_bb(s);
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
     }
 

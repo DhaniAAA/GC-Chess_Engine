@@ -19,7 +19,7 @@ struct EngineOptions {
     bool ponder = true;
     std::string bookPath = "";
     std::string syzygyPath = "";
-    int moveOverhead = 10;
+    int moveOverhead = 50;
 
     int contempt = 20;
     bool dynamicContempt = true;
@@ -59,35 +59,11 @@ private:
     void cmd_d();
     void cmd_eval();
     void cmd_bench(std::istringstream& is);
-    void cmd_datagen(std::istringstream& is);
-    void cmd_wac(std::istringstream& is);
 
     void parse_moves(std::istringstream& is);
     void start_search(const SearchLimits& limits);
     void wait_for_search();
 };
-
-class TimeManager {
-public:
-    TimeManager();
-
-    void init(Color us, int timeLeft, int increment, int movesToGo, int moveTime);
-
-    int optimal_time() const { return optimalTime; }
-    int maximum_time() const { return maximumTime; }
-    bool should_stop(int elapsed, int depth, bool bestMoveStable);
-    void adjust(bool scoreDropped, bool bestMoveChanged);
-
-private:
-    int optimalTime;
-    int maximumTime;
-    int startTime;
-    int incrementTime;
-    int movesToGo;
-    double stability;
-};
-
-extern TimeManager timeMgr;
 
 }
 

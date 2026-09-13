@@ -1,49 +1,119 @@
-# Prerequisites
-*.d
+# ====================================================================
+# Build & Compilation Artifacts
+# ====================================================================
 
-# Compiled Object files
-*.slo
-*.lo
+# Compiler object and dependency files
 *.o
-*.gcda
 *.obj
-*.pgn
-*.py
-/engines
-# Precompiled Headers
+*.lo
+*.slo
+*.d
+*.dwo
+
+# Precompiled headers
 *.gch
 *.pch
-/cutechess
-# Linker files
-*.ilk
-*.txt
 
-# Project Plan
-build-project.md
-roadmap.md
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
+# Static and dynamic libraries
 *.a
 *.lib
+*.la
+*.lai
+*.so
+*.dll
+*.dylib
+
+# Linker & debugger files
+*.ilk
+*.pdb
+*.idb
 
 # Executables
 *.exe
 *.out
 *.app
 
-# debug information files
-*.dwo
+# Build outputs
+/output/
+output/
+
+# ====================================================================
+# Profiling & Optimization Data (PGO / gprof)
+# ====================================================================
+*.gcda
+*.gcno
+*.gcov
+gmon.out
+*.profraw
+*.profdata
+
+# ====================================================================
+# Chess Engine Testing & Tooling
+# ====================================================================
+
+# Cutechess & engines directory (external binaries & test runners)
+/cutechess/
+/engines/
+
+# Match records, game logs & analysis outputs
+*.pgn
+*.pgn.gz
+*.epd.tmp
+tuner/*.epd
+*_miss.txt
+*.log
+
+# Training & datagen data
+*.binpack
+*.binpack.zst
+/data/*
+!/data/.gitkeep
+
+# ====================================================================
+# Python (Tools & Tuners)
+# ====================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ====================================================================
+# Project Notes & Local Plans
+# ====================================================================
+[Bb]uild-project.md
+roadmap.md
+
+# ====================================================================
+# IDE, Editor & OS Files
+# ====================================================================
+
+# OS metadata
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Editors & IDEs
+.vscode/
+.vs/
+*.VC.db
+.idea/
+cmake-build-*/
+*.swp
+*.swo
+*~
+*.bak
+
+# AI agent directories & local metadata
+.agents/
+.claude/
+.gemini/
+.docs/
+

@@ -11,13 +11,6 @@ extern Key PieceSquare[PIECE_NB][SQUARE_NB];
 extern Key Castling[CASTLING_RIGHT_NB];
 extern Key EnPassant[FILE_NB];
 extern Key SideToMove;
-}
-
-namespace Zobrist {
-extern Key PieceSquare[PIECE_NB][SQUARE_NB];
-extern Key Castling[CASTLING_RIGHT_NB];
-extern Key EnPassant[FILE_NB];
-extern Key SideToMove;
 
 void init();
 

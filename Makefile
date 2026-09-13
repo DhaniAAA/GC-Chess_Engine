@@ -62,21 +62,10 @@ INCLUDES	:= $(patsubst %,-I%, $(INCLUDEDIRS:%/=%))
 # define the C libs
 LIBS		:= $(patsubst %,-L%, $(LIBDIRS:%/=%))
 
-# define the C source files
-# Define the C source files (Original)
+# define the C source files (core engine only, flat src/*.cpp)
 SOURCES_ALL := $(wildcard $(patsubst %,%/*.cpp, $(SOURCEDIRS)))
 
-# Tentukan file yang ingin DIHAPUS dari build (exclude)
-EXCLUDES    :=  tests/test_main.cpp \
-				tests/test_types.cpp \
-				tests/test_bitboard.cpp \
-				tests/test_move.cpp \
-				tests/test_board.cpp \
-				tests/test_movegen.cpp
-
-
-# Filter SOURCES_ALL untuk membuang file EXCLUDES
-SOURCES     := $(filter-out $(EXCLUDES), $(SOURCES_ALL))
+SOURCES     := $(SOURCES_ALL)
 
 # define the C object files
 OBJECTS		:= $(SOURCES:.cpp=.o)
@@ -112,7 +101,7 @@ $(MAIN): $(OBJECTS)
 .cpp.o:
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -MMD $<  -o $@
 
-.PHONY: clean
+.PHONY: clean all pext debug internal-profile run
 clean:
 	$(RM) $(OUTPUTMAIN)
 	$(RM) $(call FIXPATH,$(OBJECTS))
@@ -175,84 +164,3 @@ debug: clean all
 internal-profile: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -march=native -DNDEBUG -DPROFILING
 internal-profile: clean all
 	@echo Internal profiling build complete! Run 'bench' to see results.
-
-# ============================================================================
-# Texel Tuner Build
-# ============================================================================
-
-# Source files needed for tuner (excluding main.cpp)
-TUNER_SOURCES := tuner/texel_tuner.cpp \
-                 src/board.cpp \
-                 src/magic.cpp \
-                 src/zobrist.cpp \
-                 src/bitboard.cpp \
-                 src/eval.cpp \
-                 src/tuning.cpp \
-                 src/movegen.cpp
-
-TUNER_OBJECTS := $(TUNER_SOURCES:.cpp=.o)
-
-ifeq ($(OS),Windows_NT)
-TUNER_MAIN := tuner.exe
-else
-TUNER_MAIN := tuner
-endif
-
-TUNER_OUTPUT := $(call FIXPATH,$(OUTPUT)/$(TUNER_MAIN))
-
-tuner: $(OUTPUT) $(TUNER_OBJECTS)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $(TUNER_OUTPUT) $(TUNER_OBJECTS) $(LFLAGS) $(LIBS)
-	@echo Texel Tuner build complete!
-	@echo Usage: $(TUNER_OUTPUT) [epd_file] [max_positions] [iterations]
-
-tuner-clean:
-	$(RM) $(TUNER_OUTPUT)
-	$(RM) $(call FIXPATH,$(TUNER_OBJECTS))
-	@echo Tuner cleanup complete!
-
-# ============================================================================
-# Unit Tests Build
-# ============================================================================
-
-# Test directory
-TEST_DIR := tests
-
-# Only test_main.cpp is compiled (it #includes other test files)
-TEST_MAIN_SRC := $(TEST_DIR)/test_main.cpp
-
-# Engine source files needed for tests (excluding main.cpp)
-ENGINE_SOURCES_FOR_TESTS := src/board.cpp \
-                            src/magic.cpp \
-                            src/zobrist.cpp \
-                            src/bitboard.cpp \
-                            src/eval.cpp \
-                            src/movegen.cpp \
-                            src/moveorder.cpp \
-                            src/tuning.cpp
-
-ENGINE_TEST_OBJECTS := $(ENGINE_SOURCES_FOR_TESTS:.cpp=.o)
-
-ifeq ($(OS),Windows_NT)
-TEST_MAIN := run_tests.exe
-else
-TEST_MAIN := run_tests
-endif
-
-TEST_OUTPUT := $(call FIXPATH,$(OUTPUT)/$(TEST_MAIN))
-
-# Test build flags (debug mode for better error messages)
-TEST_CXXFLAGS := -std=c++17 -Wall -Wextra -g -O2 -I$(TEST_DIR) -DNDEBUG
-
-tests: $(OUTPUT) $(ENGINE_TEST_OBJECTS)
-	$(CXX) $(TEST_CXXFLAGS) $(INCLUDES) -I$(TEST_DIR) -o $(TEST_OUTPUT) $(TEST_MAIN_SRC) $(ENGINE_TEST_OBJECTS) $(LFLAGS) $(LIBS)
-	@echo Unit tests build complete!
-	@echo Run with: $(TEST_OUTPUT)
-
-run-tests: tests
-	./$(TEST_OUTPUT)
-
-tests-clean:
-	$(RM) $(TEST_OUTPUT)
-	$(RM) $(call FIXPATH,$(TEST_DIR)/*.o)
-	$(RM) $(call FIXPATH,$(TEST_DIR)/*.d)
-	@echo Test cleanup complete!

@@ -502,11 +502,11 @@ enum MovePickStage {
     STAGE_TT_MOVE,
     STAGE_GENERATE_CAPTURES,
     STAGE_WINNING_CAPTURES,
-    STAGE_GENERATE_QUIET_CHECKS,
-    STAGE_QUIET_CHECKS,
     STAGE_KILLER_1,
     STAGE_KILLER_2,
     STAGE_COUNTER_MOVE,
+    STAGE_GENERATE_QUIET_CHECKS,
+    STAGE_QUIET_CHECKS,
     STAGE_GENERATE_QUIETS,
     STAGE_EQUAL_CAPTURES,
     STAGE_QUIETS,
@@ -525,6 +525,10 @@ inline MovePickStage& operator++(MovePickStage& s) {
 
 class MovePicker {
 public:
+    static constexpr uint8_t FLAG_GIVES_CHECK       = 1;
+    static constexpr uint8_t FLAG_ATTACKS_KING_ZONE = 2;
+    static constexpr uint8_t FLAG_SEE_GE_ZERO       = 4;
+
     MovePicker(const Board& b, const Move* ttMoves, int ttMoveCount, int ply,
                const KillerTable& kt, const CounterMoveTable& cm,
                const HistoryTable& ht, Move prevMove,
@@ -564,6 +568,8 @@ private:
     MoveList equalCaptures;
     MoveList quietChecks;
 
+    uint8_t flags[MoveList::MAX_MOVES];
+
     static constexpr int MAX_QUIET_CHECKS = 32;
     Move quietCheckMoves[MAX_QUIET_CHECKS];
     int quietCheckCount;
@@ -575,6 +581,18 @@ private:
     int ply;
 
     MovePickStage stage;
+
+public:
+    // Info for the move most recently returned by next_move():
+    // hasMoveInfo/givesCheckInfo/attacksKingZoneInfo are valid for every
+    // returned move when hasMoveInfo is true (scored captures/quiets).
+    // hasSeeZero/seeZeroInfo are valid for qsearch captures (SEE >= 0).
+    bool hasMoveInfo;
+    bool givesCheckInfo;
+    bool attacksKingZoneInfo;
+    bool hasSeeZero;
+    bool seeZeroInfo;
+    uint8_t lastFlags;
 
     void score_captures();
     void score_quiets();

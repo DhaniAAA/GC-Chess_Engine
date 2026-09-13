@@ -2,9 +2,6 @@
 #include <iostream>
 #include <sstream>
 
-Bitboard FileBB[FILE_NB];
-Bitboard RankBB[RANK_NB];
-Bitboard SquareBB[SQUARE_NB];
 Bitboard BetweenBB[SQUARE_NB][SQUARE_NB];
 Bitboard LineBB[SQUARE_NB][SQUARE_NB];
 
@@ -49,7 +46,7 @@ Bitboard sliding_attack(PieceType pt, Square sq, Bitboard occupied) {
             s = s + d;
             attacks |= square_bb(s);
 
-            if (occupied & s) break;
+            if (occupied & square_bb(s)) break;
         }
     }
 
@@ -143,18 +140,6 @@ void init_between_line() {
 namespace Bitboards {
 
 void init() {
-    for (File f = FILE_A; f <= FILE_H; ++f) {
-        FileBB[f] = FILE_A_BB << f;
-    }
-
-    for (Rank r = RANK_1; r <= RANK_8; ++r) {
-        RankBB[r] = RANK_1_BB << (8 * r);
-    }
-
-    for (Square s = SQ_A1; s <= SQ_H8; ++s) {
-        SquareBB[s] = 1ULL << s;
-    }
-
     init_pawn_attacks();
     init_knight_attacks();
     init_king_attacks();
