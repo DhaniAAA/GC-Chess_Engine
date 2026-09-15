@@ -30,12 +30,12 @@ inline int rfp_margin(int depth, bool improving) {
 // Pruning Depths
 // ============================================================================
 
-constexpr int FUTILITY_MAX_DEPTH = 11;  // Extended from 8 — prune at higher depths
+constexpr int FUTILITY_MAX_DEPTH = 8;   // Reverted from 11 — deep futility pruned tactical quiets (WAC)
 constexpr int RAZORING_MAX_DEPTH = 0;   // Disabled — razoring pruned tactical nodes (WAC experiment)
-constexpr int RFP_MAX_DEPTH = 12;       // Extended from 9 — RFP active deeper
-constexpr int LMP_MAX_DEPTH = 12;       // Extended from 9 — LMP active deeper
-constexpr int SEE_QUIET_MAX_DEPTH = 8;  // Extended from 5 — SEE prune quiet moves deeper
-constexpr int SEE_CAPTURE_MAX_DEPTH = 9;// Extended from 6 — SEE prune captures deeper
+constexpr int RFP_MAX_DEPTH = 9;        // Reverted from 12 — deep RFP pruned tactical quiets (WAC)
+constexpr int LMP_MAX_DEPTH = 9;        // Reverted from 12 — deep LMP pruned tactical quiets (WAC)
+constexpr int SEE_QUIET_MAX_DEPTH = 5;  // Reverted from 8 — deep SEE-quiet pruning killed sacrifices (WAC)
+constexpr int SEE_CAPTURE_MAX_DEPTH = 6;// Reverted from 9 — deep SEE-capture pruning killed exchanges (WAC)
 
 constexpr int SEE_CAPTURE_THRESHOLD_PER_DEPTH = -25;
 constexpr int SEE_QUIET_THRESHOLD_PER_DEPTH = -60;
@@ -55,13 +55,13 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 constexpr int MAX_EXTENSIONS = 5;
 
-constexpr int SINGULAR_DEPTH = 8;
-constexpr int SINGULAR_MARGIN = 80;
+constexpr int SINGULAR_DEPTH = 6;
+constexpr int SINGULAR_MARGIN = 80;  // Restored: 60 tested, neutral on WAC10
 constexpr int SINGULAR_TT_DEPTH_PENALTY = 8;
 constexpr int SINGULAR_IMPROVING_BONUS = 10;
 constexpr int SINGULAR_DOUBLE_EXT_BASE = 60;
 
-constexpr int CAPTURE_EXT_MIN_DEPTH = 10; // Raised from 8 — moderate increase to reduce cascade extensions
+constexpr int CAPTURE_EXT_MIN_DEPTH = 10; // Restored: 8 tested, -4 WAC (cascade extensions hurt)
 constexpr int CAPTURE_EXT_SEE_THRESHOLD = 0;
 constexpr int MATE_THREAT_EXT_MIN_DEPTH = 4;
 
@@ -74,14 +74,14 @@ constexpr int PV_EXT_MIN_DEPTH = 8;       // Raised from 7 — slight increase t
 // ============================================================================
 
 constexpr int PROBCUT_DEPTH = 5;
-constexpr int PROBCUT_MARGIN = 200;
+constexpr int PROBCUT_MARGIN = 200;  // Restored: 300 tested, neutral on WAC10
 
 // ============================================================================
 // Null Move Parameters
 // ============================================================================
 
 constexpr int NULL_MOVE_MIN_DEPTH = 3;
-constexpr int NULL_MOVE_BASE_R = 3;           // Base reduction for NMP
+constexpr int NULL_MOVE_BASE_R = 3;           // Base reduction for NMP (2 tested: -5 WAC, +43% nodes)
 constexpr int NULL_MOVE_DEPTH_DIVISOR = 4;    // R += depth / DIVISOR
 constexpr int NULL_MOVE_EVAL_MARGIN = 200;    // If (eval - beta) > MARGIN, R += 1
 constexpr int NULL_MOVE_VERIFY_DEPTH = 20;    // Restored: prevents zugzwang errors in endgame.
@@ -103,8 +103,8 @@ constexpr int IIR_REDUCTION = 1;
 constexpr int IIR_PV_REDUCTION = 1;
 constexpr int IIR_CUT_REDUCTION = 2;
 
-constexpr int QSEARCH_CHECK_DEPTH = 0;
-constexpr int DELTA_PRUNING_MARGIN = 350;
+constexpr int QSEARCH_CHECK_DEPTH = 0;  // Reverted from -1: no WAC gain, +15% bench nodes
+constexpr int DELTA_PRUNING_MARGIN = 350;  // Restored: 500 tested, -16 WAC (unexpected interaction)
 constexpr int QSEARCH_FUTILITY_MARGIN = 250;
 
 // ============================================================================
@@ -161,18 +161,18 @@ constexpr int FRAC_EXT_SCALE = 100;           // 100 points = 1 full ply
 constexpr int FRAC_EXT_CHECK = 100;           // Check extension: 1.0 ply (safe check at high depth)
 constexpr int FRAC_EXT_CHECK_PARTIAL = 50;    // Partial check extension: 0.5 ply
 constexpr int FRAC_EXT_PASSED_PAWN = 100;     // Passed pawn to 7th rank: 1.0 ply
-constexpr int FRAC_EXT_RECAPTURE = 50;        // Recapture: 0.5 ply
+constexpr int FRAC_EXT_RECAPTURE = 50;        // Recapture: 0.5 ply (1.0 tested: no WAC gain, +31% nodes)
 constexpr int FRAC_EXT_SINGULAR = 100;        // Singular move: 1.0 ply
 constexpr int FRAC_EXT_SINGULAR_DOUBLE = 200; // Double singular: 2.0 ply
 constexpr int FRAC_EXT_PV_MOVE = 50;          // First PV move: 0.5 ply
-constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply
+constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply (1.0 tested: +54% nodes, no WAC gain)
 constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 ply
 
 // ============================================================================
 // Multi-Cut Parameters
 // ============================================================================
 
-constexpr int MULTI_CUT_DEPTH = 12;  // Lowered from 16 — gives earlier multi-cut benefit at depth 12-15
+constexpr int MULTI_CUT_DEPTH = 12;  // Lowered from 16 — gives earlier multi-cut benefit at depth 12-15 (off tested: neutral)
 constexpr int MULTI_CUT_COUNT = 3;
 constexpr int MULTI_CUT_REQUIRED = 2;
 

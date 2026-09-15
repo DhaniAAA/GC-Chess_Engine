@@ -1652,7 +1652,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
 
                 if (isTacticalQuiet) {
-                    reduction = std::max(0, reduction - 2);
+                    reduction = std::max(0, reduction - 3);
                 }
 
                 if (inCheck) {
