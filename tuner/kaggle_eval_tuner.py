@@ -27,7 +27,7 @@ GOTCHAS (verified against this engine, do not "simplify" away):
     Kaggle, upload it as a Dataset and pass --epd /kaggle/input/... .
 
 USAGE (local smoke test, ~2 min):
-  python tuner/kaggle_eval_tuner.py --engine output/main.exe --positions 3000 --iters 15
+  python tuner/kaggle_eval_tuner.py --engine output/main.exe --positions 3000 --iters 15 --jobs 4
 
 USAGE (Kaggle, CPU notebook, accelerator None):
   !git clone --depth 1 https://github.com/DhaniAAA/GC-Chess_Engine.git
@@ -35,7 +35,9 @@ USAGE (Kaggle, CPU notebook, accelerator None):
   !python GC-Chess_Engine/tuner/kaggle_eval_tuner.py \
       --engine GC-Chess_Engine/output/main \
       --epd /kaggle/input/<your-dataset>/quiet-labeled.epd \
-      --positions 100000 --iters 250 --out /kaggle/working/tuned.json
+      --positions 100000 --iters 250 --jobs 0 --out /kaggle/working/tuned.json
+  (--jobs 0 = auto = all CPUs; the engine's `eval` is single-threaded, so
+  throughput scales with process count, e.g. 4 CPUs ~= 4x faster.)
 
 APPLYING RESULTS:
   1. The script prints a tuning.cpp-ready snippet + writes --out JSON.
@@ -46,6 +48,7 @@ APPLYING RESULTS:
 """
 
 import argparse
+import concurrent.futures
 import json
 import math
 import os
@@ -172,6 +175,43 @@ class Engine:
             self.proc.kill()
 
 
+class EnginePool:
+    """N persistent engine processes; each pass shards positions across them.
+
+    The engine's `eval` is single-threaded (Threads option only affects
+    search), so throughput scales with process count, not threads.
+    Each engine is touched by exactly one worker per pass (thread-safe).
+    """
+
+    def __init__(self, exe, jobs):
+        self.engines = [Engine(exe) for _ in range(jobs)]
+        print(f"  Engine pool: {jobs} processes")
+
+    @staticmethod
+    def _shard_error(eng, chunk, names, values, k):
+        eng.set_params(names, values)
+        total = 0.0
+        for fen, result, stm in chunk:
+            s = eng.eval_white_pov(fen, stm)
+            total += (result - sigmoid(k, s)) ** 2
+        return total
+
+    def error(self, dataset, names, values, k):
+        n = len(self.engines)
+        chunks = [dataset[i::n] for i in range(n)]
+        total = 0.0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+            futs = [ex.submit(self._shard_error, eng, ch, names, values, k)
+                    for eng, ch in zip(self.engines, chunks)]
+            for f in futs:
+                total += f.result()
+        return total / len(dataset)
+
+    def close(self):
+        for e in self.engines:
+            e.close()
+
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, int(round(v))))
 
@@ -185,6 +225,8 @@ def main():
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--k", type=float, default=0.0, help="0 = auto line-search")
     ap.add_argument("--out", default="tuned_eval.json")
+    ap.add_argument("--jobs", type=int, default=0,
+                    help="engine processes in parallel (0 = auto = CPU count)")
     args = ap.parse_args()
 
     names = [p[0] for p in PARAMS]
@@ -198,7 +240,9 @@ def main():
     if len(data) < 100:
         sys.exit("ERROR: too few usable positions — check --epd path/format.")
 
-    eng = Engine(args.engine)
+    jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 4)
+    jobs = max(1, min(jobs, len(data)))
+    eng = EnginePool(args.engine, jobs)
     try:
         # ---- Phase 1: K line search ----
         if args.k > 0:
