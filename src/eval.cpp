@@ -709,10 +709,10 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
     Bitboard unsafeFor = ctx.attackedBy[c][ALL_PIECES];
     Bitboard safeSquares = ~unsafeFor & ~board.pieces(enemy);
 
-    if (ctx.attackedBy[enemy][KNIGHT] & (knight_attacks_bb(kingSq) & safeSquares)) attackUnits += 3;
-    if (ctx.attackedBy[enemy][BISHOP] & (bishop_attacks_bb(kingSq, board.pieces()) & safeSquares)) attackUnits += 2;
-    if (ctx.attackedBy[enemy][ROOK] & (rook_attacks_bb(kingSq, board.pieces()) & safeSquares)) attackUnits += 3;
-    if (ctx.attackedBy[enemy][QUEEN] & (king_attacks_bb(kingSq) & safeSquares)) attackUnits += 6;
+    if (ctx.attackedBy[enemy][KNIGHT] & (knight_attacks_bb(kingSq) & safeSquares)) attackUnits += SafeCheckBonus[KNIGHT];
+    if (ctx.attackedBy[enemy][BISHOP] & (bishop_attacks_bb(kingSq, board.pieces()) & safeSquares)) attackUnits += SafeCheckBonus[BISHOP];
+    if (ctx.attackedBy[enemy][ROOK] & (rook_attacks_bb(kingSq, board.pieces()) & safeSquares)) attackUnits += SafeCheckBonus[ROOK];
+    if (ctx.attackedBy[enemy][QUEEN] & (king_attacks_bb(kingSq) & safeSquares)) attackUnits += SafeCheckBonus[QUEEN];
 
     if (attackCount >= 2) {
         int penalty = KingSafetyTable[std::min(attackUnits, 99)];
@@ -750,8 +750,8 @@ EvalScore eval_king_safety_with_context(const Board& board, Color c, EvalContext
         if (f < FILE_A || f > FILE_H) continue;
         Bitboard fileMask = file_bb(f);
         if (!(fileMask & ourPawns)) {
-            if (!(fileMask & theirPawns)) { score.mg -= 25; score.eg -= 10; }
-            else { score.mg -= 15; score.eg -= 5; }
+            if (!(fileMask & theirPawns)) { score.mg -= KingOpenFilePenalty.mg; score.eg -= KingOpenFilePenalty.eg; }
+            else { score.mg -= KingSemiOpenFilePenalty.mg; score.eg -= KingSemiOpenFilePenalty.eg; }
         }
     }
 

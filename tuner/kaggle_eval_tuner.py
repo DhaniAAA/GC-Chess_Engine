@@ -15,9 +15,12 @@ HOW IT WORKS:
   * Optimizer = SPSA (only 2 error evaluations per step, scales to all
     params at once) with elitism (best-so-far is kept and reported).
 
-PARAMETERS TUNED (13 — every eval tunable exposed as a UCI option):
+PARAMETERS TUNED (36 — every eval tunable exposed as a UCI option):
   Pawn/Knight/Bishop/Rook/Queen Value MG+EG (10), RookOpenFileBonus MG+EG (2),
-  KingSafetyWeight (1).
+  KingSafetyWeight (1), attacker/ring weights (6), PawnShieldBonus 1-3 (3),
+  King open/semi-open file penalties MG+EG (4), safe-check bonuses N/B/R/Q (4),
+  HangingPawnPenalty MG+EG (2), HangingPawnThreat MG+EG (2),
+  inner/outer ring weak-square penalties (2).
 
 GOTCHAS (verified against this engine, do not "simplify" away):
   * `eval` prints SIDE-TO-MOVE perspective -> flip sign when Black to move.
@@ -72,6 +75,30 @@ PARAMS = [
     ("RookOpenFileBonusMG", 5, 0, 500),
     ("RookOpenFileBonusEG", 0, 0, 500),
     ("KingSafetyWeight", 90, 0, 200),
+    # King-safety extended + threats (all verified live in eval.cpp)
+    ("KnightAttackWeight", 2, 0, 15),
+    ("BishopAttackWeight", 2, 0, 15),
+    ("RookAttackWeight", 3, 0, 15),
+    ("QueenAttackWeight", 5, 0, 15),
+    ("InnerRingAttackWeight", 1, 0, 10),
+    ("OuterRingAttackWeight", 1, 0, 10),
+    ("PawnShieldBonus1", 10, 0, 100),
+    ("PawnShieldBonus2", 22, 0, 100),
+    ("PawnShieldBonus3", 19, 0, 100),
+    ("KingOpenFilePenaltyMG", 25, 0, 60),
+    ("KingOpenFilePenaltyEG", 10, 0, 30),
+    ("KingSemiOpenFilePenaltyMG", 15, 0, 60),
+    ("KingSemiOpenFilePenaltyEG", 5, 0, 30),
+    ("SafeCheckKnight", 3, 0, 15),
+    ("SafeCheckBishop", 2, 0, 15),
+    ("SafeCheckRook", 3, 0, 15),
+    ("SafeCheckQueen", 6, 0, 15),
+    ("HangingPawnPenaltyMG", -11, -100, 0),
+    ("HangingPawnPenaltyEG", -22, -100, 0),
+    ("HangingPawnThreatMG", 5, -50, 50),
+    ("HangingPawnThreatEG", 0, -50, 50),
+    ("InnerRingWeakPenalty", 15, 0, 50),
+    ("OuterRingWeakPenalty", 5, 0, 50),
 ]
 
 K_CANDIDATES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]

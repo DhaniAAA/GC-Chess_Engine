@@ -253,10 +253,9 @@ constexpr int KingSafetyTable[100] = {
 // Remaining constexpr (less impactful, can be moved later)
 // ========================================================================
 
-constexpr int InnerRingWeakSquarePenalty = 15;
-constexpr int OuterRingWeakSquarePenalty = 5;
-
-constexpr EvalScore HangingPawnWithThreat = S(5, 0);
+using Tuning::HangingPawnWithThreat;
+using Tuning::InnerRingWeakSquarePenalty;
+using Tuning::OuterRingWeakSquarePenalty;
 
 constexpr EvalScore MinorForExchange = S(0, 10);
 

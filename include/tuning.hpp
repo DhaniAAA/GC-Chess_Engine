@@ -73,6 +73,12 @@ namespace Tuning {
     extern EvalScore KingOpenFilePenalty;
     extern int PawnShieldBonus[4];
 
+    // Threats & weak king-ring squares (moved from eval.hpp constexprs
+    // so they are tunable via UCI; values unchanged)
+    extern EvalScore HangingPawnWithThreat;
+    extern int InnerRingWeakSquarePenalty;
+    extern int OuterRingWeakSquarePenalty;
+
     // ========================================================================
     // Piece Activity
     // ========================================================================

@@ -100,9 +100,16 @@ namespace Tuning {
     int QueenAttackWeight  = 5;
     int InnerRingAttackWeight = 1;
     int OuterRingAttackWeight = 1;
-    EvalScore KingSemiOpenFilePenalty = S(  15,    0);
-    EvalScore KingOpenFilePenalty     = S(  25,    0);
+    // NOTE: inits match the previously hardcoded eval values (behavior-preserving):
+    // open file was mg-=25 eg-=10, semi-open mg-=15 eg-=5 (see eval_king_safety).
+    EvalScore KingSemiOpenFilePenalty = S( 15,    5);
+    EvalScore KingOpenFilePenalty     = S(  25,   10);
     int PawnShieldBonus[4] = { 0, 10, 22, 19 };
+
+    // Threats & weak king-ring squares (same values as former eval.hpp constexprs)
+    EvalScore HangingPawnWithThreat = S(5, 0);
+    int InnerRingWeakSquarePenalty = 15;
+    int OuterRingWeakSquarePenalty = 5;
 
     // ========================================================================
     // Piece Activity
@@ -127,8 +134,10 @@ namespace Tuning {
     // ========================================================================
     // King Safety Extended
     // ========================================================================
+    // NOTE: inits match the previously hardcoded safe-check attack units
+    // (knight 3, bishop 2, rook 3, queen 6 — see eval_king_safety).
     int SafeCheckBonus[7] = {
-        0, 0, 45, 35, 50, 60, 0
+        0, 0, 3, 2, 3, 6, 0
     };
     int ContactCheckBonus = 40;
 
