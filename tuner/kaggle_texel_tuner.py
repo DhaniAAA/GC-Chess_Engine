@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-=============================================================================
+============================================================================
+OBSOLETE — DO NOT USE. The `make tuner` C++ target this script builds no
+longer exists in the Makefile (removed). Use tuner/kaggle_eval_tuner.py
+instead (SPSA over UCI options, engine-in-the-loop, verified working).
+============================================================================
+
 GC-Chess Engine - Texel Tuner for Kaggle Notebook
 =============================================================================
 Builds the C++ Texel Tuner from GitHub and runs it with all available CPUs.

@@ -116,7 +116,7 @@
 - **Pondering** with ponderhit support
 - **Advanced Time Management** with stability-based adjustment and panic mode
 - **Contempt** and **Dynamic Contempt** options
-- **Tunable eval parameters** exposed as UCI options (see `src/tuning.cpp`); offline tuning scripts in `tuner/` (`kaggle_texel_tuner.py` + `quiet-labeled.epd`)
+- **Tunable eval parameters** exposed as UCI options (see `src/tuning.cpp`); offline tuning data in `tuner/` (`quiet-labeled.epd`, 1.4M positions) + working tuner `tuner/kaggle_eval_tuner.py` (SPSA, engine-in-the-loop; run on Kaggle CPU)
 - **Built-in Profiler** for performance analysis (`mingw32-make internal-profile`, then run `bench`)
 - **Benchmark** command for reproducible testing
 
