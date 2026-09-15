@@ -18,7 +18,7 @@ EngineOptions options;
 
 const std::string ENGINE_NAME = "GC-Engine";
 const std::string ENGINE_AUTHOR = "Dhani";
-const std::string ENGINE_VERSION = "1.2";
+const std::string ENGINE_VERSION = "1.2.1";
 
 static StateInfo stateInfoStack[512];
 static int stateStackIdx = 0;

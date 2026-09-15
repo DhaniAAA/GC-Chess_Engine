@@ -4,6 +4,20 @@ All notable changes to GC-Engine will be documented in this file.
 
 ---
 
+## [1.2.1] - 2026-09-15
+
+### Fixed
+
+- Search bug fixes and engine optimizations (movegen, move ordering, search, TT, threading)
+- Cleaned dead code: removed datagen/test harness, mirror source subdirs, and stale tuner build
+
+### Changed
+
+- `AGENTS.md` and `README.md` synced with the current tree (removed stale `wac`/`bk`/`datagen`
+  commands, deleted test-script and `mingw32-make tuner` references; added Project Structure)
+
+---
+
 ## [1.2] - 2026-01-06
 
 ### Highlights
