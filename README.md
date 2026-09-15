@@ -18,10 +18,8 @@
 - [Features](#-features)
 - [Building](#-building)
 - [Usage](#-usage)
-- [UCI Options](#-uci-options)
 - [Testing](#-testing)
 - [Project Structure](#-project-structure)
-- [Technical Details](#-technical-details)
 - [Acknowledgments](#-acknowledgments)
 - [License](#-license)
 - [Author](#-author)
@@ -118,9 +116,8 @@
 - **Pondering** with ponderhit support
 - **Advanced Time Management** with stability-based adjustment and panic mode
 - **Contempt** and **Dynamic Contempt** options
-- **SPSA Tuning** support for parameter optimization
-- **Texel Tuning** support for evaluation tuning
-- **Built-in Profiler** for performance analysis
+- **Tunable eval parameters** exposed as UCI options (see `src/tuning.cpp`); offline tuning scripts in `tuner/` (`kaggle_texel_tuner.py` + `quiet-labeled.epd`)
+- **Built-in Profiler** for performance analysis (`mingw32-make internal-profile`, then run `bench`)
 - **Benchmark** command for reproducible testing
 
 ---
@@ -130,9 +127,9 @@
 ### Requirements
 
 - **C++17** compatible compiler:
-  - GCC 7+ (recommended: GCC 10+)
-  - Clang 5+
-  - MSVC 2017+
+  - GCC 10+ (MinGW-w64 x86_64 on Windows; required for PEXT/BMI2 builds)
+  - Clang 12+
+  - MSVC 2019+ (not tested)
 - **GNU Make** (or MinGW Make on Windows)
 
 ### Quick Build
@@ -174,20 +171,19 @@ mingw32-make pext
 
 # Profile-Guided Optimization (PGO) - Step 1: Generate profile
 mingw32-make pgo-generate
-# Run benchmarks: ./output/main.exe bench
+# Run benchmarks (engine reads commands from stdin):
+echo "bench" | .\output\main.exe
 # Step 2: Use profile data
 mingw32-make pgo-use
 
 # PEXT + PGO for maximum performance
 mingw32-make pext-pgo-generate
-# Run benchmarks: ./output/main.exe bench
+# Run benchmarks:
+echo "bench" | .\output\main.exe
 mingw32-make pext-pgo-use
 
 # Internal profiling build (for performance analysis)
 mingw32-make internal-profile
-
-# Texel Tuner build
-mingw32-make tuner
 ```
 
 ### Build Output
@@ -277,13 +273,18 @@ echo "bench 15 4 256" | ./output/main.exe  # depth 15, 4 threads, 256MB hash
 
 ### Test Suites
 
-The engine includes several test suites in the `tests/` directory:
+The engine includes test positions in the `tests/` directory:
 
-| File               | Description                      |
-| ------------------ | -------------------------------- |
-| `wac.epd`          | Win at Chess positions           |
-| `bratko_kopec.epd` | Bratko-Kopec test suite          |
-| `see-test.epd`     | Static Exchange Evaluation tests |
+| File               | Description             |
+| ------------------ | ----------------------- |
+| `wac.epd`          | Win at Chess positions  |
+| `bratko_kopec.epd` | Bratko-Kopec test suite |
+
+Run the WAC suite over a UCI pipe (requires `python-chess`):
+
+```bash
+python tests/wac_run.py [depth] [max_pos]
+```
 
 ### Gauntlet Testing
 
@@ -296,6 +297,28 @@ Use the provided batch scripts for automated testing against other engines:
 # Run SPRT testing
 ./run_sprt.bat
 ```
+
+---
+
+## 📁 Project Structure
+
+```text
+src/            Flat engine sources (15 × .cpp); compiled via wildcard src/*.cpp
+include/        Flat headers (21 × .hpp)
+tests/          wac.epd, bratko_kopec.epd, wac_run.py (UCI-pipe runner), baseline.txt
+tuner/          Offline tuning data/scripts (kaggle_texel_tuner.py, quiet-labeled.epd)
+book/           Polyglot opening book (Perfect2023.bin)
+output/         Build output (output/main.exe) — gitignored
+engines/        Opponent engines for gauntlet/SPRT — gitignored
+cutechess/      Cutechess CLI binaries for gauntlet/SPRT — gitignored
+```
+
+Entrypoint: `src/main.cpp` → `init_engine()` (`Position::init()` covers
+Bitboards/Magics/Zobrist) → `UCI::UCIHandler::loop()`.
+
+> Note: `tests/baseline.txt` still references the removed `wac`/`bk`/`datagen`
+> engine commands and deleted test scripts — treat its thresholds as historical,
+> not runnable.
 
 ---
 
