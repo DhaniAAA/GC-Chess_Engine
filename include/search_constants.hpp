@@ -55,7 +55,7 @@ constexpr int FOLLOWUP_HIST_PRUNING_MARGIN = 4000;
 
 constexpr int MAX_EXTENSIONS = 5;
 
-constexpr int SINGULAR_DEPTH = 6;
+constexpr int SINGULAR_DEPTH = 6;  // Was 8 (+4 WAC at 6); 5 tested (-7, over-extension)
 constexpr int SINGULAR_MARGIN = 80;  // Restored: 60 tested, neutral on WAC10
 constexpr int SINGULAR_TT_DEPTH_PENALTY = 8;
 constexpr int SINGULAR_IMPROVING_BONUS = 10;

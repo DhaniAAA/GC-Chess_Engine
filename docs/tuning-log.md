@@ -91,3 +91,26 @@ Rejected (reverted, reasons recorded in code comments):
    directly, immune to the proxy trap. Expensive (hundreds of games).
 3. Constrained Texel: anchor pawn=70/80, tune rest relatively, so fixed-cp
    pruning margins don't shift. Only if curious.
+
+## Structural follow-up (done after the above)
+
+Singular depth 6→5 tested: **−7 (over-extension)**. 6 is the sweet spot;
+comment recorded in `search_constants.hpp`. Final binary re-verified:
+perft 4865609, WAC10 200/300, bench 2613675.
+
+Eval-breakdown investigation (temporary `EVAL_BREAKDOWN` scaffolding, fully
+removed afterwards; debug binary `output/evaldbg.exe` deleted):
+- Qh6's eval drop dissected: king-attack bonus correctly rises (+1→+53mg),
+  but queen abandoning d2 hands black hanging bonuses on Re1+Bd3 (+25mg net),
+  queen goes undefended (−12), connected count falls (−8), queen PST/mobility
+  drops (−13). Static eval is "correct" statically — black just has no time
+  to exploit, which only search can see.
+- Consequence: the planned "sacrifice-aware hanging exemption" (don't score
+  king-zone attackers as hanging) was PROTOTYPED and showed **zero effect**
+  on Qh6 — because Qh6 isn't in the hanging set (defended by Nf5) and
+  Re1/Bd3/a3 don't attack the king zone. Hypothesis invalidated by data
+  before commit; do NOT retry without new evidence.
+- Root cause of Qh6-type misses is therefore root selectivity (late quiet
+  tactical moves reduced before the mate becomes visible), whose equilibrium
+  the 19 knob experiments already optimized. Next real lever is a mate-threat
+  *extension* redesign or game-based SPSA, not more eval terms of this shape.
