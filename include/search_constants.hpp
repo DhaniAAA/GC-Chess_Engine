@@ -91,7 +91,7 @@ constexpr int NULL_MOVE_VERIFY_DEPTH = 20;    // Restored: prevents zugzwang err
 // Aspiration Window Parameters
 // ============================================================================
 
-constexpr int ASPIRATION_INITIAL_DELTA = 16;
+constexpr int ASPIRATION_INITIAL_DELTA = 24;
 constexpr int ASPIRATION_MIN_DEPTH = 6;
 
 // ============================================================================

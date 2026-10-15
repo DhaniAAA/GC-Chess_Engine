@@ -53,22 +53,7 @@ int get_contempt(const Board& board) {
     return contempt;
 }
 
-// ---------------------------------------------------------------------------
-// Selective Search: compute per-root-move budget based on previous iteration.
-//
-// Moves that were clearly worse than the best in the previous iteration AND
-// consumed a disproportionate share of nodes get their search depth reduced
-// or are searched at depth=1 (effectively skipped but TT/history stay warm).
-//
-// Always active (both time-control and fixed-depth modes).
-// ---------------------------------------------------------------------------
 void Search::compute_selective_budget(int depth) {
-    // DISABLED (strength review): skipping or depth-reducing root moves based
-    // on previous-iteration score/node heuristics risks missing tactics in
-    // volatile positions (a "hopeless" move can become best at higher depth).
-    // Every top engine searches all root moves each iteration; time is better
-    // managed via time allocation, not by dropping root moves. All moves are
-    // always searched at full depth now. Re-enable only with SPRT proof.
     (void)depth;
     for (auto& rm : rootMoves) {
         rm.selectiveSkip  = false;
@@ -553,18 +538,14 @@ void Search::iterative_deepening(Board& board) {
             if (analyzedMove != MOVE_NONE) {
                 for (auto& rm : rootMoves) {
                     if (rm.move == analyzedMove) {
-                        bool suspiciousResult = (rm.pv.length == 0) &&
-                                                (previousIterScore != -VALUE_INFINITE) &&
-                                                (std::abs(rm.score - previousIterScore) > 150);
-
+                        // Only restore old PV when PV vanished but score is stable
+                        // (search glitch). Empty PV + big drop is a real tactical
+                        // refutation and must NOT be hidden, otherwise WAC bm is wrong.
+                        bool scoreStable = (previousIterScore != -VALUE_INFINITE) &&
+                                           (std::abs(rm.score - previousIterScore) <= 150);
                         bool pvDisappeared = (rm.pv.length == 0) && (previousPVLine.length > 0);
 
-                        bool largeScoreDrop = (previousIterScore != -VALUE_INFINITE) &&
-                                              (rm.pv.length > 0) &&
-                                              (rm.score < previousIterScore - 300) &&
-                                              (rootDepth <= 6);
-
-                        if (suspiciousResult || pvDisappeared || largeScoreDrop) {
+                        if (pvDisappeared && scoreStable) {
                             rm.pv = previousPVLine;
                             rm.score = previousIterScore;
                         }
@@ -894,6 +875,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     ++searchStats.nodes;
 
     if (UNLIKELY(ply > 0 && board.is_draw(ply))) {
+        // Fixed-depth analysis (WAC/bench): must be exact, no contempt.
+        // Contempt only applies to timed games, otherwise bm selection drifts.
+        if (limits.depth > 0) {
+            return 0;
+        }
         int contempt = get_contempt(board);
         return -contempt;
     }
@@ -1401,7 +1387,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         int seeThreshold = improving ?
                             -SEE_QUIET_IMPROVING_FACTOR * depth :
                             -SEE_QUIET_NOT_IMPROVING_FACTOR * depth;
-                        if (!isTTMove && !killers.is_killer(ply, m) &&
+                        // King-zone/discovered-attack quiets are potential sacrifices
+                        // (Qh6/Nxf7 class): never SEE-prune them, let search decide.
+                        if (!isTacticalQuiet && !isTTMove && !killers.is_killer(ply, m) &&
                             !(previousMove && m == counterMoves.get(board.piece_on(previousMove.to()), previousMove.to())) &&
                             !SEE::see_ge(board, m, seeThreshold)) {
                             continue;
@@ -1486,10 +1474,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             }
 
             int singularBeta = std::max(ttScore - singularMargin * depth / 8, -VALUE_MATE);
-
-            // Cap at 6: (depth-3)/2 first reaches 7 at depth=17, causing a 2-3×
-            // cost jump (singular search at depth 7 vs 6) = the d16→d17 explosion.
-            // Capping at 6 keeps singular sub-search constant for all depth >= 15.
             int singularDepth = std::min((depth - 3) / 2, 6);
 
 
@@ -1603,11 +1587,16 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     }
                 }
 
-                if (moveCount > 12) {
-                    reduction += 1;
-                }
-                if (moveCount > 20) {
-                    reduction += 1;
+                // Late-move extras must not bury king-attack quiets: under
+                // polluted history (no ucinewgame between analyses) a sac like
+                // Qh6 can sort at moveCount 12+ and eat +2 extra reduction.
+                if (!isTacticalQuiet) {
+                    if (moveCount > 12) {
+                        reduction += 1;
+                    }
+                    if (moveCount > 20) {
+                        reduction += 1;
+                    }
                 }
 
                 if (pvNode) {
@@ -2216,7 +2205,9 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 continue;
             }
 
-            if (!SEE::see_ge(board, m, 0)) {
+            // Allow slightly losing quiet checks (sacrificial checks typical in WAC).
+            // SEE >= 0 pruned too many mate-net checks; -50 keeps tactics, low node cost.
+            if (!SEE::see_ge(board, m, -50)) {
                 continue;
             }
             StateInfo si;
