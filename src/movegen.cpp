@@ -612,6 +612,8 @@ bool MoveGen::is_pseudo_legal(const Board& board, Move m) {
         if (m.is_promotion()) {
             if (us == WHITE && to_rank != RANK_8) return false;
             if (us == BLACK && to_rank != RANK_1) return false;
+        } else {
+            if (to_rank == RANK_8 || to_rank == RANK_1) return false;
         }
 
         if (m.is_enpassant()) {

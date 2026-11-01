@@ -126,10 +126,10 @@ void init_between_line() {
 
             if (f1 == f2 || r1 == r2) {
                 LineBB[s1][s2] = (sliding_attack(ROOK, s1, EMPTY_BB) &
-                                 sliding_attack(ROOK, s2, EMPTY_BB)) | s1 | s2;
+                                 sliding_attack(ROOK, s2, EMPTY_BB)) | square_bb(s1) | square_bb(s2);
             } else if (df == dr || df == -dr) {
                 LineBB[s1][s2] = (sliding_attack(BISHOP, s1, EMPTY_BB) &
-                                 sliding_attack(BISHOP, s2, EMPTY_BB)) | s1 | s2;
+                                 sliding_attack(BISHOP, s2, EMPTY_BB)) | square_bb(s1) | square_bb(s2);
             }
         }
     }

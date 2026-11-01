@@ -19,11 +19,11 @@ inline int lmp_threshold(int depth, bool improving) {
 }
 
 inline int razoring_margin(int depth) {
-    return 400 + 150 * depth;
+    return 300 * depth;
 }
 
 inline int rfp_margin(int depth, bool improving) {
-    return 75 * depth - (improving ? 75 : 0);
+    return 85 * depth - (improving ? 30 : 0);
 }
 
 // ============================================================================
@@ -91,7 +91,7 @@ constexpr int NULL_MOVE_VERIFY_DEPTH = 20;    // Restored: prevents zugzwang err
 // Aspiration Window Parameters
 // ============================================================================
 
-constexpr int ASPIRATION_INITIAL_DELTA = 24;
+constexpr int ASPIRATION_INITIAL_DELTA = 32;
 constexpr int ASPIRATION_MIN_DEPTH = 6;
 
 // ============================================================================
@@ -101,7 +101,7 @@ constexpr int ASPIRATION_MIN_DEPTH = 6;
 constexpr int IIR_MIN_DEPTH = 3;
 constexpr int IIR_REDUCTION = 1;
 constexpr int IIR_PV_REDUCTION = 1;
-constexpr int IIR_CUT_REDUCTION = 2;
+constexpr int IIR_CUT_REDUCTION = 1;
 
 constexpr int QSEARCH_CHECK_DEPTH = 0;  // Reverted from -1: no WAC gain, +15% bench nodes
 constexpr int DELTA_PRUNING_MARGIN = 350;  // Restored: 500 tested, -16 WAC (unexpected interaction)
@@ -165,7 +165,7 @@ constexpr int FRAC_EXT_RECAPTURE = 50;        // Recapture: 0.5 ply (1.0 tested:
 constexpr int FRAC_EXT_SINGULAR = 100;        // Singular move: 1.0 ply
 constexpr int FRAC_EXT_SINGULAR_DOUBLE = 200; // Double singular: 2.0 ply
 constexpr int FRAC_EXT_PV_MOVE = 50;          // First PV move: 0.5 ply
-constexpr int FRAC_EXT_MATE_THREAT = 75;      // Mate threat detected: 0.75 ply (1.0 tested: +54% nodes, no WAC gain)
+constexpr int FRAC_EXT_MATE_THREAT = 100;     // Mate threat detected: 1.0 ply
 constexpr int FRAC_EXT_CAPTURE_IMPORTANT = 50;// Important capture (queen): 0.5 ply
 
 // ============================================================================

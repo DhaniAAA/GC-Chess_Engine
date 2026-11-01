@@ -168,7 +168,7 @@ struct RootMove {
     bool operator<(const RootMove& other) const {
         if (score != other.score) return score > other.score;
         if (previousScore != other.previousScore) return previousScore > other.previousScore;
-        return prevSubtreeNodes > other.prevSubtreeNodes;
+        return false;
     }
 
     bool operator==(Move m) const {
@@ -197,6 +197,13 @@ public:
     Move ponder_move() const { return rootPonderMove; }
 
     const SearchStats& stats() const { return searchStats; }
+
+    void set_thread_id(int id) {
+        threadId = id;
+        silentMode = (id != 0);
+    }
+    int thread_id() const { return threadId; }
+    int completed_depth() const { return completedDepth; }
 
     void clear_history();
 
@@ -229,6 +236,8 @@ private:
     std::atomic<bool> stopped;
     std::atomic<bool> isPondering;
     bool silentMode = false;
+    int threadId = 0;
+    int completedDepth = 0;
     SearchLimits limits;
     SearchStats searchStats;
 
@@ -243,6 +252,7 @@ private:
     int pvIdx;
 
     std::chrono::steady_clock::time_point startTime;
+    int baseOptimumTime = 0;
     int optimumTime;
     int maximumTime;
 

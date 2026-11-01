@@ -36,7 +36,9 @@
 # Build outputs
 /output/
 output/
-
+/.scopecairn
+/tests
+/scratch
 # ====================================================================
 # Profiling & Optimization Data (PGO / gprof)
 # ====================================================================
@@ -117,3 +119,4 @@ cmake-build-*/
 .gemini/
 .docs/
 
+.scopecairn/session.md

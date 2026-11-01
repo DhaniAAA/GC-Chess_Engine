@@ -8,26 +8,26 @@ namespace Tuning {
     EvalScore PawnValue   = S(  70,   80);
     EvalScore KnightValue = S( 293,  300);
     EvalScore BishopValue = S( 290,  300);
-    EvalScore RookValue   = S( 450,  470);
+    EvalScore RookValue   = S( 465,  485);
     EvalScore QueenValue  = S( 880,  900);
 
     // ========================================================================
     // Piece Activity Bonuses
     // ========================================================================
-    EvalScore BishopPairBonus       = S(   0,   19);
-    EvalScore RookOpenFileBonus     = S(   5,    0);
-    EvalScore RookSemiOpenFileBonus = S(   0,    1);
-    EvalScore RookOnSeventhBonus    = S(   0,    0);
+    EvalScore BishopPairBonus       = S(  25,   45);
+    EvalScore RookOpenFileBonus     = S(  18,   12);
+    EvalScore RookSemiOpenFileBonus = S(  10,    6);
+    EvalScore RookOnSeventhBonus    = S(  20,   30);
     EvalScore KnightOutpostBonus    = S(  20,   13);
 
     // ========================================================================
     // Pawn Structure
     // ========================================================================
-    EvalScore IsolatedPawnPenalty = S(   0,  -40);
-    EvalScore DoubledPawnPenalty  = S( -10,  -24);
-    EvalScore BackwardPawnPenalty = S(  -3,   -9);
-    EvalScore ConnectedPawnBonus  = S(   0,    0);
-    EvalScore PhalanxBonus        = S(   0,    0);
+    EvalScore IsolatedPawnPenalty = S(  -8,  -30);
+    EvalScore DoubledPawnPenalty  = S( -10,  -20);
+    EvalScore BackwardPawnPenalty = S(  -8,  -12);
+    EvalScore ConnectedPawnBonus  = S(   6,    8);
+    EvalScore PhalanxBonus        = S(   6,    8);
 
     EvalScore PawnIslandPenalty   = S( -20,  -20);
     EvalScore PawnChainBonus      = S(   0,    0);
@@ -43,12 +43,12 @@ namespace Tuning {
     // Passed Pawn Bonuses (by rank: 0-7)
     // ========================================================================
     EvalScore PassedPawnBonus[8] = {
-        S(   0,   0), S(   0,   0), S(   0,   0), S(   0,   0),
-        S(  20,   0), S(  44,  34), S(  79, 118), S(   0,   0)
+        S(   0,   0), S(   0,   0), S(   0,   0), S(   5,  10),
+        S(  20,  30), S(  48,  75), S(  85, 145), S(   0,   0)
     };
     EvalScore ConnectedPassedBonus[8] = {
-        S(   0,   0), S(   0,   0), S(   0,   0), S(   4,   0),
-        S(  16,   5), S(  35,  43), S(  58,  93), S(   0,   0)
+        S(   0,   0), S(   0,   0), S(   0,   0), S(   6,  10),
+        S(  18,  25), S(  42,  80), S(  75, 140), S(   0,   0)
     };
     EvalScore ProtectedPassedBonus[8] = {
         S(   0,   0), S(   8,  15), S(   8,  15), S(  17,  20),
@@ -125,7 +125,7 @@ namespace Tuning {
     // ========================================================================
     // Material Imbalance
     // ========================================================================
-    EvalScore RookPairBonus        = S(   0,    0);
+    EvalScore RookPairBonus        = S(  25,   30);
     EvalScore BishopKnightCombo    = S(   0,    0);
     EvalScore KnightPairPenalty    = S( -21,   -4);
     EvalScore RooksWithoutQueens   = S(   0,    0);

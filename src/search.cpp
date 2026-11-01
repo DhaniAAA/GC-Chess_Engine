@@ -1,4 +1,5 @@
 #include "search.hpp"
+#include "thread.hpp"
 #include "movegen.hpp"
 #include "eval.hpp"
 #include "book.hpp"
@@ -13,6 +14,10 @@
 #include <cmath>
 #include <unordered_map>
 #include <xmmintrin.h>
+
+inline bool is_aligned(Square s1, Square s2, Square s3) {
+    return (LineBB[s1][s2] & square_bb(s3)) != 0;
+}
 
 Search Searcher;
 
@@ -106,17 +111,38 @@ void Search::clear_history() {
 void Search::start(Board& board, const SearchLimits& lim) {
     limits = lim;
     stopped = false;
+    completedDepth = 0;
     searchStats.reset();
 
-    TT.new_search();
+    killers.clear();
+    mateKillers.clear();
+    for (int i = 0; i < MAX_PLY + 4; ++i) {
+        stack[i].currentMove = MOVE_NONE;
+        stack[i].excludedMove = MOVE_NONE;
+        stack[i].staticEval = VALUE_NONE;
+        stack[i].correctedStaticEval = VALUE_NONE;
+        stack[i].extensions = 0;
+        stack[i].doubleExtensions = 0;
+        stack[i].tripleExtensions = 0;
+        stack[i].fractionalExt = 0;
+        stack[i].nullMovePruned = false;
+        stack[i].inLMR = false;
+        stack[i].reduction = 0;
+        stack[i].contHistory = nullptr;
+    }
+
+    if (threadId == 0) {
+        TT.new_search();
+    }
 
     init_time_management(board.side_to_move());
     startTime = std::chrono::steady_clock::now();
 
-    if (!limits.infinite && Book::book.is_loaded()) {
+    if (threadId == 0 && !limits.infinite && Book::book.is_loaded()) {
         Move bookMove = Book::book.probe(board);
         if (bookMove != MOVE_NONE) {
             rootBestMove = bookMove;
+            completedDepth = 1;
             if (!silentMode) {
                 std::cout << "info string Book move: " << move_to_string(bookMove) << std::endl;
                 std::cout << "info depth 1 score cp 0 nodes 0 time 0 pv "
@@ -126,10 +152,11 @@ void Search::start(Board& board, const SearchLimits& lim) {
         }
     }
 
-    if (Tablebase::TB.is_initialized() && Tablebase::TB.can_probe(board)) {
+    if (threadId == 0 && Tablebase::TB.is_initialized() && Tablebase::TB.can_probe(board)) {
         Move tbMove = Tablebase::TB.probe_root(board);
         if (tbMove != MOVE_NONE) {
             rootBestMove = tbMove;
+            completedDepth = 100;
             Tablebase::WDLScore wdl = Tablebase::TB.probe_wdl(board);
             if (!silentMode) {
                 std::cout << "info string Tablebase hit: " << move_to_string(tbMove) << std::endl;
@@ -164,12 +191,14 @@ void Search::init_time_management(Color us) {
     if (limits.movetime > 0) {
         optimumTime = std::max(1, limits.movetime - moveOverhead);
         maximumTime = std::max(1, limits.movetime - moveOverhead);
+        baseOptimumTime = optimumTime;
         return;
     }
 
     if (limits.time[us] == 0) {
         optimumTime = 1000000;
         maximumTime = 1000000;
+        baseOptimumTime = optimumTime;
         return;
     }
 
@@ -184,11 +213,13 @@ void Search::init_time_management(Color us) {
         emergencyMode = true;
         optimumTime = std::max(5, time_left / 20);
         maximumTime = std::max(10, time_left / 10);
+        baseOptimumTime = optimumTime;
         return;
     } else if (time_left < 2000) {
         emergencyMode = true;
         optimumTime = std::max(20, time_left / 15 + inc / 2);
         maximumTime = std::max(50, time_left / 8 + inc / 2);
+        baseOptimumTime = optimumTime;
         return;
     } else if (time_left < 5000) {
         emergencyMode = false;
@@ -200,6 +231,7 @@ void Search::init_time_management(Color us) {
 
         optimumTime = std::max(optimumTime, 30);
         maximumTime = std::max(maximumTime, 60);
+        baseOptimumTime = optimumTime;
         return;
     }
 
@@ -211,10 +243,12 @@ void Search::init_time_management(Color us) {
 
     optimumTime = std::max(optimumTime, 50);
     maximumTime = std::max(maximumTime, 100);
+    baseOptimumTime = optimumTime;
 }
 
 void Search::check_time() {
     if (stopped) return;
+    if (threadId != 0) return;
 
     if (limits.infinite || limits.ponder || isPondering) return;
 
@@ -223,8 +257,10 @@ void Search::check_time() {
     bool depthOnly = limits.depth > 0 && limits.time[WHITE] == 0 &&
                      limits.time[BLACK] == 0 && limits.movetime == 0;
 
-    if (limits.nodes > 0 && searchStats.nodes >= limits.nodes) {
+    U64 totalNodes = (Threads.thread_count() > 1) ? Threads.total_nodes() : searchStats.nodes;
+    if (limits.nodes > 0 && totalNodes >= limits.nodes) {
         stopped = true;
+        Threads.stop();
         return;
     }
 
@@ -237,6 +273,7 @@ void Search::check_time() {
 
     if (elapsed >= maximumTime) {
         stopped = true;
+        Threads.stop();
     }
 }
 
@@ -266,29 +303,113 @@ void Search::iterative_deepening(Board& board) {
 
     {
         Color us = board.side_to_move();
-        Square enemyKingSq = board.king_square(~us);
+        Color them = ~us;
+        Square enemyKingSq = board.king_square(them);
         Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
+        Bitboard occupied = board.pieces();
+        Bitboard enemyQueens = board.pieces(them, QUEEN);
+        Bitboard enemyRooksQueens = board.pieces(them, ROOK, QUEEN);
+        Bitboard enemyNonPawns = board.pieces(them) ^ board.pieces(them, PAWN, KING);
+        Bitboard our7thPawns = board.pieces(us, PAWN) & ((us == WHITE) ? RANK_7_BB : RANK_2_BB);
+        Bitboard promoBlockSquares = (us == WHITE) ? (our7thPawns << 8) : (our7thPawns >> 8);
 
         for (auto& rm : rootMoves) {
             Move m = rm.move;
-            bool isCapture = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
+            Square from = m.from();
+            Square to = m.to();
+            Piece pc = board.piece_on(from);
+            PieceType pt = type_of(pc);
+            bool isCapture = board.piece_on(to) != NO_PIECE || m.is_enpassant();
             bool givesCheck = MoveGen::gives_check(board, m);
-            bool nearKing = (enemyKingZone & square_bb(m.to())) != 0;
+            bool nearKing = (enemyKingZone & square_bb(to)) != 0;
 
-            int initScore = 0;
+            bool isDiscoveredAttack = false;
+            Bitboard enemyHeavy = board.pieces(~us, ROOK, QUEEN);
+            if (enemyHeavy) {
+                Bitboard rAtk = rook_attacks_bb(from, occupied);
+                Bitboard friendlyR = rAtk & board.pieces(us, ROOK, QUEEN);
+                Bitboard enemyR = rAtk & enemyHeavy;
+                if (friendlyR && enemyR) {
+                    Square fSq = lsb(friendlyR);
+                    Square eSq = lsb(enemyR);
+                    if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                        isDiscoveredAttack = true;
+                    }
+                }
+                if (!isDiscoveredAttack) {
+                    Bitboard bAtk = bishop_attacks_bb(from, occupied);
+                    Bitboard friendlyB = bAtk & board.pieces(us, BISHOP, QUEEN);
+                    Bitboard enemyB = bAtk & enemyHeavy;
+                    if (friendlyB && enemyB) {
+                        Square fSq = lsb(friendlyB);
+                        Square eSq = lsb(enemyB);
+                        if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                            isDiscoveredAttack = true;
+                        }
+                    }
+                }
+            }
+
+            int initScore = 1000;
             if (isCapture && givesCheck && nearKing) {
-                initScore = 40000;
-            } else if (isCapture && givesCheck) {
-                initScore = 20000;
-            } else if (isCapture && nearKing) {
-                initScore = 15000;
-            } else if (isCapture && SEE::see_ge(board, m, 0)) {
                 initScore = 10000;
+            } else if (isCapture && givesCheck) {
+                initScore = 9000;
+            } else if (isCapture && isDiscoveredAttack) {
+                initScore = 8500;
+            } else if (isCapture && nearKing) {
+                initScore = 7500;
+            } else if (isCapture && SEE::see_ge(board, m, 0)) {
+                initScore = 6000 + std::clamp(mvv_lva(board, m) / 4, -500, 1500);
+            } else if (isCapture && (pt == KNIGHT || pt == BISHOP) &&
+                       (relative_rank(us, to) >= RANK_6 || SEE::see_ge(board, m, -PieceValue[KNIGHT]))) {
+                initScore = 5800 + std::clamp(mvv_lva(board, m) / 8, -500, 1000);
             } else if (givesCheck) {
                 initScore = 5000;
+            } else if (isCapture) {
+                initScore = 3500 + std::clamp(mvv_lva(board, m) / 8, -500, 1000);
+            } else {
+                Bitboard occAfter = occupied ^ square_bb(from);
+                Bitboard atk = (pt == PAWN) ? pawn_attacks_bb(us, to) : attacks_bb(pt, to, occAfter);
+                if (promoBlockSquares & square_bb(from)) {
+                    initScore += 3200;
+                }
+                if (atk & enemyKingZone) {
+                    initScore += 2200;
+                }
+                if (pt == PAWN && (atk & enemyQueens)) {
+                    initScore += 3500;
+                }
+                if ((pt == PAWN && (atk & enemyNonPawns)) ||
+                    ((pt == KNIGHT || pt == BISHOP) && (atk & (enemyNonPawns | board.pieces(them, PAWN)))) ||
+                    (pt == ROOK && (atk & enemyQueens)) ||
+                    (pt == QUEEN && (atk & enemyRooksQueens))) {
+                    initScore += 2400;
+                }
+                if (isDiscoveredAttack) {
+                    initScore += 2600;
+                }
+                if (pt == PAWN && relative_rank(us, to) >= RANK_6) {
+                    initScore += 2000;
+                }
+                Bitboard ourAdvPawns = board.pieces(us, PAWN) &
+                                       ((us == WHITE) ? (RANK_6_BB | RANK_7_BB) : (RANK_3_BB | RANK_2_BB));
+                if (ourAdvPawns) {
+                    Bitboard pPawns = ourAdvPawns;
+                    while (pPawns) {
+                        Square psq = pop_lsb(pPawns);
+                        if (!(Eval::passed_pawn_mask(us, psq) & board.pieces(~us, PAWN))) {
+                            if (king_attacks_bb(psq) & square_bb(to)) {
+                                initScore += 2400;
+                                break;
+                            }
+                        }
+                    }
+                }
+                initScore += std::clamp(history.get(us, m) / 16, -400, 800);
             }
-            rm.score = -VALUE_INFINITE + initScore;
-            rm.previousScore = rm.score;
+            rm.score = -VALUE_INFINITE;
+            rm.previousScore = -VALUE_INFINITE + initScore;
         }
         std::stable_sort(rootMoves.begin(), rootMoves.end());
     }
@@ -339,73 +460,25 @@ void Search::iterative_deepening(Board& board) {
     int overallBestScore = -VALUE_INFINITE;
     overallBestPV.clear();
 
-    constexpr int IID_DEPTH = 2;
-    {
-        rootDepth = IID_DEPTH;
-
-        StateInfo si;
-        board.do_move(rootMoves[0].move, si);
-        int iidScore = -search(board, -VALUE_INFINITE, VALUE_INFINITE, IID_DEPTH - 1, false);
-        board.undo_move(rootMoves[0].move);
-
-        if (!stopped) {
-            rootMoves[0].score = iidScore;
-            rootMoves[0].previousScore = iidScore;
+    int startDepth = (threadId == 0) ? 1 : (1 + (threadId % 3));
+    for (rootDepth = startDepth; rootDepth <= maxDepth && !stopped; ++rootDepth) {
+        if (threadId > 0 && rootDepth > 4 && ((rootDepth + threadId) % 4 == 0)) {
+            continue;
         }
-
-        for (size_t i = 1; i < rootMoves.size(); ++i) {
-            rootMoves[i].previousScore = rootMoves[i].score;
-        }
-    }
-
-    for (rootDepth = 1; rootDepth <= maxDepth && !stopped; ++rootDepth) {
         for (auto& rm : rootMoves) {
-            rm.previousScore = rm.score;
+            if (rm.score != -VALUE_INFINITE) {
+                rm.previousScore = rm.score;
+            }
             rm.prevSubtreeNodes = rm.subtreeNodes;
             rm.subtreeNodes = 0;
         }
 
-        if (rootDepth <= 12) {
-            Color stm = board.side_to_move();
-            Square ekSq = board.king_square(~stm);
-            Bitboard ekZone = king_attacks_bb(ekSq) | square_bb(ekSq);
-
-            for (auto& rm : rootMoves) {
-                Move m = rm.move;
-                bool isCap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
-                bool chk = MoveGen::gives_check(board, m);
-                bool nrK = (ekZone & square_bb(m.to())) != 0;
-
-                if (isCap && chk && nrK) {
-                    rm.previousScore = std::max(rm.previousScore, -200);
-                }
-                else if (isCap && chk) {
-                    rm.previousScore = std::max(rm.previousScore, -400);
-                }
-            }
-        }
-
-        if (!silentMode && rootDepth <= 17) {
-            Color stm_dbg = board.side_to_move();
-            Square ekSq_dbg = board.king_square(~stm_dbg);
-            Bitboard ekZone_dbg = king_attacks_bb(ekSq_dbg) | square_bb(ekSq_dbg);
-
-            // std::cout << "info string === ROOT MOVES depth=" << rootDepth << " ===" << std::endl;
-            // for (size_t i = 0; i < rootMoves.size(); ++i) {
-            //     const auto& rm = rootMoves[i];
-            //     Move m = rm.move;
-            //     bool cap = board.piece_on(m.to()) != NO_PIECE || m.is_enpassant();
-            //     bool chk = MoveGen::gives_check(board, m);
-            //     bool nrk = (ekZone_dbg & square_bb(m.to())) != 0;
-            //     std::cout << "info string  [" << i << "] " << move_to_string(m)
-            //               << " score=" << rm.score
-            //               << " prev=" << rm.previousScore
-            //               << " cap=" << cap << " chk=" << chk << " nrk=" << nrk
-            //               << std::endl;
-            // }
-        }
-
         std::vector<RootMove> rootMovesBackup = rootMoves;
+
+        for (auto& rm : rootMoves) {
+            rm.score = -VALUE_INFINITE;
+            rm.pv.clear();
+        }
 
         // Selective search: allocate depth budget per root move based on
         // score/node ratio from the previous iteration. Always active.
@@ -448,7 +521,7 @@ void Search::iterative_deepening(Board& board) {
 
             bool prevIsMate = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
-            if (rootDepth >= ASPIRATION_MIN_DEPTH && score != -VALUE_INFINITE && !prevIsMate) {
+            if (rootDepth >= ASPIRATION_MIN_DEPTH && score > -VALUE_INFINITE + 20000 && !prevIsMate) {
                 alpha = std::max(score - delta, -VALUE_INFINITE);
                 beta = std::min(score + delta, VALUE_INFINITE);
             }
@@ -476,12 +549,8 @@ void Search::iterative_deepening(Board& board) {
 
                 if (stopped) break;
 
-                std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
-
-                if (score <= alpha || score >= beta) {
-                    // Note: TT.new_search() was removed here - it was invalidating
-                    // all previous TT entries on aspiration fails, severely degrading
-                    // hash table effectiveness.
+                if (score > alpha) {
+                    std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.end());
                 }
 
                 if (score <= alpha) {
@@ -495,11 +564,7 @@ void Search::iterative_deepening(Board& board) {
                         alpha = std::max(score - delta, -VALUE_INFINITE);
                     }
 
-                    if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
-                        searchDepth = rootDepth - 1;
-                    } else {
-                        searchDepth = rootDepth;
-                    }
+                    searchDepth = rootDepth;
 
                 } else if (score >= beta) {
                     failCount++;
@@ -512,11 +577,7 @@ void Search::iterative_deepening(Board& board) {
                         beta = std::min(score + delta, VALUE_INFINITE);
                     }
 
-                    if (failCount == 1 && rootDepth >= 8 && std::abs(score) < VALUE_MATE_IN_MAX_PLY) {
-                        searchDepth = rootDepth - 1;
-                    } else {
-                        searchDepth = rootDepth;
-                    }
+                    searchDepth = rootDepth;
 
                 } else {
                     break;
@@ -584,7 +645,7 @@ void Search::iterative_deepening(Board& board) {
                     uint16_t moveKey = rm.move.raw();
                     bestKnownPVPerMove[moveKey] = {rm.pv, rm.score};
 
-                    if (rm.score > overallBestScore || overallBestMove == MOVE_NONE) {
+                    if (pvIdx == 0 || rm.score > overallBestScore || overallBestMove == MOVE_NONE) {
                         overallBestMove = rm.move;
                         overallBestPV = rm.pv;
                         overallBestScore = rm.score;
@@ -596,16 +657,25 @@ void Search::iterative_deepening(Board& board) {
                     uint16_t moveKey = rm.move.raw();
                     auto it = bestKnownPVPerMove.find(moveKey);
 
-                    if (it != bestKnownPVPerMove.end() && it->second.first.length > 0) {
+                    bool scoreStable = (it != bestKnownPVPerMove.end()) &&
+                                       (rm.score != -VALUE_INFINITE) &&
+                                       (std::abs(rm.score - it->second.second) <= 150);
+
+                    if (scoreStable && it->second.first.length > 0) {
                         rm.pv = it->second.first;
                         rm.score = it->second.second;
                         report_info(rootBoard, rootDepth, rm.score, rm.pv, pvIdx + 1);
                     }
-                    else if (overallBestPV.length > 0 && overallBestPV.moves[0] != MOVE_NONE) {
-                        report_info(rootBoard, rootDepth, overallBestScore, overallBestPV, pvIdx + 1);
-                    }
                     else {
-                        report_info(rootBoard, rootDepth, rm.score, rm.pv, pvIdx + 1);
+                        if (it != bestKnownPVPerMove.end()) {
+                            bestKnownPVPerMove.erase(it);
+                        }
+                        PVLine reportPV = rm.pv;
+                        if (reportPV.length == 0 && rm.move != MOVE_NONE) {
+                            reportPV.moves[0] = rm.move;
+                            reportPV.length = 1;
+                        }
+                        report_info(rootBoard, rootDepth, rm.score, reportPV, pvIdx + 1);
                     }
                 }
             }
@@ -627,8 +697,12 @@ void Search::iterative_deepening(Board& board) {
                         uint16_t moveKey = rm.move.raw();
                         auto it = bestKnownPVPerMove.find(moveKey);
                         if (it != bestKnownPVPerMove.end() && it->second.first.length > 0) {
-                            rm.pv = it->second.first;
-                            rm.score = it->second.second;
+                            bool scoreStable = (rm.score != -VALUE_INFINITE) &&
+                                               (std::abs(rm.score - it->second.second) <= 150);
+                            if (scoreStable) {
+                                rm.pv = it->second.first;
+                                rm.score = it->second.second;
+                            }
                         }
                     }
                 }
@@ -655,6 +729,25 @@ void Search::iterative_deepening(Board& board) {
                 rootBestScore = overallBestScore;
             }
 
+            if (previousRootBestMove != MOVE_NONE &&
+                ((bestMoveStability >= 2 &&
+                  type_of(board.piece_on(rootBestMove.from())) == KING &&
+                  type_of(board.piece_on(previousRootBestMove.from())) != KING) ||
+                 (bestMoveStability >= 3))) {
+                for (const auto& rm : rootMoves) {
+                    if (rm.move == previousRootBestMove) {
+                        int prevScore = (rm.score != -VALUE_INFINITE) ? rm.score : rm.previousScore;
+                        int allowedDelta = 30;
+                        if (prevScore != -VALUE_INFINITE && rootBestScore - prevScore <= allowedDelta) {
+                            rootBestMove = rm.move;
+                            rootBestScore = prevScore;
+                            if (rm.pv.length > 0) pvLines[0] = rm.pv;
+                            break;
+                        }
+                    }
+                }
+            }
+
             rootPonderMove = MOVE_NONE;
             if (bestRM.pv.length > 1 && rootBestMove != MOVE_NONE) {
                 Move ponderCandidate = bestRM.pv.moves[1];
@@ -669,8 +762,21 @@ void Search::iterative_deepening(Board& board) {
             }
 
             pvLines[0] = bestRM.pv;
+            completedDepth = rootDepth;
 
-            if (!limits.infinite && !stopped && limits.movetime == 0 && !emergencyMode && limits.depth == 0) {
+            if (threadId == 0) {
+                if (previousRootBestMove != MOVE_NONE) {
+                    if (rootBestMove == previousRootBestMove) {
+                        bestMoveStability = std::min(bestMoveStability + 1, 10);
+                    } else {
+                        bestMoveStability = 0;
+                    }
+                }
+                previousRootScore = rootBestScore;
+                previousRootBestMove = rootBestMove;
+            }
+
+            if (threadId == 0 && !limits.infinite && !stopped && limits.movetime == 0 && !emergencyMode && limits.depth == 0) {
                 int score = bestRM.score;
 
                 if (rootDepth >= 4) {
@@ -683,6 +789,7 @@ void Search::iterative_deepening(Board& board) {
                     }
 
                     bool failingLow = false;
+                    int failLowExtension = 0;
                     if (previousRootScore != VALUE_NONE) {
                         int scoreDrop = previousRootScore - score;
 
@@ -690,15 +797,13 @@ void Search::iterative_deepening(Board& board) {
                             failLowCount++;
                             failingLow = true;
                             lastFailLowScore = score;
-                            int extension = std::min(scoreDrop * 2, optimumTime / 2);
-                            optimumTime = std::min(maximumTime, optimumTime + extension);
+                            failLowExtension += std::min(scoreDrop * 2, baseOptimumTime / 2);
                         } else if (scoreDrop < -20) {
                             failLowCount = 0;
                         }
 
                         if (failLowCount >= 2) {
-                            int panicExtension = optimumTime / 3;
-                            optimumTime = std::min(maximumTime, optimumTime + panicExtension);
+                            failLowExtension += baseOptimumTime / 3;
                         }
                     }
 
@@ -727,8 +832,8 @@ void Search::iterative_deepening(Board& board) {
 
                         positionComplexity = std::clamp(complexity, 10, 100);
 
-                        double complexityFactor = 0.5 + (positionComplexity / 100.0);
-                        int adjustedOptimum = static_cast<int>(optimumTime * complexityFactor);
+                        double complexityFactor = 0.75 + (positionComplexity / 200.0);
+                        int adjustedOptimum = static_cast<int>(baseOptimumTime * complexityFactor) + failLowExtension;
                         optimumTime = std::min(maximumTime, adjustedOptimum);
                     }
 
@@ -805,13 +910,15 @@ void Search::iterative_deepening(Board& board) {
                                 }
                             }
                         } else if (isMateScore) {
-                            int mateIn = (score > 0) ?
-                                (VALUE_MATE - score + 1) / 2 :
-                                std::abs((VALUE_MATE + score) / 2);
+                            int matePlies = VALUE_MATE - std::abs(score);
+                            int mateIn = (matePlies + 1) / 2;
 
+                            if (score > 0 && rootDepth >= std::max(4, matePlies + 2) && bestMoveStability >= 2) {
+                                break;
+                            }
                             if (rootDepth >= MIN_DEPTH_FOR_EARLY_STOP &&
-                                mateIn <= 4 && bestMoveStability >= 3 &&
-                                elapsed > optimumTime * 0.7) {
+                                mateIn <= 6 && bestMoveStability >= 3 &&
+                                elapsed > optimumTime * 0.4) {
                                 break;
                             }
                         }
@@ -875,13 +982,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     ++searchStats.nodes;
 
     if (UNLIKELY(ply > 0 && board.is_draw(ply))) {
-        // Fixed-depth analysis (WAC/bench): must be exact, no contempt.
-        // Contempt only applies to timed games, otherwise bm selection drifts.
-        if (limits.depth > 0) {
-            return 0;
-        }
-        int contempt = get_contempt(board);
-        return -contempt;
+        return 0;
     }
 
     alpha = std::max(alpha, -VALUE_MATE + ply);
@@ -919,7 +1020,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     }
 
     bool ttMateScore = std::abs(ttScore) >= VALUE_MATE_IN_MAX_PLY;
-    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth;
+    bool allowTTCutoff = !pvNode && ttHit && ttDepth >= depth && ss->excludedMove == MOVE_NONE;
 
     if (allowTTCutoff && ttMateScore) {
         if (ttMove == MOVE_NONE) {
@@ -950,7 +1051,9 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     int staticEval;
     int correctedStaticEval;
     bool inCheck = board.in_check();
+    ss->inCheck = inCheck;
     Color us = board.side_to_move();
+
 
     if (inCheck) {
         staticEval = VALUE_NONE;
@@ -970,46 +1073,81 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     bool improving = false;
 
-
     if (!inCheck && ss->staticEval != VALUE_NONE) {
         if (ply >= 2 && stack[ply].staticEval != VALUE_NONE) {
-            if (ss->staticEval >= stack[ply].staticEval) {
-                improving = true;
-            }
-        } else {
-            improving = true;
+            improving = (ss->staticEval > stack[ply].staticEval);
+        } else if (ply >= 4 && stack[ply - 2].staticEval != VALUE_NONE) {
+            improving = (ss->staticEval > stack[ply - 2].staticEval);
         }
     }
 
-    if (inCheck) improving = false;
+    Color enemy = ~us;
+    bool usIsBareKing = (board.pieces(us) == square_bb(board.king_square(us)));
+    bool themIsBareKing = (board.pieces(enemy) == square_bb(board.king_square(enemy)));
+    bool bareKingEndgame = usIsBareKing || themIsBareKing;
 
     int postLMRReduction = 0;
-    if (!inCheck && ply >= 1 && stack[ply + 1].inLMR && depth >= POST_LMR_MIN_DEPTH) {
-        int parentReduction = stack[ply + 1].reduction;
-        int parentEval = stack[ply + 1].staticEval;
 
-        if (parentReduction >= POST_LMR_WORSENING_THRESHOLD &&
-            parentEval != VALUE_NONE && ss->staticEval != VALUE_NONE &&
-            ss->staticEval <= -parentEval) {
-            postLMRReduction = POST_LMR_WORSENING_REDUCTION;
+    Bitboard ourAdvancedPawns = board.pieces(us, PAWN) &
+                                ((us == WHITE) ? (RANK_6_BB | RANK_7_BB) : (RANK_3_BB | RANK_2_BB));
+    Bitboard enemy7thPawns = (board.pieces(QUEEN) == 0)
+                           ? (board.pieces(enemy, PAWN) & ((enemy == WHITE) ? RANK_7_BB : RANK_2_BB))
+                           : EMPTY_BB;
+    bool opponentJustEvadedCheck = (ply >= 1 && stack[ply + 1].inCheck);
+
+    // Safe Razoring at depth 1 only (margin 450 so minor-piece sacrifices are never razored)
+    if (!pvNode && !inCheck && !usIsBareKing && !ourAdvancedPawns && !opponentJustEvadedCheck &&
+        depth == 1 &&
+        ss->excludedMove == MOVE_NONE && std::abs(alpha) < VALUE_MATE_IN_MAX_PLY) {
+        if (correctedStaticEval + 450 <= alpha) {
+            int qVal = qsearch(board, alpha, alpha + 1, 0);
+            if (qVal <= alpha) {
+                return qVal;
+            }
         }
     }
 
-    if (!pvNode && !inCheck && depth <= RFP_MAX_DEPTH && depth >= 1
+    if (!pvNode && !inCheck && !usIsBareKing && !enemy7thPawns && depth <= RFP_MAX_DEPTH && depth >= 1
         && ss->excludedMove == MOVE_NONE) {
         int rfpMarg = rfp_margin(depth, improving);
 
         if (correctedStaticEval - rfpMarg >= beta
             && correctedStaticEval < VALUE_MATE_IN_MAX_PLY
             && std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
-
-            if (tte) {
-                tte->save(board.key(), score_to_tt(correctedStaticEval, ply),
-                          staticEval, BOUND_LOWER, depth, MOVE_NONE,
-                          TT.generation());
+            bool wasInCheckPrevTurn = (ply >= 2 && stack[ply].inCheck);
+            bool kingRingUnderHeavyAttack = wasInCheckPrevTurn || opponentJustEvadedCheck;
+            if (!kingRingUnderHeavyAttack && previousMove != MOVE_NONE) {
+                Square prevTo = previousMove.to();
+                Piece prevPc = board.piece_on(prevTo);
+                if (prevPc != NO_PIECE && color_of(prevPc) == enemy) {
+                    PieceType prevPt = type_of(prevPc);
+                    Bitboard occ = board.pieces();
+                    Bitboard prevAtk = (prevPt == PAWN)
+                        ? pawn_attacks_bb(enemy, prevTo)
+                        : attacks_bb(prevPt, prevTo, occ);
+                    Bitboard ourValuable = board.pieces(us) ^ board.pieces(us, PAWN);
+                    if (prevAtk & ourValuable) {
+                        kingRingUnderHeavyAttack = true;
+                    }
+                }
             }
-
-            return correctedStaticEval;
+            if (!kingRingUnderHeavyAttack && depth >= 2) {
+                Square ourKSq = board.king_square(us);
+                Bitboard ourKingRing = king_attacks_bb(ourKSq) | square_bb(ourKSq);
+                Bitboard occ = board.pieces();
+                Bitboard enemyHeavy = board.pieces(enemy, QUEEN, ROOK);
+                while (enemyHeavy) {
+                    Square sq = pop_lsb(enemyHeavy);
+                    PieceType pt = type_of(board.piece_on(sq));
+                    if (attacks_bb(pt, sq, occ) & ourKingRing) {
+                        kingRingUnderHeavyAttack = true;
+                        break;
+                    }
+                }
+            }
+            if (!kingRingUnderHeavyAttack) {
+                return correctedStaticEval;
+            }
         }
     }
 
@@ -1062,7 +1200,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 return nullScore;
             }
         }
-        else if (depth >= MATE_THREAT_EXT_MIN_DEPTH && nullScore <= VALUE_MATED_IN_MAX_PLY) {
+        else if (nullScore <= VALUE_MATED_IN_MAX_PLY) {
             mateThreat = true;
         }
     }
@@ -1076,50 +1214,12 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     const ContinuationHistoryEntry* contHist4ply = (ply >= 4 && ply - 2 >= 0 && stack[ply - 2].contHistory) ?
                                                     stack[ply - 2].contHistory : nullptr;
 
-    if (!pvNode && !inCheck && depth >= MULTI_CUT_DEPTH && ttMove != MOVE_NONE) {
-        int multiCutCount = 0;
-        int movesTried = 0;
-
-        MovePicker mcPicker(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
-                            contHist1ply, contHist2ply, &captureHist, contHist3ply, contHist4ply);
-        Move m;
-
-        while ((m = mcPicker.next_move()) != MOVE_NONE && movesTried < MULTI_CUT_COUNT + 2) {
-            if (!MoveGen::is_legal(board, m)) {
-                continue;
-            }
-
-            ++movesTried;
-
-            StateInfo si;
-            board.do_move(m, si);
-
-            int mcDepth = depth / 3;
-            if (mcDepth < 1) mcDepth = 1;
-            int mcScore = -search(board, -beta, -beta + 1, mcDepth, !cutNode);
-
-            board.undo_move(m);
-
-            if (stopped) return 0;
-
-            if (mcScore >= beta) {
-                ++multiCutCount;
-                if (multiCutCount >= MULTI_CUT_REQUIRED) {
-                    return beta;
-                }
-            }
-
-            if (movesTried >= MULTI_CUT_COUNT) {
-                break;
-            }
-        }
-    }
-
-    if (!pvNode && !inCheck && depth >= PROBCUT_DEPTH &&
+    if (!pvNode && !inCheck && !bareKingEndgame && !enemy7thPawns && depth >= 6 &&
+        ss->excludedMove == MOVE_NONE &&
+        correctedStaticEval != VALUE_NONE && correctedStaticEval >= beta - 100 &&
         std::abs(beta) < VALUE_MATE_IN_MAX_PLY) {
 
-        // Flat margin (was beta + 100 + 50*depth which disabled pruning at high depths)
-        int probCutBeta = beta + 200;
+        int probCutBeta = std::max(beta, correctedStaticEval) + 200;
         int probCutDepth = std::max(1, depth - 4);
 
         MoveList captures;
@@ -1127,6 +1227,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
         for (size_t i = 0; i < captures.size(); ++i) {
             Move m = captures[i].move;
+
+            if (previousMove != MOVE_NONE && m.to() == previousMove.to()) {
+                continue;
+            }
 
             if (!MoveGen::is_legal(board, m)) {
                 continue;
@@ -1161,14 +1265,15 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     int searchDepth = depth - postLMRReduction;
     if (searchDepth < 1 && depth >= 1) searchDepth = 1;
-    if (!ttMove && depth >= IIR_MIN_DEPTH) {
+    if (!inCheck && !ttMove && depth >= IIR_MIN_DEPTH) {
         if (pvNode) {
             searchDepth -= IIR_PV_REDUCTION;
         } else if (cutNode) {
             searchDepth -= IIR_CUT_REDUCTION;
-        } else {
+        } else if (ply > 2) {
             searchDepth -= IIR_REDUCTION;
         }
+        if (searchDepth < 1) searchDepth = 1;
     }
 
     Move bestMove = MOVE_NONE;
@@ -1185,35 +1290,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
     bool singularSearched = false;
 
     const bool rootNode = (ply == 0);
-
-    // Node-level futility pruning: if static eval + futility margin < alpha,
-    // prune the entire node without iterating moves.
-    if (!pvNode && !inCheck && !rootNode && depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
-        if (correctedStaticEval != VALUE_NONE && alpha > VALUE_MATED_IN_MAX_PLY) {
-            int nodeFutilMarg = futility_margin(depth + 1, improving);
-            if (correctedStaticEval + nodeFutilMarg < alpha) {
-                // Quick SEE check: only prune if no capture can raise alpha
-                bool canImprove = false;
-                Bitboard enemyPieces = board.pieces(~us);
-                Bitboard ourPieces = board.pieces(us);
-                Bitboard potentialCaptures = ourPieces & ~board.pieces(us, PAWN);
-                while (potentialCaptures && !canImprove) {
-                    Square from = pop_lsb(potentialCaptures);
-                    Bitboard targets = attacks_bb(type_of(board.piece_on(from)), from, board.pieces()) & enemyPieces;
-                    while (targets && !canImprove) {
-                        Square to = pop_lsb(targets);
-                        PieceType pt = type_of(board.piece_on(to));
-                        if (correctedStaticEval + PieceValue[pt] + 200 >= alpha) {
-                            canImprove = true;
-                        }
-                    }
-                }
-                if (!canImprove) {
-                    return correctedStaticEval;
-                }
-            }
-        }
-    }
 
     MovePicker mp(board, ttMoves, ttMoveCount, ply, killers, counterMoves, history, previousMove,
                   contHist1ply, contHist2ply, &captureHist, contHist3ply, contHist4ply);
@@ -1279,22 +1355,102 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
         ss->currentMove = m;
 
         bool isDiscoveredAttack = false;
-        if (!isCapture && !givesCheck) {
+        if (!givesCheck) {
             Square enemyKSq = board.king_square(~us);
-            if (!mp.hasMoveInfo) {
+            if (!isCapture && !mp.hasMoveInfo) {
                 Bitboard kZone = king_attacks_bb(enemyKSq) | square_bb(enemyKSq);
+                Bitboard kZone2 = kZone | shift<NORTH>(kZone) | shift<SOUTH>(kZone) |
+                                  shift<EAST>(kZone) | shift<WEST>(kZone);
                 Bitboard occ = board.pieces() ^ square_bb(m.from());
-                Bitboard atk = attacks_bb(movedPt, m.to(), occ);
-                if (atk & kZone) {
+                Bitboard atk = (movedPt == PAWN) ? pawn_attacks_bb(us, m.to()) : attacks_bb(movedPt, m.to(), occ);
+                Bitboard enemyTargets = (movedPt == QUEEN || movedPt == ROOK) ? kZone2 : kZone;
+                if (movedPt == PAWN) enemyTargets |= (board.pieces(~us) ^ board.pieces(~us, PAWN, KING));
+                 else if (movedPt == KNIGHT || movedPt == BISHOP) enemyTargets |= board.pieces(~us, ROOK, QUEEN);
+                else if (movedPt == ROOK) enemyTargets |= board.pieces(~us, QUEEN);
+                else if (movedPt == QUEEN) enemyTargets |= board.pieces(~us, ROOK, QUEEN);
+                if (atk & enemyTargets) {
                     attacksKingZone = true;
                 }
             }
+            if (!isCapture && !attacksKingZone && (movedPt == ROOK || movedPt == BISHOP || movedPt == QUEEN)) {
+                Bitboard ray = line_bb(m.to(), enemyKSq);
+                if (ray) {
+                    bool sliderMatchesRay = (movedPt == ROOK) ? (file_of(m.to()) == file_of(enemyKSq) || rank_of(m.to()) == rank_of(enemyKSq)) :
+                                            (movedPt == BISHOP) ? (file_of(m.to()) != file_of(enemyKSq) && rank_of(m.to()) != rank_of(enemyKSq)) : true;
+                    if (sliderMatchesRay) {
+                        Bitboard between = between_bb(m.to(), enemyKSq);
+                        Bitboard occ = board.pieces() ^ square_bb(m.from());
+                        Bitboard blockers = between & occ;
+                        if (blockers && (blockers & board.pieces(us)) == blockers && popcount(blockers) == 1) {
+                            attacksKingZone = true;
+                        }
+                    }
+                }
+            }
             if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
-                !aligned(m.from(), m.to(), enemyKSq)) {
+                !is_aligned(m.from(), m.to(), enemyKSq)) {
                 isDiscoveredAttack = true;
+            } else {
+                Bitboard enemyHeavy = board.pieces(~us, ROOK, QUEEN);
+                if (enemyHeavy) {
+                    Bitboard rAtk = rook_attacks_bb(m.from(), board.pieces());
+                    Bitboard friendlyR = rAtk & board.pieces(us, ROOK, QUEEN);
+                    Bitboard enemyR = rAtk & enemyHeavy;
+                    if (friendlyR && enemyR) {
+                        Square fSq = lsb(friendlyR);
+                        Square eSq = lsb(enemyR);
+                        if (is_aligned(fSq, m.from(), eSq) && !is_aligned(m.from(), m.to(), eSq)) {
+                            isDiscoveredAttack = true;
+                        }
+                    }
+                    if (!isDiscoveredAttack) {
+                        Bitboard bAtk = bishop_attacks_bb(m.from(), board.pieces());
+                        Bitboard friendlyB = bAtk & board.pieces(us, BISHOP, QUEEN);
+                        Bitboard enemyB = bAtk & enemyHeavy;
+                        if (friendlyB && enemyB) {
+                            Square fSq = lsb(friendlyB);
+                            Square eSq = lsb(enemyB);
+                            if (is_aligned(fSq, m.from(), eSq) && !is_aligned(m.from(), m.to(), eSq)) {
+                                isDiscoveredAttack = true;
+                            }
+                        }
+                    }
+                }
             }
         }
-        bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck;
+        Bitboard enemyQueens = board.pieces(~us, QUEEN);
+        bool attacksQueen = false;
+        if (enemyQueens) {
+            if (movedPt == PAWN) {
+                attacksQueen = (pawn_attacks_bb(us, m.to()) & enemyQueens) != 0;
+            } else {
+                attacksQueen = (attacks_bb(movedPt, m.to(), board.pieces()) & enemyQueens) != 0;
+            }
+        }
+        Bitboard enemyRooks = board.pieces(~us, ROOK);
+        bool attacksRook = false;
+        if (enemyRooks) {
+            if (movedPt == PAWN) {
+                attacksRook = (pawn_attacks_bb(us, m.to()) & enemyRooks) != 0;
+            } else if (movedPt == KNIGHT || movedPt == BISHOP) {
+                attacksRook = (attacks_bb(movedPt, m.to(), board.pieces()) & enemyRooks) != 0;
+            }
+        }
+        bool isAdvancedPawnPush = (movedPt == PAWN && relative_rank(us, m.to()) >= RANK_5);
+        bool supportsPassedPawn = false;
+        if (ourAdvancedPawns) {
+            Bitboard passPawns = ourAdvancedPawns;
+            while (passPawns) {
+                Square psq = pop_lsb(passPawns);
+                if (!(Eval::passed_pawn_mask(us, psq) & board.pieces(~us, PAWN))) {
+                    if (king_attacks_bb(psq) & square_bb(m.to())) {
+                        supportsPassedPawn = true;
+                        break;
+                    }
+                }
+            }
+        }
+        bool isTacticalQuiet = attacksKingZone || isDiscoveredAttack || givesCheck || isAdvancedPawnPush || attacksQueen || attacksRook || supportsPassedPawn;
 
         bool previousWasViolent = false;
         if (previousMove != MOVE_NONE) {
@@ -1315,23 +1471,24 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     Square ekSq_cap = board.king_square(~us);
                     Bitboard ekZone_cap = king_attacks_bb(ekSq_cap) | square_bb(ekSq_cap);
                     bool captureNearKing = (ekZone_cap & square_bb(m.to())) != 0;
+                    Piece capturedPiece = board.piece_on(m.to());
+                    PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
+                                             (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
 
-                    if (captureNearKing && tacticalBypass) {
+                    if ((captureNearKing && tacticalBypass) || (capturedType >= KNIGHT && depth <= 4)) {
                     } else {
-                        Piece capturedPiece = board.piece_on(m.to());
-                        PieceType capturedType = (capturedPiece != NO_PIECE) ? type_of(capturedPiece) :
-                                                 (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
 
                         int seeThreshold;
                         if (capturedType >= PAWN && capturedType <= QUEEN) {
-                            seeThreshold = improving ? -120 * depth : -100 * depth;
+                            seeThreshold = improving ? -150 * depth : -130 * depth;
                         } else {
                             seeThreshold = improving ?
                                 -SEE_CAPTURE_IMPROVING_FACTOR * depth :
                                 -SEE_CAPTURE_NOT_IMPROVING_FACTOR * depth;
                         }
 
-                        if (captureNearKing) {
+                        bool isEnemyAdvPawn = (capturedType == PAWN && relative_rank(~us, m.to()) >= RANK_6);
+                        if (captureNearKing || (ourAdvancedPawns && relative_rank(us, m.to()) >= RANK_6) || isEnemyAdvPawn) {
                             seeThreshold *= 3;
                         }
 
@@ -1346,26 +1503,26 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     if (depth <= LMP_MAX_DEPTH) {
                         int lmpThresh = lmp_threshold(depth, improving);
                         if (moveCount > lmpThresh) {
-                            if (!killers.is_killer(ply, m) && history.get(us, m) < 2000) {
+                            if (!isTacticalQuiet && !killers.is_killer(ply, m) && history.get(us, m) < 2000) {
                                 continue;
                             }
                         }
                     }
-                    if (depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
+                    if (!usIsBareKing && depth <= FUTILITY_MAX_DEPTH && depth >= 1) {
                         int futilMarg = futility_margin(depth, improving);
                         if (correctedStaticEval + futilMarg <= alpha) {
-                            if (!killers.is_killer(ply, m) && !isTTMove) {
+                            if (!isTacticalQuiet && !killers.is_killer(ply, m) && !isTTMove) {
                                 continue;
                             }
                         }
                     }
-                    if (depth <= HISTORY_LEAF_PRUNING_DEPTH && moveCount > 4) {
+                    if (!isTacticalQuiet && depth <= HISTORY_LEAF_PRUNING_DEPTH && moveCount > 4) {
                         int histScore = history.get(board.side_to_move(), m);
                         if (histScore < -HISTORY_LEAF_PRUNING_MARGIN * depth) {
                             continue;
                         }
                     }
-                    if (depth <= COUNTER_HIST_PRUNING_DEPTH && contHist1ply && moveCount > 5) {
+                    if (!isTacticalQuiet && depth <= COUNTER_HIST_PRUNING_DEPTH && contHist1ply && moveCount > 5) {
                         PieceType pt = type_of(movedPiece);
                         int cmHistScore = contHist1ply->get(pt, m.to());
 
@@ -1373,7 +1530,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                             continue;
                         }
                     }
-                    if (depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
+                    if (!isTacticalQuiet && depth <= FOLLOWUP_HIST_PRUNING_DEPTH && ply >= 4 && stack[ply - 2].contHistory && moveCount > 6) {
                         const ContinuationHistoryEntry* contHist4ply = stack[ply - 2].contHistory;
                         PieceType pt = type_of(movedPiece);
                         int followupScore = contHist4ply->get(pt, m.to());
@@ -1399,20 +1556,18 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             }
         }
 
-        int currentExtensions = (ss->ply >= 2 && ply >= 2) ? stack[ply + 1].extensions : 0;
+        int currentExtensions = (ply >= 1) ? stack[ply + 1].extensions : 0;
         int doubleExtensions = (ply >= 1) ? stack[ply + 1].doubleExtensions : 0;
         int tripleExtensions = (ply >= 1) ? stack[ply + 1].tripleExtensions : 0;
 
         int fractionalExt = 0;
-        int inheritedFrac = (ply >= 1) ? stack[ply + 1].fractionalExt : 0;
 
         if (givesCheck && currentExtensions < MAX_EXTENSIONS && depth >= 2) {
             bool seeZero = (mp.hasMoveInfo && (mp.lastFlags & MovePicker::FLAG_SEE_GE_ZERO)) ||
                            SEE::see_ge(board, m, 0);
-            if (seeZero) {
+            int minCheckExtDepth = (board.pieces(QUEEN) == 0) ? 4 : 6;
+            if (seeZero ? (pvNode || depth >= minCheckExtDepth || (ply <= 4 && depth >= 2)) : (ply <= 2 && depth >= 4)) {
                 fractionalExt += FRAC_EXT_CHECK;
-            } else {
-                fractionalExt += FRAC_EXT_CHECK_PARTIAL;
             }
         }
 
@@ -1420,9 +1575,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_SINGULAR);
         }
 
-        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS && depth >= 4) {
+        if (movedPt == PAWN && currentExtensions < MAX_EXTENSIONS && depth >= 2) {
             Rank toRank = relative_rank(us, m.to());
             if (toRank == RANK_7) {
+                fractionalExt = std::max(fractionalExt, FRAC_EXT_PASSED_PAWN);
+            } else if (toRank == RANK_6 && !(Eval::passed_pawn_mask(us, m.to()) & board.pieces(~us, PAWN))) {
                 fractionalExt = std::max(fractionalExt, FRAC_EXT_PASSED_PAWN);
             }
         }
@@ -1431,29 +1588,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             fractionalExt = std::max(fractionalExt, FRAC_EXT_MATE_THREAT);
         }
 
-        if (pvNode && moveCount == 1 && depth >= PV_EXT_MIN_DEPTH &&
-            currentExtensions < MAX_EXTENSIONS && fractionalExt < FRAC_EXT_SCALE) {
-            fractionalExt = std::max(fractionalExt, FRAC_EXT_PV_MOVE);
-        }
-
-        if (isCapture && depth >= CAPTURE_EXT_MIN_DEPTH && currentExtensions < MAX_EXTENSIONS && !m.is_enpassant()) {
-            Piece captured = board.piece_on(m.to());
-            PieceType capturedPt = type_of(captured);
-
-            bool shouldExtend = (capturedPt == QUEEN) ||
-                               (previousMove != MOVE_NONE && m.to() == previousMove.to());
-
-            if (shouldExtend && SEE::see_ge(board, m, CAPTURE_EXT_SEE_THRESHOLD)) {
-                fractionalExt = std::max(fractionalExt, FRAC_EXT_CAPTURE_IMPORTANT);
-            }
-        }
-
-        if (isCapture && previousMove != MOVE_NONE && m.to() == previousMove.to() &&
-            currentExtensions < MAX_EXTENSIONS && fractionalExt < FRAC_EXT_SCALE) {
-            fractionalExt = std::max(fractionalExt, FRAC_EXT_RECAPTURE);
-        }
-
-        if (!singularSearched && depth >= SINGULAR_DEPTH && isTTMove &&
+        if (!rootNode && ss->excludedMove == MOVE_NONE && !singularSearched && depth >= SINGULAR_DEPTH && isTTMove &&
             ttHit && ttBound != BOUND_UPPER && ttDepth >= depth - 3 &&
             std::abs(ttScore) < VALUE_MATE_IN_MAX_PLY && currentExtensions < MAX_EXTENSIONS) {
 
@@ -1513,23 +1648,11 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             }
         }
 
-        int totalFrac = fractionalExt + inheritedFrac;
-        int extension = 0;
-        int remainingFrac = 0;
-
-        if (totalFrac >= 0) {
-            extension = totalFrac / FRAC_EXT_SCALE;
-            remainingFrac = totalFrac % FRAC_EXT_SCALE;
-        } else {
-            extension = (totalFrac - FRAC_EXT_SCALE + 1) / FRAC_EXT_SCALE;
-            remainingFrac = 0;
-        }
-
-        extension = std::clamp(extension, -2, 3);
+        int extension = fractionalExt / FRAC_EXT_SCALE;
+        extension = std::clamp(extension, -2, 2);
 
         if (extension > 0 && ply >= rootDepth * MAX_EXTENSION_PLY_RATIO) {
             extension = 0;
-            remainingFrac = 0;
         }
 
         int newDepth = searchDepth - 1 + extension;
@@ -1542,33 +1665,42 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             stack[ply + 2].extensions = currentExtensions + std::max(0, extension);
             stack[ply + 2].doubleExtensions = doubleExtensions;
             stack[ply + 2].tripleExtensions = tripleExtensions;
-            stack[ply + 2].fractionalExt = remainingFrac;
+            stack[ply + 2].fractionalExt = 0;
         }
 
         int reduction = 0;
         bool lmrApplied = false;
 
-        if (depth >= LMR_MIN_DEPTH && moveCount > 1 && !isCapture && !isPromotion && !givesCheck) {
+        if (depth >= LMR_MIN_DEPTH && moveCount > 1 && !isCapture && !isPromotion &&
+            (!givesCheck || (!rootNode && !pvNode && moveCount > 4))) {
             bool isAdvancedPawnPush = false;
             if (movedPt == PAWN) {
                 Rank toRank = relative_rank(us, m.to());
-                if (toRank >= RANK_6) {
+                if (toRank >= RANK_5) {
                     isAdvancedPawnPush = true;
+                }
+            }
+
+            bool isKingApproachInMopUp = false;
+            if (bareKingEndgame && movedPt == KING) {
+                Square ekSq = board.king_square(enemy);
+                int distBefore = std::abs(int(file_of(m.from())) - int(file_of(ekSq))) +
+                                 std::abs(int(rank_of(m.from())) - int(rank_of(ekSq)));
+                int distAfter = std::abs(int(file_of(m.to())) - int(file_of(ekSq))) +
+                                std::abs(int(rank_of(m.to())) - int(rank_of(ekSq)));
+                if (distAfter < distBefore) {
+                    isKingApproachInMopUp = true;
                 }
             }
 
             bool onMatePath = (bestScore >= VALUE_MATE_IN_MAX_PLY || bestScore <= VALUE_MATED_IN_MAX_PLY);
 
-            if (!isAdvancedPawnPush && !onMatePath && extension <= 0) {
+            if (!isAdvancedPawnPush && !isKingApproachInMopUp && !onMatePath && extension <= 0) {
                 reduction = LMRTable[std::min(depth, 63)][std::min(moveCount, 63)];
                 lmrApplied = true;
 
-                int delta = beta - alpha;
-                if (delta < 20) {
-                    reduction += 1;
-                }
                 if (cutNode) {
-                    reduction += LMR_CUTNODE_BONUS;
+                    reduction += 1;
                     if (!ttMove) {
                         reduction += 1;
                     }
@@ -1579,24 +1711,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 }
                 if (ply + 2 < MAX_PLY + 4) {
                     int childCutoffs = stack[ply + 2].cutoffCnt;
-                    if (childCutoffs > 1) {
-                        reduction += LMR_CUTOFF_CNT_BONUS;
-                    }
                     if (childCutoffs > 2) {
-                        reduction += LMR_CUTOFF_CNT_BONUS;
+                        reduction += 1;
                     }
                 }
 
-                // Late-move extras must not bury king-attack quiets: under
-                // polluted history (no ucinewgame between analyses) a sac like
-                // Qh6 can sort at moveCount 12+ and eat +2 extra reduction.
-                if (!isTacticalQuiet) {
-                    if (moveCount > 12) {
-                        reduction += 1;
-                    }
-                    if (moveCount > 20) {
-                        reduction += 1;
-                    }
+                if (!isTacticalQuiet && moveCount > 16) {
+                    reduction += 1;
                 }
 
                 if (pvNode) {
@@ -1629,9 +1750,6 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 reduction -= std::clamp(statScore / HISTORY_LMR_DIVISOR,
                                         -HISTORY_LMR_MAX_ADJ, HISTORY_LMR_MAX_ADJ);
 
-                if (cutNode && !ttMove && depth >= 6) {
-                    reduction += reduction / (depth + 1);
-                }
                 if (mateThreat) {
                     reduction /= LMR_NMP_THREAT_DIVISOR;
                 }
@@ -1640,8 +1758,18 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                     reduction = std::min(reduction, 1);
                 }
 
-                if (isTacticalQuiet) {
-                    reduction = std::max(0, reduction - 3);
+                if (givesCheck) {
+                    reduction = rootNode ? 0 : std::min(reduction, 1);
+                } else if (isTacticalQuiet) {
+                     if (rootNode || (opponentJustEvadedCheck && ply <= 2) || (attacksKingZone && ply <= 2)) {
+                        reduction = 0;
+                    } else {
+                        reduction = opponentJustEvadedCheck ? std::min(reduction, 1) : std::max(0, reduction - 2);
+                    }
+                }
+
+                if (rootNode) {
+                    reduction = 0;
                 }
 
                 if (inCheck) {
@@ -1651,35 +1779,60 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 reduction = std::clamp(reduction, 0, newDepth - 1);
             }
         }
-        else if (depth >= LMR_MIN_DEPTH && moveCount > LMR_CAPTURE_MIN_MOVE &&
+        else if (!rootNode && depth >= LMR_MIN_DEPTH && moveCount > LMR_CAPTURE_MIN_MOVE &&
                  isCapture && !isPromotion && !givesCheck && !isTTMove &&
                  extension <= 0 && bestScore > VALUE_MATED_IN_MAX_PLY) {
 
             Square ekSq_lmr = board.king_square(~us);
             Bitboard ekZone_lmr = king_attacks_bb(ekSq_lmr) | square_bb(ekSq_lmr);
             bool captureNearKing_lmr = (ekZone_lmr & square_bb(m.to())) != 0;
+            bool attacksNearKing_lmr = (attacks_bb(movedPt, m.to(), board.pieces() ^ square_bb(m.from())) & ekZone_lmr) != 0;
+
+            bool discTacticalAttack = false;
+            Bitboard rAtk = rook_attacks_bb(m.from(), board.pieces());
+            Bitboard friendlyR = rAtk & board.pieces(us, ROOK, QUEEN);
+            Bitboard enemyTargetsR = ekZone_lmr | board.pieces(~us, QUEEN);
+            if (friendlyR && (rAtk & enemyTargetsR)) {
+                Square fSq = lsb(friendlyR);
+                Square tSq = lsb(rAtk & enemyTargetsR);
+                if (is_aligned(fSq, m.from(), tSq) && !is_aligned(m.from(), m.to(), tSq)) {
+                    discTacticalAttack = true;
+                }
+            }
+            if (!discTacticalAttack) {
+                Bitboard bAtk = bishop_attacks_bb(m.from(), board.pieces());
+                Bitboard friendlyB = bAtk & board.pieces(us, BISHOP, QUEEN);
+                Bitboard enemyTargetsB = ekZone_lmr | board.pieces(~us, QUEEN);
+                if (friendlyB && (bAtk & enemyTargetsB)) {
+                    Square fSq = lsb(friendlyB);
+                    Square tSq = lsb(bAtk & enemyTargetsB);
+                    if (is_aligned(fSq, m.from(), tSq) && !is_aligned(m.from(), m.to(), tSq)) {
+                        discTacticalAttack = true;
+                    }
+                }
+            }
 
             reduction = LMR_CAPTURE_REDUCTION;
             lmrApplied = true;
 
-            if (SEE::see_ge(board, m, PieceValue[PAWN])) {
+            Piece capturedPiece_lmr = board.piece_on(m.to());
+            PieceType capturedPt_lmr = (capturedPiece_lmr != NO_PIECE) ? type_of(capturedPiece_lmr) : (m.is_enpassant() ? PAWN : NO_PIECE_TYPE);
+            bool isEnemyAdvPawn_lmr = (capturedPt_lmr == PAWN && relative_rank(~us, m.to()) >= RANK_6);
+
+            if (captureNearKing_lmr || attacksNearKing_lmr || discTacticalAttack || isEnemyAdvPawn_lmr) {
+                reduction = 0;
+                lmrApplied = false;
+            } else if (SEE::see_ge(board, m, PieceValue[PAWN])) {
                 reduction = 0;
                 lmrApplied = false;
             } else if (mp.hasMoveInfo && (mp.lastFlags & MovePicker::FLAG_SEE_GE_ZERO)) {
                 int capHistScore = captureHist.get(movedPiece, m.to(), type_of(board.piece_on(m.to()))) / 1000;
                 reduction -= std::clamp(capHistScore, -1, 1);
             } else if (!SEE::see_ge(board, m, 0)) {
-                if (!captureNearKing_lmr) {
-                    reduction += 1;
-                }
+                reduction += 1;
             } else {
                 int capHistScore = captureHist.get(movedPiece, m.to(), type_of(board.piece_on(m.to()))) / 1000;
                 reduction -= std::clamp(capHistScore, -1, 1);
-            }
-
-            if (captureNearKing_lmr && (mateThreat || inViolentSequence)) {
-                reduction = 0;
-                lmrApplied = false;
             }
 
             if (pvNode) {
@@ -1712,13 +1865,13 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             ss->inLMR = (reduction > 0);
             ss->reduction = reduction;
 
-            score = -search(board, -alpha - 1, -alpha, newDepth - reduction, true);
+            score = -search(board, -alpha - 1, -alpha, newDepth - reduction, rootNode ? false : true);
 
             if (score > alpha && reduction > 0) {
                 if (!isCapture) {
                     int researchBonus = SearchParams::stat_bonus(depth) * LMR_RESEARCH_BONUS_SCALE;
                     researchBonus = std::min(researchBonus, 1200);
-                    history.update_with_bonus(board.side_to_move(), m, researchBonus);
+                    history.update_with_bonus(us, m, researchBonus);
 
                     PieceType pt = type_of(movedPiece);
                     if (contHist1ply) {
@@ -1731,7 +1884,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                 score = -search(board, -alpha - 1, -alpha, newDepth, !cutNode);
             }
 
-            if (score > alpha && score < beta) {
+            if (score > alpha && (score < beta || rootNode)) {
                 score = -search(board, -beta, -alpha, newDepth, false);
             }
 
@@ -1757,6 +1910,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             return 0;
         }
 
+
         if (!isCapture && quietCount < 64) {
             quietsSearched[quietCount++] = m;
         }
@@ -1771,7 +1925,10 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
             captureCount++;
         }
 
-        if (score > bestScore) {
+        bool isBetter = rootNode ? ((moveCount == 1) ? (score > bestScore) : (score > alpha && score > bestScore))
+                                 : (score > bestScore);
+
+        if (isBetter) {
             bestScore = score;
             bestMove = m;
 
@@ -1790,8 +1947,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
                         }
                     }
                 }
-
-                if (score >= beta) {
+                    if (score >= beta) {
                     int statBonus = SearchParams::stat_bonus(depth);
                     int statMalus = SearchParams::stat_malus(depth);
 
@@ -1956,7 +2112,7 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     if (!stopped && tte) {
         tte->save(board.key(), score_to_tt(bestScore, ply), staticEval,
-                  bound, depth, bestMove, TT.generation());
+                  bound, depth, bestMove, TT.generation(), pvNode);
     }
 
     if (!inCheck && staticEval != VALUE_NONE && depth >= 3 &&
@@ -1985,6 +2141,10 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     if (UNLIKELY(stopped)) return 0;
 
     int ply = board.game_ply() - rootPly;
+
+    if (UNLIKELY(ply > 0 && board.is_draw(ply))) {
+        return 0;
+    }
 
     if (UNLIKELY(ply >= MAX_PLY)) {
         return evaluate(board);
@@ -2043,12 +2203,24 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         }
     }
 
-    // Use TT eval if available, otherwise compute
-    // Do NOT use TT score as staticEval if it's a mate score or special value
-    int ttRawScore = ttHit ? tte->score() : VALUE_NONE;
-    bool ttScoreIsMate = (ttRawScore != VALUE_NONE && std::abs(ttRawScore) >= VALUE_MATE_IN_MAX_PLY);
-    int staticEval = inCheck ? -VALUE_INFINITE
-                             : (ttHit && ttRawScore != VALUE_NONE && !ttScoreIsMate ? score_from_tt(ttRawScore, ply) : evaluate(board, alpha, beta));
+    int staticEval;
+    if (inCheck) {
+        staticEval = -VALUE_INFINITE;
+    } else {
+        int rawEval = (ttHit && tte->eval() != VALUE_NONE) ? tte->eval() : evaluate(board, alpha, beta);
+        staticEval = rawEval + corrHistory.get(board.side_to_move(), board.pawn_key());
+        if (ttHit) {
+            int ttScore = score_from_tt(tte->score(), ply);
+            Bound ttBound = tte->bound();
+            if (ttScore != VALUE_NONE && std::abs(ttScore) < VALUE_MATE_IN_MAX_PLY) {
+                if (ttBound == BOUND_EXACT ||
+                    (ttBound == BOUND_LOWER && ttScore > staticEval) ||
+                    (ttBound == BOUND_UPPER && ttScore < staticEval)) {
+                    staticEval = ttScore;
+                }
+            }
+        }
+    }
 
     if (LIKELY(!inCheck)) {
         if (LIKELY(staticEval >= beta)) {
@@ -2060,19 +2232,19 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     }
 
     MoveList moves;
-    MoveList quietChecks;
 
     if (inCheck) {
         MoveGen::generate_evasions(board, moves);
-    } else {
-        // Jangan di ubah ke qsDepth >= -1, atau akan lambat dan meledak nodes
-        if (qsDepth >= QSEARCH_CHECK_DEPTH && qsDepth >= -1) {
-            MoveGen::generate_checking_moves(board, quietChecks);
-        }
     }
 
     int bestScore = inCheck ? -VALUE_INFINITE : staticEval;
     Move m;
+
+    bool enemyBareKingInQs = false;
+    if (!inCheck) {
+        Color enemy = ~board.side_to_move();
+        enemyBareKingInQs = (board.pieces(enemy) == square_bb(board.king_square(enemy)));
+    }
 
     if (inCheck) {
         for (size_t i = 0; i < moves.size(); ++i) {
@@ -2093,7 +2265,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             if (stopped) return 0;
 
-            if (score > bestScore) {
+        if (score > bestScore) {
                 bestScore = score;
 
                 if (score > alpha) {
@@ -2120,7 +2292,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 maxCaptureValue = PieceValue[pt];
             }
         }
-        if (staticEval + maxCaptureValue + QSEARCH_FUTILITY_MARGIN < alpha) {
+        if (!enemyBareKingInQs && qsDepth < QSEARCH_CHECK_DEPTH &&
+            staticEval + maxCaptureValue + QSEARCH_FUTILITY_MARGIN < alpha) {
             return staticEval;
         }
 
@@ -2159,9 +2332,12 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 }
             }
 
-            if (!captureGivesCheck && !m.is_promotion()) {
-                if (!(mp.hasSeeZero ? mp.seeZeroInfo : SEE::see_ge(board, m, 0))) {
-                    continue;
+            if (!m.is_promotion()) {
+                bool seeOk = mp.hasSeeZero ? mp.seeZeroInfo : SEE::see_ge(board, m, 0);
+                if (!seeOk) {
+                    if (!captureGivesCheck || (qsDepth < 0 && !enemyBareKingInQs && !SEE::see_ge(board, m, -250))) {
+                        continue;
+                    }
                 }
             }
 
@@ -2182,7 +2358,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             if (stopped) return 0;
 
-            if (score > bestScore) {
+        if (score > bestScore) {
                 bestScore = score;
 
                 if (score > alpha) {
@@ -2197,7 +2373,10 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
         }
     }
 
-    if (!inCheck) {
+    int minCheckQsDepth = (enemyBareKingInQs || popcount(board.pieces()) <= 6) ? -2 : QSEARCH_CHECK_DEPTH;
+    if (!inCheck && qsDepth >= minCheckQsDepth) {
+        MoveList quietChecks;
+        MoveGen::generate_checking_moves(board, quietChecks);
         for (size_t i = 0; i < quietChecks.size(); ++i) {
             m = quietChecks[i].move;
 
@@ -2205,9 +2384,9 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
                 continue;
             }
 
-            // Allow slightly losing quiet checks (sacrificial checks typical in WAC).
-            // SEE >= 0 pruned too many mate-net checks; -50 keeps tactics, low node cost.
-            if (!SEE::see_ge(board, m, -50)) {
+            // At first ply of qsearch (qsDepth >= 0), search all legal quiet checks so sacrificial
+            // checkmates (e.g. Rh6# / Qg2#) are not pruned. At deeper plies, prune only heavy blunders.
+            if (qsDepth < 0 && !SEE::see_ge(board, m, -PieceValue[KNIGHT])) {
                 continue;
             }
             StateInfo si;
@@ -2219,7 +2398,7 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
 
             if (stopped) return 0;
 
-            if (score > bestScore) {
+        if (score > bestScore) {
                 bestScore = score;
 
                 if (score > alpha) {
@@ -2284,11 +2463,13 @@ void Search::report_info(Board& board, int depth, int score, const PVLine& pv, i
 
     if (elapsed == 0) elapsed = 1;
 
-    U64 nps = searchStats.nodes * 1000 / elapsed;
+    U64 totalNodes = (Threads.thread_count() > 1) ? Threads.total_nodes() : searchStats.nodes;
+    int maxSelDepth = (Threads.thread_count() > 1) ? std::max(searchStats.selDepth, Threads.max_sel_depth()) : searchStats.selDepth;
+    U64 nps = totalNodes * 1000 / elapsed;
 
     std::cout << "info";
     std::cout << " depth " << depth;
-    std::cout << " seldepth " << searchStats.selDepth;
+    std::cout << " seldepth " << maxSelDepth;
 
     if (UCI::options.multiPV > 1) {
         std::cout << " multipv " << multiPVIdx;
@@ -2303,13 +2484,14 @@ void Search::report_info(Board& board, int depth, int score, const PVLine& pv, i
         std::cout << " score cp " << score;
     }
 
-    std::cout << " nodes " << searchStats.nodes;
+    std::cout << " nodes " << totalNodes;
     std::cout << " nps " << nps;
     std::cout << " time " << elapsed;
     std::cout << " hashfull " << TT.hashfull();
 
     std::cout << " pv";
     Board tempBoard = board;
+    StateInfo pvStates[MAX_PLY];
     int movesOutput = 0;
     for (int i = 0; i < pv.length && i < MAX_PLY; ++i) {
         Move m = pv.moves[i];
@@ -2322,8 +2504,7 @@ void Search::report_info(Board& board, int depth, int score, const PVLine& pv, i
         std::cout << " " << move_to_string(m);
         movesOutput++;
 
-        StateInfo si;
-        tempBoard.do_move(m, si);
+        tempBoard.do_move(m, pvStates[i]);
     }
 
     std::cout << std::endl;

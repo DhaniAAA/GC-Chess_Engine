@@ -1,10 +1,10 @@
-﻿#include "eval.hpp"
+#include "eval.hpp"
 #include "tuning.hpp"
 #include "profiler.hpp"
 
 namespace Eval {
 
-PawnTable pawnTable;
+thread_local PawnTable pawnTable;
 
 Square flip_square(Square sq) {
     return Square(sq ^ 56);
@@ -98,14 +98,22 @@ constexpr Bitboard LONG_DIAGONAL_A1H8 = 0x8040201008040201ULL;
 constexpr Bitboard LONG_DIAGONAL_H1A8 = 0x0102040810204080ULL;
 
 static Bitboard compute_outer_ring(Square kingSq) {
-    Bitboard inner = king_attacks_bb(kingSq) | square_bb(kingSq);
-    Bitboard outer = 0ULL;
-    Bitboard temp = inner;
-    while (temp) {
-        Square sq = pop_lsb(temp);
-        outer |= king_attacks_bb(sq);
+    static Bitboard table[SQUARE_NB] = {};
+    static bool initialized = false;
+    if (!initialized) {
+        for (int s = SQ_A1; s <= SQ_H8; ++s) {
+            Bitboard inner = king_attacks_bb(Square(s)) | square_bb(Square(s));
+            Bitboard outer = 0ULL;
+            Bitboard temp = inner;
+            while (temp) {
+                Square sq = pop_lsb(temp);
+                outer |= king_attacks_bb(sq);
+            }
+            table[s] = outer & ~inner;
+        }
+        initialized = true;
     }
-    return outer & ~inner;
+    return table[kingSq];
 }
 
 void init_eval_context(EvalContext& ctx, const Board& board) {
@@ -272,14 +280,11 @@ static bool is_outpost_hole(Color c, Square sq, Bitboard ourPawns) {
     return true;
 }
 
-EvalScore eval_pawn_structure(const Board& board, Color c) {
+EvalScore eval_pawn_structure(const Board& board, Color c, Bitboard& outPassedPawns, Bitboard& outHangingPawns) {
     EvalScore score;
     Color enemy = ~c;
     Bitboard ourPawns = board.pieces(c, PAWN);
     Bitboard theirPawns = board.pieces(enemy, PAWN);
-    Bitboard ourRooks = board.pieces(c, ROOK);
-    Square ourKingSq = board.king_square(c);
-    Square enemyKingSq = board.king_square(enemy);
 
     int islands = count_pawn_islands(ourPawns);
     if (islands > 1) {
@@ -295,6 +300,7 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
 
 
     Bitboard passedPawns = 0;
+    Bitboard hangingPawns = 0;
     Bitboard tempBb = ourPawns;
     while (tempBb) {
         Square sq = pop_lsb(tempBb);
@@ -302,6 +308,8 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
             passedPawns |= square_bb(sq);
         }
     }
+
+    Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
 
     Bitboard bb = ourPawns;
     while (bb) {
@@ -325,63 +333,9 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 }
             }
 
-            Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
             if (square_bb(sq) & pawnDefenders) {
                 score += ProtectedPassedBonus[r];
                 score -= PassedPawnBonus[r];
-            }
-
-            int ourKingDist = std::max(std::abs(file_of(ourKingSq) - f),
-                                       std::abs(rank_of(ourKingSq) - rank_of(sq)));
-            int enemyKingDist = std::max(std::abs(file_of(enemyKingSq) - f),
-                                         std::abs(rank_of(enemyKingSq) - rank_of(sq)));
-            score.eg += (enemyKingDist - ourKingDist) * 5;
-
-            Bitboard behindPawn = c == WHITE ?
-                (file_bb(f) & (square_bb(sq) - 1)) :
-                (file_bb(f) & ~(square_bb(sq) | (square_bb(sq) - 1)));
-            if (behindPawn & ourRooks) {
-                score.mg += 15;
-                score.eg += 25;
-            }
-
-            Square stopSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
-            if (stopSq >= SQ_A1 && stopSq <= SQ_H8) {
-                Piece blocker = board.piece_on(stopSq);
-                if (blocker != NO_PIECE && color_of(blocker) == enemy) {
-                    score.mg -= 10;
-                    score.eg -= 20;
-                }
-            }
-
-            {
-                Rank promoRank = c == WHITE ? RANK_8 : RANK_1;
-                int squaresToPromo = std::abs(promoRank - rank_of(sq));
-
-                int effectiveSquares = squaresToPromo;
-                if (board.side_to_move() != c) {
-                    effectiveSquares++;
-                }
-                int kingToPromo = std::max(
-                    std::abs(file_of(enemyKingSq) - f),
-                    std::abs(rank_of(enemyKingSq) - promoRank)
-                );
-
-                if (kingToPromo > effectiveSquares) {
-                    bool pathClear = true;
-                    Bitboard enemyPieces = board.pieces(enemy) ^ board.pieces(enemy, KING);
-                    Bitboard pawnPath = c == WHITE ?
-                        (file_bb(f) & ~(square_bb(sq) | (square_bb(sq) - 1))) :
-                        (file_bb(f) & (square_bb(sq) - 1));
-
-                    if (pawnPath & enemyPieces) {
-                        pathClear = false;
-                    }
-
-                    if (pathClear) {
-                        score.eg += RuleOfSquareBonus;
-                    }
-                }
             }
         }
         else {
@@ -437,7 +391,6 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
                 score += ConnectedPawnBonus;
             }
 
-            Bitboard pawnDefenders = pawn_attacks_bb(c, ourPawns);
             if (square_bb(sq) & pawnDefenders) {
                 score += PawnChainBonus;
 
@@ -470,13 +423,7 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
 
                     if (!hasWiderSupport) {
                         score += HangingPawnPenalty;
-
-                        Square advSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
-                        if (advSq >= SQ_A1 && advSq <= SQ_H8) {
-                            if (board.piece_on(advSq) == NO_PIECE) {
-                                score += HangingPawnWithThreat;
-                            }
-                        }
+                        hangingPawns |= square_bb(sq);
                     }
                 }
             }
@@ -495,6 +442,108 @@ EvalScore eval_pawn_structure(const Board& board, Color c) {
             if (is_outpost_hole(c, sq, ourPawns)) {
                 score += OutpostHolePenalty;
             }
+        }
+    }
+
+    outPassedPawns = passedPawns;
+    outHangingPawns = hangingPawns;
+    return score;
+}
+
+EvalScore eval_passed_pawns_dynamic(const Board& board, Color c, Bitboard passedPawns, Bitboard hangingPawns) {
+    EvalScore score;
+    if (!passedPawns && !hangingPawns) return score;
+
+    Color enemy = ~c;
+    Bitboard ourRooks = board.pieces(c, ROOK);
+    Square ourKingSq = board.king_square(c);
+    Square enemyKingSq = board.king_square(enemy);
+    Bitboard enemyPiecesNoKing = board.pieces(enemy) ^ board.pieces(enemy, KING);
+
+    while (passedPawns) {
+        Square sq = pop_lsb(passedPawns);
+        File f = file_of(sq);
+
+        int ourKingDist = std::max(std::abs(file_of(ourKingSq) - f),
+                                   std::abs(rank_of(ourKingSq) - rank_of(sq)));
+        int enemyKingDist = std::max(std::abs(file_of(enemyKingSq) - f),
+                                     std::abs(rank_of(enemyKingSq) - rank_of(sq)));
+        score.eg += (enemyKingDist - ourKingDist) * 5;
+
+        Bitboard behindPawn = c == WHITE ?
+            (file_bb(f) & (square_bb(sq) - 1)) :
+            (file_bb(f) & ~(square_bb(sq) | (square_bb(sq) - 1)));
+        if (behindPawn & ourRooks) {
+            score.mg += 15;
+            score.eg += 25;
+        }
+
+        Square stopSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
+        Rank r = c == WHITE ? rank_of(sq) : Rank(RANK_8 - rank_of(sq));
+        Bitboard pawnPath = c == WHITE ?
+            (file_bb(f) & ~(square_bb(sq) | (square_bb(sq) - 1))) :
+            (file_bb(f) & (square_bb(sq) - 1));
+
+        if (stopSq >= SQ_A1 && stopSq <= SQ_H8) {
+            Piece blocker = board.piece_on(stopSq);
+            if (blocker != NO_PIECE && color_of(blocker) == enemy) {
+                score.mg -= (r >= RANK_6) ? 20 : 10;
+                score.eg -= (r >= RANK_6) ? 55 : 25;
+            } else if (blocker != NO_PIECE && color_of(blocker) == c && r == RANK_7) {
+                score -= S(30, 70);
+            } else if (blocker == NO_PIECE && r >= RANK_5) {
+                if (!board.is_attacked_by(enemy, stopSq)) {
+                    if (r == RANK_5)      score += S(15, 35);
+                    else if (r == RANK_6) score += S(45, 110);
+                    else if (r == RANK_7) {
+                        score += S(120, 260);
+                        if ((behindPawn & ourRooks) || board.is_attacked_by(c, sq)) {
+                            score += S(60, 140);
+                        }
+                    }
+                } else if (board.is_attacked_by(c, stopSq)) {
+                    if (r == RANK_5)      score += S(10, 25);
+                    else if (r == RANK_6) score += S(20, 50);
+                    else if (r == RANK_7) score += S(55, 130);
+                }
+            }
+            if (r >= RANK_5 && board.pieces(c, BISHOP)) {
+                Bitboard bbb = board.pieces(c, BISHOP);
+                while (bbb) {
+                    Square bSq = pop_lsb(bbb);
+                    if (bishop_attacks_bb(bSq, board.pieces(c)) & square_bb(stopSq)) {
+                        score += S(10, 28);
+                    }
+                }
+            }
+        }
+
+        Rank promoRank = c == WHITE ? RANK_8 : RANK_1;
+        int stepsToPromo = std::abs(int(promoRank) - int(rank_of(sq)));
+        if (stepsToPromo == 6) {
+            stepsToPromo = 5;
+        }
+        int effectiveSquares = stepsToPromo + (board.side_to_move() != c ? 1 : 0);
+        int kingToPromo = std::max(
+            std::abs(int(file_of(enemyKingSq)) - int(f)),
+            std::abs(int(rank_of(enemyKingSq)) - int(promoRank))
+        );
+
+        if (kingToPromo > effectiveSquares) {
+            Bitboard enemyNonPawns = enemyPiecesNoKing & ~board.pieces(enemy, PAWN);
+            if (enemyNonPawns == 0 && !(pawnPath & board.pieces())) {
+                score.eg += 550 - stepsToPromo * 25;
+            } else if (!(pawnPath & enemyPiecesNoKing)) {
+                score.eg += RuleOfSquareBonus;
+            }
+        }
+    }
+
+    while (hangingPawns) {
+        Square sq = pop_lsb(hangingPawns);
+        Square advSq = c == WHITE ? Square(sq + 8) : Square(sq - 8);
+        if (advSq >= SQ_A1 && advSq <= SQ_H8 && board.piece_on(advSq) == NO_PIECE) {
+            score += HangingPawnWithThreat;
         }
     }
 
@@ -548,14 +597,23 @@ EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ct
     score.mg += popcount(hanging) * 25;
     score.eg += popcount(hanging) * 20;
 
+    Bitboard enemyNonPawns = enemyPieces ^ board.pieces(enemy, PAWN, KING);
+    Bitboard hangingNonPawns = enemyNonPawns & attacked & ~defended;
+    score.mg += popcount(hangingNonPawns) * 40;
+    score.eg += popcount(hangingNonPawns) * 35;
+
     Bitboard attackedByPawn = ctx.attackedBy[c][PAWN];
+    Bitboard attackedByMinor = ctx.attackedBy[c][KNIGHT] | ctx.attackedBy[c][BISHOP];
     Bitboard minorsAttacked = (board.pieces(enemy, KNIGHT) | board.pieces(enemy, BISHOP)) & attackedByPawn;
     score.mg += popcount(minorsAttacked) * 40;
     score.eg += popcount(minorsAttacked) * 30;
-    Bitboard rooksAttacked = board.pieces(enemy, ROOK) &
-        (ctx.attackedBy[c][KNIGHT] | ctx.attackedBy[c][BISHOP]);
-    score.mg += popcount(rooksAttacked) * 35;
-    score.eg += popcount(rooksAttacked) * 25;
+    Bitboard rooksAttacked = board.pieces(enemy, ROOK) & (attackedByPawn | attackedByMinor);
+    score.mg += popcount(rooksAttacked) * 45;
+    score.eg += popcount(rooksAttacked) * 35;
+    Bitboard queensAttacked = board.pieces(enemy, QUEEN) &
+        (attackedByPawn | attackedByMinor | ctx.attackedBy[c][ROOK]);
+    score.mg += popcount(queensAttacked) * 55;
+    score.eg += popcount(queensAttacked) * 45;
 
     Bitboard contested = ctx.attackedBy[c][ALL_PIECES] & ctx.attackedBy[enemy][ALL_PIECES];
     Bitboard ourDouble = contested & ctx.attackedBy2[c];
@@ -563,6 +621,27 @@ EvalScore eval_threats_with_context(const Board& board, Color c, EvalContext& ct
     Bitboard advantage = ourDouble & theirSingle;
     score.mg += popcount(advantage) * 8;
     score.eg += popcount(advantage) * 5;
+
+    Bitboard overloadedNonPawns = enemyNonPawns & advantage;
+    Bitboard pieceThreats = hangingNonPawns | overloadedNonPawns | minorsAttacked | rooksAttacked | queensAttacked;
+    int threatCount = popcount(pieceThreats);
+    if (threatCount >= 2) {
+        score.mg += 110 * (threatCount - 1);
+        score.eg += 95 * (threatCount - 1);
+        if (popcount(rooksAttacked | queensAttacked) >= 2) {
+            score.mg += 80;
+            score.eg += 70;
+        }
+    }
+
+    Bitboard weakEnemyPawns = board.pieces(enemy, PAWN) & ~ctx.attackedBy[enemy][PAWN];
+    Bitboard bishopAttackedWeakPawns = weakEnemyPawns & ctx.attackedBy[c][BISHOP];
+    score.mg += popcount(bishopAttackedWeakPawns) * 14;
+    score.eg += popcount(bishopAttackedWeakPawns) * 26;
+    if (bishopAttackedWeakPawns & ctx.innerKingRing[enemy]) {
+        score.mg += 25;
+        score.eg += 15;
+    }
 
     Bitboard ourPieces = board.pieces(c) & ~board.pieces(c, PAWN) & ~square_bb(board.king_square(c));
     Bitboard ourDefended = ctx.attackedBy[c][ALL_PIECES];
@@ -629,6 +708,18 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
             score.mg -= (blocked - 3) * 8;
             score.eg -= (blocked - 3) * 5;
         }
+
+        Rank relRank = c == WHITE ? rank_of(sq) : Rank(RANK_8 - rank_of(sq));
+        if (relRank == RANK_7) {
+            File f = file_of(sq);
+            if (f == FILE_A) {
+                Square block = c == WHITE ? SQ_B6 : SQ_B3;
+                if (theirPawns & square_bb(block)) { score.mg -= 100; score.eg -= 80; }
+            } else if (f == FILE_H) {
+                Square block = c == WHITE ? SQ_G6 : SQ_G3;
+                if (theirPawns & square_bb(block)) { score.mg -= 100; score.eg -= 80; }
+            }
+        }
     }
     if (bishopCount >= 2) score += BishopPairBonus;
 
@@ -667,26 +758,23 @@ EvalScore eval_pieces_with_context(const Board& board, Color c, EvalContext& ctx
     }
 
     bb = board.pieces(c, QUEEN);
+    Bitboard unsafeForQueen = ctx.attackedBy[enemy][PAWN] | ctx.attackedBy[enemy][KNIGHT] |
+                              ctx.attackedBy[enemy][BISHOP] | ctx.attackedBy[enemy][ROOK];
+    Bitboard defendedEnemy = board.pieces(enemy) & ctx.attackedBy[enemy][ALL_PIECES];
     while (bb) {
         Square sq = pop_lsb(bb);
         Bitboard attacks = queen_attacks_bb(sq, occupied);
         int mobility = popcount(attacks & mobilityArea);
         score += QueenMobility[std::min(mobility, 27)];
-    }
 
-    bb = board.pieces(c, BISHOP);
-    while (bb) {
-        Square sq = pop_lsb(bb);
-        Rank relRank = c == WHITE ? rank_of(sq) : Rank(RANK_8 - rank_of(sq));
-        File f = file_of(sq);
-        if (relRank == RANK_7) {
-            if (f == FILE_A) {
-                Square block = c == WHITE ? SQ_B6 : SQ_B3;
-                if (theirPawns & square_bb(block)) { score.mg -= 100; score.eg -= 80; }
-            } else if (f == FILE_H) {
-                Square block = c == WHITE ? SQ_G6 : SQ_G3;
-                if (theirPawns & square_bb(block)) { score.mg -= 100; score.eg -= 80; }
-            }
+        Bitboard safeMoves = attacks & ~board.pieces(c) & ~unsafeForQueen & ~defendedEnemy;
+        int safeCount = popcount(safeMoves);
+        if (safeCount == 0) {
+            score += S(-180, -150);
+        } else if (safeCount == 1) {
+            score += S(-95, -80);
+        } else if (safeCount == 2 && (unsafeForQueen & square_bb(sq))) {
+            score += S(-45, -35);
         }
     }
 
@@ -810,13 +898,74 @@ EvalScore eval_material_imbalance(const Board& board, Color c) {
         score += QueenWithoutRooks;
     }
 
+    if (ourQueens >= 1 && theirQueens == 0 && (theirRooks + theirKnights + theirBishops >= 2)) {
+        score += S(20, 20);
+    }
+
     int ourMinors = ourKnights + ourBishops;
     int theirMinors = theirKnights + theirBishops;
+    int ourPawnCount = popcount(board.pieces(c, PAWN));
+    int theirPawnCount = popcount(board.pieces(enemy, PAWN));
+    if (ourQueens == 0 && theirQueens == 0 && ourRooks == 2 && theirRooks == 1 &&
+        ourMinors == 1 && theirBishops == 1 && theirKnights == 1 &&
+        ourPawnCount < theirPawnCount) {
+        score += S(70, 70);
+    }
+    if (ourQueens == theirQueens && ourRooks == 2 && theirRooks == 2 &&
+        ourBishops == 1 && ourKnights == 0 &&
+        ((theirBishops == 0 && theirKnights == 1 && ourPawnCount > theirPawnCount) ||
+         (theirBishops == 1 && theirKnights == 1 && ourPawnCount >= theirPawnCount + 2) ||
+         (ourQueens == 0 && theirBishops == 1 && theirKnights == 0 && ourPawnCount > theirPawnCount))) {
+        score += S(65, 65);
+    }
     if (ourRooks < theirRooks && ourMinors > theirMinors) {
         int minorAdvantage = ourMinors - theirMinors;
         int rookDeficit = theirRooks - ourRooks;
         if (minorAdvantage >= rookDeficit) {
             score.eg += MinorForExchange.eg * std::min(minorAdvantage, 2);
+        }
+    }
+
+    if (ourMinors + ourRooks + ourQueens == 0 && theirMinors + theirRooks + theirQueens == 0) {
+        constexpr Bitboard KSMask = 0xE0E0E0E0E0E0E0E0ULL;
+        constexpr Bitboard QSMask = 0x0F0F0F0F0F0F0F0FULL;
+        Bitboard ourPawns = board.pieces(c, PAWN);
+        Bitboard theirPawns = board.pieces(enemy, PAWN);
+
+        Bitboard foldOur = ourPawns | (ourPawns >> 32);
+        foldOur |= (foldOur >> 16);
+        foldOur |= (foldOur >> 8);
+        uint8_t ourFiles = static_cast<uint8_t>(foldOur & 0xFF);
+
+        Bitboard foldTheir = theirPawns | (theirPawns >> 32);
+        foldTheir |= (foldTheir >> 16);
+        foldTheir |= (foldTheir >> 8);
+        uint8_t theirFiles = static_cast<uint8_t>(foldTheir & 0xFF);
+
+        int ourKSFiles = popcount(Bitboard(ourFiles & 0xE0));
+        int theirKSFiles = popcount(Bitboard(theirFiles & 0xE0));
+        int ourQSFiles = popcount(Bitboard(ourFiles & 0x0F));
+        int theirQSFiles = popcount(Bitboard(theirFiles & 0x0F));
+
+        int ourKSPawns = popcount(ourPawns & KSMask);
+        int theirKSPawns = popcount(theirPawns & KSMask);
+        int ourQSPawns = popcount(ourPawns & QSMask);
+        int theirQSPawns = popcount(theirPawns & QSMask);
+
+        Bitboard advRanks = (c == WHITE) ? (RANK_5_BB | RANK_6_BB | RANK_7_BB)
+                                         : (RANK_4_BB | RANK_3_BB | RANK_2_BB);
+
+        if (ourKSPawns > theirKSPawns && ourKSFiles >= theirKSFiles && theirQSFiles <= ourQSFiles) {
+            score.eg += 75;
+            if (ourPawns & KSMask & advRanks) {
+                score.eg += 45;
+            }
+        }
+        if (ourQSPawns > theirQSPawns && ourQSFiles >= theirQSFiles && theirKSFiles <= ourKSFiles) {
+            score.eg += 75;
+            if (ourPawns & QSMask & advRanks) {
+                score.eg += 45;
+            }
         }
     }
 
@@ -950,7 +1099,102 @@ EvalScore eval_minor_coordination(const Board& board, Color c, EvalContext& ctx)
     return score;
 }
 
+int eval_mop_up(const Board& board, Color c, const EvalContext& ctx, int phase) {
+    Color enemy = ~c;
+    Square enemyKingSq = ctx.kingSquare[enemy];
+    Bitboard enemyAll = board.pieces(enemy);
+    bool enemyBareKing = (enemyAll == square_bb(enemyKingSq));
+
+    int ourMat = popcount(board.pieces(c, PAWN)) * PawnValue.eg +
+                 popcount(board.pieces(c, KNIGHT)) * KnightValue.eg +
+                 popcount(board.pieces(c, BISHOP)) * BishopValue.eg +
+                 popcount(board.pieces(c, ROOK)) * RookValue.eg +
+                 popcount(board.pieces(c, QUEEN)) * QueenValue.eg;
+    int theirMat = popcount(board.pieces(enemy, PAWN)) * PawnValue.eg +
+                   popcount(board.pieces(enemy, KNIGHT)) * KnightValue.eg +
+                   popcount(board.pieces(enemy, BISHOP)) * BishopValue.eg +
+                   popcount(board.pieces(enemy, ROOK)) * RookValue.eg +
+                   popcount(board.pieces(enemy, QUEEN)) * QueenValue.eg;
+
+    int matDiff = ourMat - theirMat;
+    if (!enemyBareKing && (phase > 8 || matDiff < 300 || board.pieces(enemy, PAWN) != 0)) {
+        return 0;
+    }
+    if (ourMat < RookValue.eg && popcount(board.pieces(c, PAWN)) == 0) {
+        return 0;
+    }
+
+    Square ourKingSq = ctx.kingSquare[c];
+    int ekFile = file_of(enemyKingSq);
+    int ekRank = rank_of(enemyKingSq);
+    int okFile = file_of(ourKingSq);
+    int okRank = rank_of(ourKingSq);
+
+    // 1. Push enemy King to edge and corner
+    int fileDistFromCenter = std::max(3 - ekFile, ekFile - 4);
+    int rankDistFromCenter = std::max(3 - ekRank, ekRank - 4);
+    int centerDist = fileDistFromCenter + rankDistFromCenter;
+    int mopUp = centerDist * 45 + (fileDistFromCenter * rankDistFromCenter) * 15;
+
+    // 2. Bring our King close to the enemy King (opposition & mating support)
+    // Chebyshev distance is the true number of King moves between the two Kings.
+    int manhattanDist = std::abs(okFile - ekFile) + std::abs(okRank - ekRank);
+    int chebyshevDist = std::max(std::abs(okFile - ekFile), std::abs(okRank - ekRank));
+    mopUp += (7 - chebyshevDist) * 45 + (14 - manhattanDist) * 10;
+
+    // Direct opposition / knight-opposition bonus when enemy king is near the edge
+    if (centerDist >= 3 && chebyshevDist == 2) {
+        mopUp += 40;
+    }
+
+    // 3. Restrict enemy King's safe escape squares & cut off ranks/files
+    if (enemyBareKing) {
+        Bitboard enemyKingMoves = king_attacks_bb(enemyKingSq) & ~ctx.attackedBy[c][ALL_PIECES];
+        int safeKingMoves = popcount(enemyKingMoves);
+        mopUp += (8 - safeKingMoves) * 22;
+
+        // Bonus for Rooks/Queens cutting off adjacent ranks/files toward the center
+        Bitboard majors = board.pieces(c, ROOK, QUEEN);
+        while (majors) {
+            Square mSq = pop_lsb(majors);
+            if (!(ctx.attackedBy[enemy][KING] & square_bb(mSq)) ||
+                (ctx.attackedBy[c][ALL_PIECES] & square_bb(mSq))) {
+                int fDiff = std::abs(int(file_of(mSq)) - ekFile);
+                int rDiff = std::abs(int(rank_of(mSq)) - ekRank);
+                if (fDiff == 1 || rDiff == 1) {
+                    mopUp += 20;
+                }
+            }
+        }
+
+        // 4. KBN vs K: Drive enemy King to the corner matching our Bishop's color
+        int ourBishops = popcount(board.pieces(c, BISHOP));
+        int ourKnights = popcount(board.pieces(c, KNIGHT));
+        int ourMajors = popcount(board.pieces(c, ROOK, QUEEN));
+        if (ourBishops == 1 && ourKnights >= 1 && ourMajors == 0) {
+            Square bSq = lsb(board.pieces(c, BISHOP));
+            bool lightBishop = ((file_of(bSq) + rank_of(bSq)) % 2) == 1;
+            int distCorner1, distCorner2;
+            if (lightBishop) {
+                // Light corners: A8 (0,7) and H1 (7,0)
+                distCorner1 = ekFile + (7 - ekRank);
+                distCorner2 = (7 - ekFile) + ekRank;
+            } else {
+                // Dark corners: A1 (0,0) and H8 (7,7)
+                distCorner1 = ekFile + ekRank;
+                distCorner2 = (7 - ekFile) + (7 - ekRank);
+            }
+            int minCornerDist = std::min(distCorner1, distCorner2);
+            mopUp += (7 - minCornerDist) * 65;
+        }
+    }
+
+    return mopUp;
+}
+
 int evaluate(const Board& board, int alpha, int beta) {
+    (void)alpha;
+    (void)beta;
     PROFILE_SCOPE("Eval::evaluate");
     EvalScore score;
     int phase = 0;
@@ -970,25 +1214,20 @@ int evaluate(const Board& board, int alpha, int beta) {
     if (pawnEntry->match(pawnKey)) {
         pawnScore = pawnEntry->score;
     } else {
-        pawnScore += eval_pawn_structure(board, WHITE);
-        pawnScore -= eval_pawn_structure(board, BLACK);
+        Bitboard wPassed = 0, bPassed = 0, wHanging = 0, bHanging = 0;
+        pawnScore += eval_pawn_structure(board, WHITE, wPassed, wHanging);
+        pawnScore -= eval_pawn_structure(board, BLACK, bPassed, bHanging);
 
         pawnEntry->key = pawnKey;
         pawnEntry->score = pawnScore;
+        pawnEntry->passedPawns[WHITE] = wPassed;
+        pawnEntry->passedPawns[BLACK] = bPassed;
+        pawnEntry->hangingPawns[WHITE] = wHanging;
+        pawnEntry->hangingPawns[BLACK] = bHanging;
     }
     score += pawnScore;
-
-    {
-        int mg = score.mg;
-        int eg = score.eg;
-        int lazyScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
-        lazyScore = board.side_to_move() == WHITE ? lazyScore : -lazyScore;
-
-        constexpr int LAZY_MARGIN = 700;
-        if (lazyScore >= beta + LAZY_MARGIN) {
-            return lazyScore;
-        }
-    }
+    score += eval_passed_pawns_dynamic(board, WHITE, pawnEntry->passedPawns[WHITE], pawnEntry->hangingPawns[WHITE]);
+    score -= eval_passed_pawns_dynamic(board, BLACK, pawnEntry->passedPawns[BLACK], pawnEntry->hangingPawns[BLACK]);
 
     EvalContext ctx;
     init_eval_context(ctx, board);
@@ -1017,6 +1256,9 @@ int evaluate(const Board& board, int alpha, int beta) {
     int eg = score.eg;
     int finalScore = (mg * phase + eg * (TotalPhase - phase)) / TotalPhase;
 
+    finalScore += eval_mop_up(board, WHITE, ctx, phase);
+    finalScore -= eval_mop_up(board, BLACK, ctx, phase);
+
     constexpr int TEMPO = 12;
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
 }
@@ -1044,6 +1286,58 @@ int material_balance(const Board& board) {
     balance -= popcount(board.pieces(BLACK, QUEEN)) * QueenValue.mg;
 
     return balance;
+}
+
+void print_eval(const Board& board) {
+    int phase = 0;
+    phase += popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
+    phase += popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
+    phase += popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
+    phase += popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
+    phase = std::min(phase, TotalPhase);
+
+    EvalScore psqt = board.psqt_score(WHITE) - board.psqt_score(BLACK);
+
+    Key pawnKey = board.pawn_key();
+    Bitboard wPassed = 0, bPassed = 0, wHanging = 0, bHanging = 0;
+    EvalScore pawnScore = eval_pawn_structure(board, WHITE, wPassed, wHanging) -
+                          eval_pawn_structure(board, BLACK, bPassed, bHanging);
+    EvalScore passedScore = eval_passed_pawns_dynamic(board, WHITE, wPassed, wHanging) -
+                            eval_passed_pawns_dynamic(board, BLACK, bPassed, bHanging);
+
+    EvalContext ctx;
+    init_eval_context(ctx, board);
+
+    EvalScore pieces = eval_pieces_with_context(board, WHITE, ctx) - eval_pieces_with_context(board, BLACK, ctx);
+    EvalScore king = eval_king_safety_with_context(board, WHITE, ctx) - eval_king_safety_with_context(board, BLACK, ctx);
+    EvalScore threats = eval_threats_with_context(board, WHITE, ctx) - eval_threats_with_context(board, BLACK, ctx);
+    EvalScore space = eval_space(board, WHITE) - eval_space(board, BLACK);
+    EvalScore imbalance = eval_material_imbalance(board, WHITE) - eval_material_imbalance(board, BLACK);
+    EvalScore levers = eval_pawn_levers(board, WHITE, ctx) - eval_pawn_levers(board, BLACK, ctx);
+    EvalScore coord = eval_minor_coordination(board, WHITE, ctx) - eval_minor_coordination(board, BLACK, ctx);
+
+    EvalScore total = psqt + pawnScore + passedScore + pieces + king + threats + space + imbalance + levers + coord;
+    int finalScore = (total.mg * phase + total.eg * (TotalPhase - phase)) / TotalPhase;
+    int mopUp = eval_mop_up(board, WHITE, ctx, phase) - eval_mop_up(board, BLACK, ctx, phase);
+    finalScore += mopUp;
+    constexpr int TEMPO = 12;
+    int povScore = (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
+
+    std::cout << "--- Eval Breakdown (White perspective) ---" << std::endl;
+    std::cout << "Phase: " << phase << "/" << TotalPhase << std::endl;
+    std::cout << "PSQT:      mg=" << psqt.mg << " eg=" << psqt.eg << std::endl;
+    std::cout << "Pawns:     mg=" << pawnScore.mg << " eg=" << pawnScore.eg << std::endl;
+    std::cout << "Passed:    mg=" << passedScore.mg << " eg=" << passedScore.eg << std::endl;
+    std::cout << "Pieces:    mg=" << pieces.mg << " eg=" << pieces.eg << std::endl;
+    std::cout << "KingSafe:  mg=" << king.mg << " eg=" << king.eg << std::endl;
+    std::cout << "Threats:   mg=" << threats.mg << " eg=" << threats.eg << std::endl;
+    std::cout << "Space:     mg=" << space.mg << " eg=" << space.eg << std::endl;
+    std::cout << "Imbalance: mg=" << imbalance.mg << " eg=" << imbalance.eg << std::endl;
+    std::cout << "Levers:    mg=" << levers.mg << " eg=" << levers.eg << std::endl;
+    std::cout << "Coord:     mg=" << coord.mg << " eg=" << coord.eg << std::endl;
+    std::cout << "Total:     mg=" << total.mg << " eg=" << total.eg << std::endl;
+    std::cout << "MopUp:     " << mopUp << std::endl;
+    std::cout << "Final:     " << finalScore << " (POV: " << povScore << ")" << std::endl;
 }
 
 }

@@ -187,6 +187,32 @@ void Board::set_state(StateInfo* si) {
     set_check_info();
 }
 
+void Board::copy_with_history(const Board& src, StateInfo* historyBuf, int maxHistory) {
+    std::memcpy(this, &src, sizeof(Board));
+    if (!src.st || maxHistory <= 0) {
+        startState = src.startState;
+        startState.previous = nullptr;
+        st = &startState;
+        return;
+    }
+
+    const StateInfo* chain[512];
+    int limit = std::min(maxHistory, 512);
+    int count = 0;
+    const StateInfo* cur = src.st;
+    while (cur && count < limit) {
+        chain[count++] = cur;
+        cur = cur->previous;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        const StateInfo* orig = chain[count - 1 - i];
+        historyBuf[i] = *orig;
+        historyBuf[i].previous = (i > 0) ? &historyBuf[i - 1] : nullptr;
+    }
+    st = &historyBuf[count - 1];
+}
+
 std::string Board::fen() const {
     std::ostringstream ss;
 

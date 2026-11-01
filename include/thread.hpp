@@ -4,7 +4,6 @@
 #include "search.hpp"
 #include "board.hpp"
 #include "move.hpp"
-#include "moveorder.hpp"
 #include "tt.hpp"
 #include <atomic>
 #include <chrono>
@@ -14,101 +13,39 @@
 #include <thread>
 #include <vector>
 
-class ThreadPool;
-
 constexpr int MAX_THREADS = 256;
-
-
-struct alignas(64) ThreadStack {
-    int ply;
-    Move currentMove;
-    Move excludedMove;
-    Move killers[2];
-    int staticEval;
-    int moveCount;
-    int extensions;
-    bool inCheck;
-    bool ttPv;
-    bool ttHit;
-    bool nullMovePruned;
-    ContinuationHistoryEntry* contHistory;
-    char padding[12];
-};
-
-struct ThreadPVLine {
-    int length = 0;
-    Move moves[MAX_PLY];
-
-    void clear() { length = 0; }
-
-    void update(Move m, const ThreadPVLine& child) {
-        moves[0] = m;
-        for (int i = 0; i < child.length && i + 1 < MAX_PLY; ++i) {
-            moves[i + 1] = child.moves[i];
-        }
-        length = child.length + 1;
-    }
-
-    std::string to_string() const {
-        std::string s;
-        for (int i = 0; i < length; ++i) {
-            if (i > 0) s += " ";
-            s += move_to_string(moves[i]);
-        }
-        return s;
-    }
-
-    Move first() const {
-        return length > 0 ? moves[0] : MOVE_NONE;
-    }
-
-    Move second() const {
-        return length > 1 ? moves[1] : MOVE_NONE;
-    }
-};
 
 class alignas(64) SearchThread {
 public:
     explicit SearchThread(int id);
     ~SearchThread();
 
-    void start_searching();
+    void start_searching(const Board& rootBoard, const SearchLimits& limits);
+    void stop();
     void wait_for_search_finished();
+    void clear_history();
 
     int id() const { return threadId; }
     bool is_main() const { return threadId == 0; }
 
-    alignas(64) std::atomic<bool> searching{false};
-    std::atomic<bool> exit{false};
-
-    alignas(64) U64 nodes = 0;
-    U64 tbHits = 0;
-    int selDepth = 0;
-    int completedDepth = 0;
-    int bestScore = 0;
-    Move bestMove = MOVE_NONE;
-    Move ponderMove = MOVE_NONE;
-
-    alignas(64) Board* rootBoard = nullptr;
-    int rootDepth = 0;
-    Move previousMove = MOVE_NONE;
-    U64 rand_seed;
-
-    alignas(64) KillerTable killers;
-    alignas(64) MateKillerTable mateKillers;
-    alignas(64) CounterMoveTable counterMoves;
-    alignas(64) HistoryTable history;
-    alignas(64) ContinuationHistory contHistory;
-    alignas(64) CaptureHistory captureHist;
-
-    alignas(64) ThreadStack stack[MAX_PLY + 4];
-    alignas(64) ThreadPVLine pvLines[MAX_PLY];
-
-    void clear_history();
-    int rand_int(int max);
+    U64 nodes() const { return workerSearch ? workerSearch->stats().nodes : 0; }
+    U64 tb_hits() const { return workerSearch ? workerSearch->stats().tbHits : 0; }
+    int sel_depth() const { return workerSearch ? workerSearch->stats().selDepth : 0; }
+    int completed_depth() const { return workerSearch ? workerSearch->completed_depth() : 0; }
+    int best_score() const { return workerSearch ? workerSearch->best_score() : -VALUE_INFINITE; }
+    Move best_move() const { return workerSearch ? workerSearch->best_move() : MOVE_NONE; }
+    Move ponder_move() const { return workerSearch ? workerSearch->ponder_move() : MOVE_NONE; }
 
 private:
     int threadId;
+    std::atomic<bool> searching{false};
+    std::atomic<bool> exit{false};
+
+    std::unique_ptr<Search> workerSearch;
+    Board threadBoard;
+    StateInfo historyBuf[512];
+    SearchLimits threadLimits;
+
     std::thread nativeThread;
     std::mutex mutex;
     std::condition_variable cv;
@@ -122,16 +59,12 @@ public:
     ~ThreadPool();
 
     void set_thread_count(int count);
-    int thread_count() const { return static_cast<int>(threads.size()); }
-
-    SearchThread* main() { return threads.empty() ? nullptr : threads[0].get(); }
-    const SearchThread* main() const { return threads.empty() ? nullptr : threads[0].get(); }
+    int thread_count() const { return numThreads; }
 
     void start_thinking(Board& board, const SearchLimits& limits);
     void stop();
     void on_ponderhit();
     void wait_for_search_finished();
-    bool searching() const;
 
     U64 total_nodes() const;
     U64 total_tb_hits() const;
@@ -140,39 +73,14 @@ public:
     Move ponder_move() const;
     int best_score() const;
 
-    std::atomic<bool> stop_flag{false};
-    SearchLimits limits;
-
-    std::chrono::steady_clock::time_point startTime;
-    int optimumTime = 0;
-    int maximumTime = 0;
-
     void clear_all_history();
 
 private:
-    std::vector<std::unique_ptr<SearchThread>> threads;
-
-    void init_time_management(Color us);
+    int numThreads = 1;
+    StateInfo mainHistoryBuf[512];
+    std::vector<std::unique_ptr<SearchThread>> helpers;
 };
 
 extern ThreadPool Threads;
-
-namespace LazySMP {
-
-void search(SearchThread* thread, Board& board, int depth);
-void iterative_deepening(SearchThread* thread, Board& board);
-
-int alpha_beta(SearchThread* thread, Board& board, int alpha, int beta,
-               int depth, bool cutNode, int ply);
-
-int qsearch(SearchThread* thread, Board& board, int alpha, int beta, int ply);
-
-int evaluate(const Board& board);
-
-bool should_stop(SearchThread* thread);
-
-void report_info(SearchThread* thread, int depth, int score);
-
-}
 
 #endif

@@ -4,6 +4,10 @@
 #include "profiler.hpp"
 #include "optimize.hpp"
 
+inline bool is_aligned(Square s1, Square s2, Square s3) {
+    return (LineBB[s1][s2] & square_bb(s3)) != 0;
+}
+
 PieceType SEE::min_attacker(const Board& board, Color side, Square sq,
                             Bitboard occupied, Bitboard& attackers) {
     for (PieceType pt = PAWN; pt <= KING; ++pt) {
@@ -226,8 +230,15 @@ void MovePicker::score_captures() {
     PROFILE_SCOPE("score_captures");
 
     const int moveCount = static_cast<int>(moves.size());
-    Square enemyKingSq = board.king_square(~board.side_to_move());
+    Color us = board.side_to_move();
+    Square enemyKingSq = board.king_square(~us);
     Bitboard enemyKingZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
+    Bitboard ourAdvPawns = board.pieces(us, PAWN) & ((us == WHITE) ? (RANK_6_BB | RANK_7_BB) : (RANK_3_BB | RANK_2_BB));
+    Bitboard advPawnBlockSq = (us == WHITE) ? (ourAdvPawns << 8) : (ourAdvPawns >> 8);
+    if (ourAdvPawns) {
+        advPawnBlockSq |= (us == WHITE) ? ((ourAdvPawns & ~FILE_A_BB) << 7) | ((ourAdvPawns & ~FILE_H_BB) << 9)
+                                        : ((ourAdvPawns & ~FILE_H_BB) >> 7) | ((ourAdvPawns & ~FILE_A_BB) >> 9);
+    }
 
     for (int idx = 0; idx < moveCount; ++idx) {
         auto& sm = moves[idx];
@@ -261,22 +272,26 @@ void MovePicker::score_captures() {
 
         int mvvLva = mvv_lva(board, m);
         int valueDiff = PieceValue[capturedPt] - PieceValue[attackerPt];
+        bool nearKing = (enemyKingZone & square_bb(m.to())) != 0;
 
         bool likelyGoodCapture = (valueDiff >= 200);
 
-        if (!likelyGoodCapture) {
-            if (givesCheck && SEE::see_ge(board, m, 0)) {
+        if (!likelyGoodCapture && givesCheck) {
+            if (SEE::see_ge(board, m, 0)) {
                 flags[idx] |= FLAG_SEE_GE_ZERO;
-                sm.score = SCORE_WINNING_CAP + 15000 + mvvLva;
-                if (captureHist && captured != NO_PIECE) {
-                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
-                }
-                continue;
+                sm.score = SCORE_WINNING_CAP + 15000 + mvvLva + (nearKing ? 5000 : 0);
+            } else {
+                sm.score = SCORE_EQUAL_CAP + 500000 + mvvLva / 4 + (nearKing ? 2500 : 0);
             }
+            if (captureHist && captured != NO_PIECE) {
+                sm.score += captureHist->get(attacker, m.to(), capturedPt) / 16;
+            }
+            sm.score = std::max(sm.score, SCORE_EQUAL_CAP);
+            continue;
         }
 
         if (likelyGoodCapture) {
-            sm.score = SCORE_WINNING_CAP + mvvLva;
+            sm.score = SCORE_WINNING_CAP + mvvLva + (nearKing ? 5000 : 0);
             flags[idx] |= FLAG_SEE_GE_ZERO;
             if (captureHist && captured != NO_PIECE) {
                 sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
@@ -302,21 +317,26 @@ void MovePicker::score_captures() {
                         sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
                     }
                 }
-            } else {
-                sm.score = SCORE_LOSING_CAP;
-                if (captureHist && captured != NO_PIECE) {
-                    sm.score += captureHist->get(attacker, m.to(), capturedPt) / 64;
+                if (nearKing) {
+                    sm.score += 5000;
                 }
-                badCaptures.add(m, sm.score);
-            }
-        }
-
-        bool nearKing = (enemyKingZone & square_bb(m.to()));
-        if (nearKing) {
-            if (SEE::see_ge(board, m, 0)) {
-                sm.score += 5000;
             } else {
-                sm.score += 2500;
+                bool isEnemyAdvPawn = (capturedPt == PAWN && relative_rank(~us, m.to()) >= RANK_6);
+                if (capturedPt >= KNIGHT || nearKing || isEnemyAdvPawn ||
+                    ((attackerPt == KNIGHT || attackerPt == BISHOP) && SEE::see_ge(board, m, -PieceValue[KNIGHT]))) {
+                    sm.score = SCORE_EQUAL_CAP + 500000 + mvvLva / 4 + (nearKing ? 3000 : 0);
+                    if (captureHist && captured != NO_PIECE) {
+                        sm.score += captureHist->get(attacker, m.to(), capturedPt) / 32;
+                    }
+                    sm.score = std::max(sm.score, SCORE_EQUAL_CAP);
+                } else {
+                    sm.score = SCORE_LOSING_CAP + mvvLva / 8 +
+                               ((advPawnBlockSq & square_bb(m.to())) ? 2000 : 0);
+                    if (captureHist && captured != NO_PIECE) {
+                        sm.score += captureHist->get(attacker, m.to(), capturedPt) / 64;
+                    }
+                    badCaptures.add(m, sm.score);
+                }
             }
         }
     }
@@ -325,60 +345,145 @@ void MovePicker::score_captures() {
 void MovePicker::score_quiets() {
     PROFILE_SCOPE("score_quiets");
     Color us = board.side_to_move();
-    Square enemyKing = board.king_square(~us);
+    Color them = ~us;
+    Square enemyKing = board.king_square(them);
     Bitboard kingZone = king_attacks_bb(enemyKing) | square_bb(enemyKing);
+    Bitboard backRanks = (them == BLACK) ? (RANK_7_BB | RANK_8_BB) : (RANK_1_BB | RANK_2_BB);
+    Bitboard kingZone2 = kingZone | ((shift<NORTH>(kingZone) | shift<SOUTH>(kingZone) |
+                         shift<EAST>(kingZone) | shift<WEST>(kingZone)) & backRanks);
+    Bitboard occupied = board.pieces();
+    Bitboard enemyKingBlockers = board.blockers_for_king(them);
+    Bitboard enemyQueens = board.pieces(them, QUEEN);
+    Bitboard enemyRooksQueens = board.pieces(them, ROOK, QUEEN);
+    Bitboard enemyNonPawns = board.pieces(them) ^ board.pieces(them, PAWN, KING);
+    Bitboard our7thPawns = board.pieces(us, PAWN) & ((us == WHITE) ? RANK_7_BB : RANK_2_BB);
+    Bitboard promoBlockSquares = (us == WHITE) ? (our7thPawns << 8) : (our7thPawns >> 8);
 
     const int moveCount = static_cast<int>(moves.size());
 
     for (int idx = 0; idx < moveCount; ++idx) {
         auto& sm = moves[idx];
         Move m = sm.move;
-        Piece pc = board.piece_on(m.from());
-        PieceType pt = type_of(pc);
+        Square from = m.from();
         Square to = m.to();
+        Piece pc = board.piece_on(from);
+        PieceType pt = type_of(pc);
 
         if (idx + 2 < moveCount) {
             PREFETCH_READ(&moves[idx + 2]);
         }
 
         int tacticalBonus = 0;
-
         uint8_t mFlags = 0;
 
-        Bitboard newOccupied = board.pieces() ^ square_bb(m.from());
-        Bitboard attacksAfter = attacks_bb(pt, to, newOccupied);
-        if (attacksAfter & kingZone) {
+        bool directCheck = (board.check_squares(pt) & square_bb(to)) != 0;
+        bool discCheck = (enemyKingBlockers & square_bb(from)) && !is_aligned(from, to, enemyKing);
+        bool givesCheck = directCheck || discCheck;
+        bool discHeavy = false;
+        if (!givesCheck && enemyRooksQueens) {
+            Bitboard rAtk = rook_attacks_bb(from, occupied);
+            Bitboard friendlyR = rAtk & board.pieces(us, ROOK, QUEEN);
+            Bitboard enemyR = rAtk & enemyRooksQueens;
+            if (friendlyR && enemyR) {
+                Square fSq = lsb(friendlyR);
+                Square eSq = lsb(enemyR);
+                if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                    discHeavy = true;
+                }
+            }
+            if (!discHeavy) {
+                Bitboard bAtk = bishop_attacks_bb(from, occupied);
+                Bitboard friendlyB = bAtk & board.pieces(us, BISHOP, QUEEN);
+                Bitboard enemyB = bAtk & enemyRooksQueens;
+                if (friendlyB && enemyB) {
+                    Square fSq = lsb(friendlyB);
+                    Square eSq = lsb(enemyB);
+                    if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                        discHeavy = true;
+                    }
+                }
+            }
+        }
+        if (discHeavy) {
             mFlags |= FLAG_ATTACKS_KING_ZONE;
-            tacticalBonus += 5000;
+            tacticalBonus += 4500;
+        }
+        if (!givesCheck && m.is_castling()) {
+            givesCheck = MoveGen::gives_check(board, m);
         }
 
-        if (MoveGen::gives_check(board, m)) {
+        if (promoBlockSquares & square_bb(from)) {
+            mFlags |= FLAG_ATTACKS_KING_ZONE;
+            tacticalBonus += 6000;
+        }
+
+        if (givesCheck) {
             mFlags |= FLAG_GIVES_CHECK;
-            tacticalBonus += 8000;
+            tacticalBonus += 12000;
+        } else if (pt == KNIGHT) {
+            Bitboard atk = knight_attacks_bb(to);
+            if (atk & (kingZone | enemyRooksQueens)) {
+                mFlags |= FLAG_ATTACKS_KING_ZONE;
+                tacticalBonus += 4500;
+            }
+        } else if (pt == PAWN) {
+            Bitboard atk = pawn_attacks_bb(us, to);
+            if (atk & (kingZone | enemyNonPawns)) {
+                mFlags |= FLAG_ATTACKS_KING_ZONE;
+                tacticalBonus += 4500;
+            }
+            Rank r = relative_rank(us, to);
+            if (r == RANK_7) {
+                tacticalBonus += 9000;
+            } else if (r == RANK_6) {
+                tacticalBonus += 3500;
+            }
+        } else if (pt == BISHOP) {
+            Bitboard atk = bishop_attacks_bb(to, occupied ^ square_bb(from));
+            if (atk & (kingZone | enemyRooksQueens)) {
+                mFlags |= FLAG_ATTACKS_KING_ZONE;
+                tacticalBonus += 4500;
+            }
+        } else if (pt == ROOK) {
+            Bitboard atk = rook_attacks_bb(to, occupied ^ square_bb(from));
+            if (atk & (kingZone2 | enemyQueens)) {
+                mFlags |= FLAG_ATTACKS_KING_ZONE;
+                tacticalBonus += (atk & (kingZone | enemyQueens)) ? 4500 : 3000;
+            }
+        } else if (pt == QUEEN) {
+            Bitboard atk = queen_attacks_bb(to, occupied ^ square_bb(from));
+            if (atk & (kingZone2 | enemyRooksQueens)) {
+                mFlags |= FLAG_ATTACKS_KING_ZONE;
+                tacticalBonus += (atk & (kingZone | enemyQueens)) ? 4500 : 3000;
+            }
+        }
+
+        if (!(mFlags & FLAG_ATTACKS_KING_ZONE) && !givesCheck && (pt == ROOK || pt == BISHOP || pt == QUEEN)) {
+            Bitboard ray = line_bb(to, enemyKing);
+            if (ray) {
+                bool sliderMatchesRay = (pt == ROOK) ? (file_of(to) == file_of(enemyKing) || rank_of(to) == rank_of(enemyKing)) :
+                                        (pt == BISHOP) ? (file_of(to) != file_of(enemyKing) && rank_of(to) != rank_of(enemyKing)) : true;
+                if (sliderMatchesRay) {
+                    Bitboard between = between_bb(to, enemyKing);
+                    Bitboard blockers = between & (occupied ^ square_bb(from));
+                    if (blockers && (blockers & board.pieces(us)) == blockers && popcount(blockers) == 1) {
+                        mFlags |= FLAG_ATTACKS_KING_ZONE;
+                        tacticalBonus += 4500;
+                    }
+                }
+            }
         }
 
         flags[idx] = mFlags;
 
-        if ((board.blockers_for_king(~us) & square_bb(m.from())) &&
-            !aligned(m.from(), to, enemyKing)) {
-            tacticalBonus += 4000;
-        }
+        int histScore = history.get(us, m);
+        int cont1 = contHist1ply ? contHist1ply->get(pt, to) : 0;
+        int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
+        int cont3 = contHist3ply ? contHist3ply->get(pt, to) : 0;
+        int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
+        int totalHist = 2 * histScore + cont1 + cont2 + cont3 + cont4;
 
-        if (m == killer1) {
-            sm.score = SCORE_KILLER_1 + tacticalBonus;
-        } else if (m == killer2) {
-            sm.score = SCORE_KILLER_2 + tacticalBonus;
-        } else if (m == counterMove) {
-            sm.score = SCORE_COUNTER + tacticalBonus;
-        } else {
-            int histScore = history.get(us, m);
-            int cont1 = contHist1ply ? contHist1ply->get(pt, to) : 0;
-            int cont2 = contHist2ply ? contHist2ply->get(pt, to) : 0;
-            int cont3 = contHist3ply ? contHist3ply->get(pt, to) : 0;
-            int cont4 = contHist4ply ? contHist4ply->get(pt, to) : 0;
-
-            sm.score = 2 * histScore + cont1 + cont2 + cont3 + cont4 + tacticalBonus;
-        }
+        sm.score = totalHist + tacticalBonus;
 
         if (m.is_promotion()) {
             PieceType promo = m.promotion_type();
@@ -464,7 +569,7 @@ Move MovePicker::next_move() {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
 
-                if (moves[currentIdx - 1].score <= SCORE_EQUAL_CAP + EQUAL_CAP_QUEEN_BONUS) {
+                if (moves[currentIdx - 1].score < SCORE_EQUAL_CAP) {
                     currentIdx--;
                     break;
                 }
@@ -505,69 +610,12 @@ Move MovePicker::next_move() {
             }
             [[fallthrough]];
 
-        case STAGE_GENERATE_QUIET_CHECKS:
-            {
-                quietChecks.clear();
-                quietCheckCount = 0;
-                MoveGen::generate_checking_moves(board, quietChecks);
-
-                MoveList filteredChecks;
-                for (size_t i = 0; i < quietChecks.size(); ++i) {
-                    Move qm = quietChecks[i].move;
-                    if (!is_tt_move(qm) && qm != killer1 && qm != killer2 && qm != counterMove &&
-                        SEE::see_ge(board, qm, 0)) {
-                        filteredChecks.add(qm, 0);
-                        if (quietCheckCount < MAX_QUIET_CHECKS) {
-                            quietCheckMoves[quietCheckCount++] = qm;
-                        }
-                    }
-                }
-                quietChecks = filteredChecks;
-
-                score_quiet_checks();
-                quietCheckIdx = 0;
-            }
-            ++stage;
-            [[fallthrough]];
-
-        case STAGE_QUIET_CHECKS:
-            while (quietCheckIdx < quietChecks.size()) {
-                m = quietChecks.pick_best(quietCheckIdx++);
-                if (is_tt_move(m)) continue;
-                if (m == killer1 || m == killer2 || m == counterMove) continue;
-                hasMoveInfo = true;
-                givesCheckInfo = true;
-                attacksKingZoneInfo = false;
-                return m;
-            }
-            ++stage;
-            [[fallthrough]];
-
         case STAGE_GENERATE_QUIETS:
-            equalCaptures.clear();
-            for (size_t i = currentIdx; i < moves.size(); ++i) {
-                if (moves[i].score >= SCORE_EQUAL_CAP &&
-                    moves[i].score < SCORE_WINNING_CAP &&
-                    !is_tt_move(moves[i].move)) {
-                    equalCaptures.add(moves[i].move, moves[i].score);
-                }
-            }
-
             moves.clear();
             MoveGen::generate_quiets(board, moves);
             score_quiets();
             currentIdx = 0;
-            equalCaptureIdx = 0;
             badCaptureIdx = 0;
-            ++stage;
-            [[fallthrough]];
-
-        case STAGE_EQUAL_CAPTURES:
-            while (equalCaptureIdx < equalCaptures.size()) {
-                m = equalCaptures.pick_best(equalCaptureIdx++);
-                if (is_tt_move(m)) continue;
-                return m;
-            }
             ++stage;
             [[fallthrough]];
 
@@ -577,7 +625,6 @@ Move MovePicker::next_move() {
                 if (is_tt_move(m) || m == killer1 || m == killer2 || m == counterMove) {
                     continue;
                 }
-                if (is_quiet_check(m)) continue;
 
                 hasMoveInfo = true;
                 lastFlags = flags[currentIdx - 1];
@@ -593,8 +640,11 @@ Move MovePicker::next_move() {
                 m = badCaptures.pick_best(badCaptureIdx++);
                 if (is_tt_move(m)) continue;
                 hasMoveInfo = true;
-                givesCheckInfo = false;
-                attacksKingZoneInfo = false;
+                givesCheckInfo = MoveGen::gives_check(board, m);
+                Square enemyKingSq = board.king_square(~board.side_to_move());
+                Bitboard kZone = king_attacks_bb(enemyKingSq) | square_bb(enemyKingSq);
+                Piece movedPc = board.piece_on(m.from());
+                attacksKingZoneInfo = (attacks_bb(type_of(movedPc), m.to(), board.pieces() ^ square_bb(m.from())) & kZone) != 0;
                 return m;
             }
             ++stage;
@@ -623,7 +673,7 @@ Move MovePicker::next_move() {
             while (currentIdx < moves.size()) {
                 m = pick_best();
                 if (is_tt_move(m)) continue;
-                if (moves[currentIdx - 1].score <= SCORE_LOSING_CAP + 1000) break;
+                if (moves[currentIdx - 1].score < SCORE_EQUAL_CAP) break;
 
                 hasMoveInfo = true;
                 lastFlags = flags[currentIdx - 1];

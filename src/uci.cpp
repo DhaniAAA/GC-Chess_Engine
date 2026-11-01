@@ -1,4 +1,5 @@
 #include "uci.hpp"
+#include "eval.hpp"
 #include "movegen.hpp"
 #include "tt.hpp"
 #include "thread.hpp"
@@ -146,9 +147,12 @@ void UCIHandler::cmd_isready() {
     std::cout.flush();
 }
 
+static std::string s_lastBaseFen;
+
 void UCIHandler::cmd_ucinewgame() {
     wait_for_search();
     TT.clear();
+    s_lastBaseFen.clear();
     stateStackIdx = 0;
     board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
     stateStackIdx++;
@@ -165,6 +169,11 @@ void UCIHandler::cmd_position(std::istringstream& is) {
     stateStackIdx = 0;
 
     if (token == "startpos") {
+        if (s_lastBaseFen != "startpos") {
+            s_lastBaseFen = "startpos";
+            Searcher.clear_history();
+            Threads.clear_all_history();
+        }
         board.set(Board::StartFEN, &stateInfoStack[stateStackIdx]);
         stateStackIdx++;
         is >> token;
@@ -172,6 +181,12 @@ void UCIHandler::cmd_position(std::istringstream& is) {
         std::string fen;
         while (is >> token && token != "moves") {
             fen += token + " ";
+        }
+
+        if (s_lastBaseFen != fen) {
+            s_lastBaseFen = fen;
+            Searcher.clear_history();
+            Threads.clear_all_history();
         }
         board.set(fen, &stateInfoStack[stateStackIdx]);
         stateStackIdx++;
@@ -260,25 +275,19 @@ void UCIHandler::start_search(const SearchLimits& limits) {
     searching = true;
     isPondering = limits.ponder;
 
-    std::string searchFen = board.fen();
-
     Searcher.set_pondering(limits.ponder);
 
     if (limits.ponder) {
         options.ponderAttempts++;
     }
-    searchThread = std::thread([this, limits, searchFen]() {
-        StateInfo searchSi;
-        Board searchBoard;
-        searchBoard.set(searchFen, &searchSi);
-
-        Searcher.start(searchBoard, limits);
-
-        Move bestMove = Searcher.best_move();
-
-        StateInfo validationSi;
+    searchThread = std::thread([this, limits]() {
+        StateInfo validationHistory[512];
         Board validationBoard;
-        validationBoard.set(searchFen, &validationSi);
+        validationBoard.copy_with_history(board, validationHistory, 512);
+
+        Threads.start_thinking(validationBoard, limits);
+
+        Move bestMove = Threads.best_move();
 
         MoveList legalMoves;
         MoveGen::generate_legal(validationBoard, legalMoves);
@@ -322,7 +331,7 @@ void UCIHandler::start_search(const SearchLimits& limits) {
 
         std::cout << "bestmove " << move_to_string(bestMove);
 
-        Move ponderMove = Searcher.ponder_move();
+        Move ponderMove = Threads.ponder_move();
         if (ponderMove != MOVE_NONE && bestMove != MOVE_NONE && options.ponder) {
             StateInfo si;
             validationBoard.do_move(bestMove, si);
@@ -354,7 +363,7 @@ void UCIHandler::start_search(const SearchLimits& limits) {
 
 void UCIHandler::wait_for_search() {
     if (searchThread.joinable()) {
-        Searcher.stop();
+        Threads.stop();
         searchThread.join();
     }
 }
@@ -362,14 +371,14 @@ void UCIHandler::wait_for_search() {
 void UCIHandler::cmd_stop() {
     isPondering = false;
     Searcher.set_pondering(false);
-    Searcher.stop();
+    Threads.stop();
     wait_for_search();
 }
 
 void UCIHandler::cmd_ponderhit() {
     if (isPondering && Searcher.is_pondering()) {
         options.ponderHits++;
-        Searcher.on_ponderhit();
+        Threads.on_ponderhit();
         isPondering = false;
     }
 }
@@ -539,9 +548,7 @@ void UCIHandler::cmd_d() {
 }
 
 void UCIHandler::cmd_eval() {
-    int score = Searcher.evaluate(board);
-    std::cout << "Evaluation: " << score << " cp" << std::endl;
-    std::cout << "Side to move: " << (board.side_to_move() == WHITE ? "White" : "Black") << std::endl;
+    Eval::print_eval(board);
 }
 
 void UCIHandler::cmd_bench(std::istringstream& is) {
@@ -610,24 +617,26 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
         benchLimits.nodes = 100000000;
 
         auto posStart = std::chrono::steady_clock::now();
-        Searcher.start(benchBoard, benchLimits);
+        Threads.start_thinking(benchBoard, benchLimits);
         auto posEnd = std::chrono::steady_clock::now();
 
-        const SearchStats& stats = Searcher.stats();
+        U64 posNodes = Threads.total_nodes();
+        U64 posTbHits = Threads.total_tb_hits();
+        int posSelDepth = Threads.max_sel_depth();
 
         auto posTime = std::chrono::duration_cast<std::chrono::milliseconds>(posEnd - posStart).count();
-        U64 posNps = posTime > 0 ? stats.nodes * 1000 / posTime : stats.nodes;
+        U64 posNps = posTime > 0 ? posNodes * 1000 / posTime : posNodes;
 
-        std::cout << "  Nodes: " << stats.nodes
+        std::cout << "  Nodes: " << posNodes
                   << " | Time: " << posTime << "ms"
                   << " | NPS: " << posNps
-                  << " | SelDepth: " << stats.selDepth << std::endl;
+                  << " | SelDepth: " << posSelDepth << std::endl;
         std::cout << std::endl;
 
-        totalNodes += stats.nodes;
-        totalTbHits += stats.tbHits;
-        totalSelDepth += stats.selDepth;
-        maxSelDepth = std::max(maxSelDepth, stats.selDepth);
+        totalNodes += posNodes;
+        totalTbHits += posTbHits;
+        totalSelDepth += posSelDepth;
+        maxSelDepth = std::max(maxSelDepth, posSelDepth);
     }
 
     auto endTotal = std::chrono::steady_clock::now();

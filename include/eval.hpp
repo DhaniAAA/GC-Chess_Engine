@@ -26,25 +26,10 @@ struct EvalContext {
     Bitboard mobilityArea[COLOR_NB];
     bool initialized;
 
-    EvalContext() : initialized(false) { clear(); }
+    EvalContext() = default;
 
     void clear() {
-        for (int c = 0; c < COLOR_NB; ++c) {
-            for (int pt = 0; pt < ATTACK_PIECE_TYPES; ++pt) {
-                attackedBy[c][pt] = 0;
-            }
-            attackedBy2[c] = 0;
-            kingRing[c] = 0;
-            innerKingRing[c] = 0;
-            outerKingRing[c] = 0;
-            kingSquare[c] = SQ_NONE;
-            kingAttackersCount[c] = 0;
-            kingAttackersWeight[c] = 0;
-            innerRingAttacks[c] = 0;
-            outerRingAttacks[c] = 0;
-            mobilityArea[c] = 0;
-        }
-        initialized = false;
+        std::memset(this, 0, sizeof(EvalContext));
     }
 };
 
@@ -344,7 +329,8 @@ Bitboard passed_pawn_mask(Color c, Square s);
 Square pawn_push(Color c, Square s);
 bool is_backward_pawn(Color c, Square s, Bitboard ourPawns, Bitboard theirPawns);
 
-EvalScore eval_pawn_structure(const Board& board, Color c);
+EvalScore eval_pawn_structure(const Board& board, Color c, Bitboard& outPassedPawns, Bitboard& outHangingPawns);
+EvalScore eval_passed_pawns_dynamic(const Board& board, Color c, Bitboard passedPawns, Bitboard hangingPawns);
 EvalScore eval_space(const Board& board, Color c);
 
 EvalScore eval_material_imbalance(const Board& board, Color c);
@@ -373,6 +359,8 @@ inline EvalScore piece_pst_score(Piece pc, Square sq) {
 struct PawnEntry {
     Key key;
     EvalScore score;
+    Bitboard passedPawns[COLOR_NB];
+    Bitboard hangingPawns[COLOR_NB];
 
     bool match(Key k) const { return key == k; }
 };
@@ -383,10 +371,7 @@ public:
     static constexpr int MASK = SIZE - 1;
 
     void clear() {
-        for (int i = 0; i < SIZE; ++i) {
-            table[i].key = 0;
-            table[i].score = S(0, 0);
-        }
+        std::memset(table, 0, sizeof(table));
     }
 
     PawnEntry* probe(Key key) {
@@ -397,11 +382,12 @@ private:
     PawnEntry table[SIZE];
 };
 
-extern PawnTable pawnTable;
+extern thread_local PawnTable pawnTable;
 
 int evaluate(const Board& board, int alpha, int beta);
 int evaluate(const Board& board);
 int material_balance(const Board& board);
+void print_eval(const Board& board);
 
 }
 

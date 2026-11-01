@@ -36,6 +36,7 @@ public:
     Board& operator=(const Board&) = default;
 
     void set(const std::string& fen, StateInfo* si);
+    void copy_with_history(const Board& src, StateInfo* historyBuf, int maxHistory);
     std::string fen() const;
 
     static const std::string StartFEN;
