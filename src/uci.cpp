@@ -11,6 +11,7 @@
 #include <functional>
 #include <iomanip>
 #include "tuning.hpp"
+#include "datagen.hpp"
 
 
 namespace UCI {
@@ -73,6 +74,8 @@ void UCIHandler::loop() {
                 cmd_ponderhit();
             } else if (token == "bench") {
                 cmd_bench(is);
+            } else if (token == "datagen") {
+                cmd_datagen(is);
             }
         }
     } catch (const std::exception& e) {
@@ -663,6 +666,11 @@ void UCIHandler::cmd_bench(std::istringstream& is) {
     ProfilerAnalysis::analyze_bottlenecks();
     TT.resize(oldHash);
     Threads.set_thread_count(oldThreads);
+}
+
+void UCIHandler::cmd_datagen(std::istringstream& is) {
+    wait_for_search();
+    Datagen::run_cli(is);
 }
 
 }

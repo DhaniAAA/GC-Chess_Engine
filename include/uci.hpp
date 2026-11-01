@@ -59,6 +59,7 @@ private:
     void cmd_d();
     void cmd_eval();
     void cmd_bench(std::istringstream& is);
+    void cmd_datagen(std::istringstream& is);
 
     void parse_moves(std::istringstream& is);
     void start_search(const SearchLimits& limits);

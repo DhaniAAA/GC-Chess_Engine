@@ -131,14 +131,14 @@ void Search::start(Board& board, const SearchLimits& lim) {
         stack[i].contHistory = nullptr;
     }
 
-    if (threadId == 0) {
+    if (threadId == 0 && !standalone) {
         TT.new_search();
     }
 
     init_time_management(board.side_to_move());
     startTime = std::chrono::steady_clock::now();
 
-    if (threadId == 0 && !limits.infinite && Book::book.is_loaded()) {
+    if (threadId == 0 && !standalone && !limits.infinite && Book::book.is_loaded()) {
         Move bookMove = Book::book.probe(board);
         if (bookMove != MOVE_NONE) {
             rootBestMove = bookMove;
@@ -248,7 +248,7 @@ void Search::init_time_management(Color us) {
 
 void Search::check_time() {
     if (stopped) return;
-    if (threadId != 0) return;
+    if (threadId != 0 && !standalone) return;
 
     if (limits.infinite || limits.ponder || isPondering) return;
 
@@ -257,10 +257,10 @@ void Search::check_time() {
     bool depthOnly = limits.depth > 0 && limits.time[WHITE] == 0 &&
                      limits.time[BLACK] == 0 && limits.movetime == 0;
 
-    U64 totalNodes = (Threads.thread_count() > 1) ? Threads.total_nodes() : searchStats.nodes;
+    U64 totalNodes = (standalone || Threads.thread_count() <= 1) ? searchStats.nodes : Threads.total_nodes();
     if (limits.nodes > 0 && totalNodes >= limits.nodes) {
         stopped = true;
-        Threads.stop();
+        if (!standalone) Threads.stop();
         return;
     }
 
@@ -273,7 +273,7 @@ void Search::check_time() {
 
     if (elapsed >= maximumTime) {
         stopped = true;
-        Threads.stop();
+        if (!standalone) Threads.stop();
     }
 }
 
@@ -460,9 +460,9 @@ void Search::iterative_deepening(Board& board) {
     int overallBestScore = -VALUE_INFINITE;
     overallBestPV.clear();
 
-    int startDepth = (threadId == 0) ? 1 : (1 + (threadId % 3));
+    int startDepth = (threadId == 0 || standalone) ? 1 : (1 + (threadId % 3));
     for (rootDepth = startDepth; rootDepth <= maxDepth && !stopped; ++rootDepth) {
-        if (threadId > 0 && rootDepth > 4 && ((rootDepth + threadId) % 4 == 0)) {
+        if (!standalone && threadId > 0 && rootDepth > 4 && ((rootDepth + threadId) % 4 == 0)) {
             continue;
         }
         for (auto& rm : rootMoves) {
@@ -961,7 +961,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     TT.prefetch(board.key());
 
-    if (UNLIKELY((searchStats.nodes & 16383) == 0)) {
+    const U64 nodeMask = (limits.nodes > 0 && limits.nodes < 16384) ? 255 : 16383;
+    if (UNLIKELY((searchStats.nodes & nodeMask) == 0)) {
         check_time();
     }
 
@@ -2134,7 +2135,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     PROFILE_FUNCTION();
     ++searchStats.nodes;
 
-    if (UNLIKELY((searchStats.nodes & 16383) == 0)) {
+    const U64 nodeMask = (limits.nodes > 0 && limits.nodes < 16384) ? 255 : 16383;
+    if (UNLIKELY((searchStats.nodes & nodeMask) == 0)) {
         check_time();
     }
 

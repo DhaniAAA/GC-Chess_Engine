@@ -205,6 +205,14 @@ public:
     int thread_id() const { return threadId; }
     int completed_depth() const { return completedDepth; }
 
+    void set_standalone(bool s) {
+        standalone = s;
+        silentMode = s;
+    }
+    bool is_standalone() const { return standalone; }
+    void set_silent(bool s) { silentMode = s; }
+    bool is_silent() const { return silentMode; }
+
     void clear_history();
 
     int evaluate(const Board& board);
@@ -235,6 +243,7 @@ private:
 
     std::atomic<bool> stopped;
     std::atomic<bool> isPondering;
+    bool standalone = false;
     bool silentMode = false;
     int threadId = 0;
     int completedDepth = 0;
