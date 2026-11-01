@@ -33,3 +33,28 @@
 - `tests/baseline.txt` and `Build-project.md` reference `wac`/`bk`/`datagen` engine commands and `tests/run_integration.py`, `tests/run_time_guard.py`, `mingw32-make run-tests`/`tuner` — all deleted from this tree (no `test_*.cpp`, no `ENGINE_SOURCES_FOR_TESTS`, no tuner target in Makefile). There is currently **no unit-test target**; verify via `perft`/`bench`/`wac_run.py`/gauntlet.
 - `BUILD.md` "Build Tuner" section is stale for the same reason. Tuner data still present (`tuner/quiet-labeled.epd`, `tuner/kaggle_texel_tuner.py`) but no Makefile target builds it.
 - CI workflows (`.github/workflows/`) are `workflow_dispatch` only (manual).
+
+<!-- scopecairn:managed -->
+# ScopeCairn — Automated Engineering Protocol
+
+## 1. Discipline (Anti-Slop & Laziness Protocol)
+- **Minimal Diff**: Smallest change that solves the problem; bias to deletion; no unrequested abstractions or narrative step comments.
+- **Boundaries & History**: Validate at I/O/CLI boundaries; keep core logic pure; check git blame before deleting unusual edge-case guards.
+
+## 2. Context Retrieval & Status Cue
+- **First line of EVERY response**:
+  - Called context: `> 🧭 [ScopeCairn: context "<query>" → N files in scope]`
+  - Skipped context: `> 🧭 [ScopeCairn: scope known (<reason>), context skipped]`
+  - Checked impact / verified: `> 🧭 [ScopeCairn: impact <path> checked]` / `> 🧭 [ScopeCairn: verify passed within scope]`
+- **Cold start**: If `.scopecairn/scopecairn.db` is missing, run `scopecairn init`. At the start of a session, run `scopecairn session load` to restore previous working state and git drift.
+- **Run `scopecairn context "<2-4 technical keywords>"` ONLY IF** target files/symbols are unknown or locking edit scope. If results are empty/off-target, run `scopecairn map [dir]` then `scopecairn context --anchor <path> "<query>"`.
+- **SKIP `scopecairn context` IF**: (1) user named the target file/symbol, (2) prompt is Q&A/architecture/review, or (3) scope is already known in this session.
+
+## 3. Execution & Verification
+- **Scope**: Edit only Required/Optional files; never touch Protected without approval. If >2 files change, run `scopecairn context --escalate "<query>"`.
+- **Reuse Check**: Before creating a new function or class, run `scopecairn reuse "<description or signature>"` and reuse/extend existing symbols when matched.
+- **Shared Symbols**: Run `scopecairn impact <path>`, state 1 safety fact, and prove it via `scopecairn impact <path> --run-tests`.
+- **Anti-Looping**: 2 failed fixes on the same test → stop and test the root-cause premise independently before a 3rd edit.
+- **Excerpts**: Prefer `scopecairn read symbol <name>` or line-ranged reads from `context` over full-file reads.
+- **Before Done**: Self-review edge/async/OS cases, prove with tests (never weaken tests by removing assertions, adding `.skip`, or loosening matchers), then run `scopecairn scan`, `scopecairn dead`, `scopecairn verify --task "<query>" --strict --test-gate`, and `scopecairn session save --working "<summary>" --decisions "<decisions>" --next "<next>" --blockers "<blockers>" --files "<files>"`. Never bypass git pre-commit hooks with `--no-verify`; teams should also enforce `scopecairn verify --test-gate --base origin/main` in CI.
+- **Decisions**: Record settled architectural choices via `scopecairn decide "<choice> because <why>"` — stored with evidence and included in all future contexts.

@@ -1,14 +1,19 @@
 """WAC tactical suite runner via UCI. Usage: python tests/wac_run.py [depth] [max_pos]"""
 import subprocess, sys, time, re
+from pathlib import Path
 import chess
 
-ENGINE = r"output\main.exe"
-EPD = r"tests\wac.epd"
+ROOT = Path(__file__).resolve().parent.parent
+ENGINE = str(ROOT / "output" / ("main.exe" if (ROOT / "output" / "main.exe").exists() else "main"))
+EPD = str(ROOT / "tests" / "wac.epd")
 DEPTH = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 MAXPOS = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 ONLYIDS = set()
 if len(sys.argv) > 3:
-    ONLYIDS = set(l.strip() for l in open(sys.argv[3]) if l.strip())
+    id_path = Path(sys.argv[3])
+    if not id_path.is_file():
+        id_path = ROOT / "tests" / sys.argv[3]
+    ONLYIDS = set(l.strip() for l in open(id_path) if l.strip())
 
 
 def parse_epd(line):
@@ -86,7 +91,8 @@ def main():
     eng.wait(timeout=10)
     dt = time.time() - t0
     print(f"\nWAC depth={DEPTH}: {solved}/{total} solved in {dt:.0f}s")
-    with open(r"tests\wac_miss.txt", "w") as f:
+    miss_path = ROOT / "tests" / "wac_miss.txt"
+    with open(miss_path, "w") as f:
         for pid, san, exp, got in fails:
             f.write(f"{pid}\n")
     for pid, san, exp, got in fails[:40]:
