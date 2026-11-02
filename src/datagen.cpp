@@ -253,7 +253,8 @@ void run(const Config& config) {
                 }
 
                 int done = ++gamesFinished;
-                if (done % 10 == 0 || done == targetGames) {
+                int interval = (targetGames >= 1000) ? 100 : (targetGames >= 200 ? 50 : 10);
+                if (done % interval == 0 || done == targetGames) {
                     std::cout << "datagen: " << done << "/" << targetGames
                               << " games (" << totalPositions.load() << " quiet positions)" << std::endl;
                 }

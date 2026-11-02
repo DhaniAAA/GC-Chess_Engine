@@ -12,6 +12,7 @@
 #include <iomanip>
 #include "tuning.hpp"
 #include "datagen.hpp"
+#include "nnue.hpp"
 
 
 namespace UCI {
@@ -96,6 +97,8 @@ void UCIHandler::cmd_uci() {
     std::cout << "option name MultiPV type spin default 1 min 1 max 500" << std::endl;
     std::cout << "option name Ponder type check default true" << std::endl;
     std::cout << "option name Move Overhead type spin default 50 min 0 max 1000" << std::endl;
+    std::cout << "option name UseNNUE type check default true" << std::endl;
+    std::cout << "option name EvalFile type string default gc.nnue" << std::endl;
     std::cout << "option name OwnBook type check default true" << std::endl;
     std::cout << "option name Book File type string default book.bin" << std::endl;
     std::cout << "option name SyzygyPath type string default <empty>" << std::endl;
@@ -420,6 +423,11 @@ void UCIHandler::cmd_setoption(std::istringstream& is) {
     } else if (name == "SyzygyPath") {
         options.syzygyPath = value;
         Tablebase::TB.init(value);
+    } else if (name == "UseNNUE") {
+        options.useNNUE = (value == "true");
+    } else if (name == "EvalFile") {
+        options.evalFile = value;
+        NNUE::load_eval_file(value);
     }
     else if (name == "PawnValueMG") Tuning::PawnValue.mg = std::stoi(value);
     else if (name == "PawnValueEG") Tuning::PawnValue.eg = std::stoi(value);
@@ -551,7 +559,42 @@ void UCIHandler::cmd_d() {
 }
 
 void UCIHandler::cmd_eval() {
-    Eval::print_eval(board);
+    int finalEval = Eval::evaluate(board);
+    bool isBareKing = (board.pieces(WHITE) == square_bb(board.king_square(WHITE))) ||
+                      (board.pieces(BLACK) == square_bb(board.king_square(BLACK)));
+
+    if (isBareKing) {
+        std::cout << "Evaluation Method: Bare King Endgame Mop-Up (Priority 1)" << std::endl;
+        std::cout << "Final Evaluation: " << finalEval << " cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+        std::cout << std::endl;
+        Eval::print_eval(board);
+    } else if (options.useNNUE && NNUE::is_loaded()) {
+        std::cout << "Evaluation Method: NNUE (Perspective SCReLU)" << std::endl;
+        std::cout << "NNUE Model File  : " << options.evalFile << std::endl;
+        if (!board.is_accumulator_computed()) {
+            const_cast<Board&>(board).refresh_accumulator();
+        }
+        int rawScore = NNUE::evaluate(board, board.accumulator());
+        std::cout << "Raw NNUE Score   : " << rawScore << " cp" << std::endl;
+        int scale = Tablebase::EndgameRules::scale_factor(board);
+        if (scale != 128) {
+            std::cout << "Endgame Scale    : " << scale << "/128" << std::endl;
+        }
+        std::cout << "Final Evaluation : " << finalEval << " cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+    } else {
+        std::cout << "Evaluation Method: Hand-Crafted Evaluation (HCE)" << std::endl;
+        if (!options.useNNUE) {
+            std::cout << "Reason           : UseNNUE is false" << std::endl;
+        } else if (!NNUE::is_loaded()) {
+            std::cout << "Reason           : NNUE weights not loaded" << std::endl;
+        }
+        std::cout << "Final Evaluation : " << finalEval << " cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+        std::cout << std::endl;
+        Eval::print_eval(board);
+    }
 }
 
 void UCIHandler::cmd_bench(std::istringstream& is) {

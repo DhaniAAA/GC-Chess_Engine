@@ -6,6 +6,7 @@
 #include "magic.hpp"
 #include "zobrist.hpp"
 #include "move.hpp"
+#include "nnue.hpp"
 #include <string>
 #include <vector>
 
@@ -24,6 +25,10 @@ struct StateInfo {
     Bitboard pinners[COLOR_NB];
     Bitboard checkSquares[PIECE_TYPE_NB];
     int repetition;
+
+    NNUE::Accumulator accumulator;
+    bool accComputed;
+
     StateInfo* previous;
 };
 
@@ -77,6 +82,11 @@ public:
     Key material_key() const { return st->materialKey; }
 
     EvalScore psqt_score(Color c) const { return st->psqtScore[c]; }
+
+    const NNUE::Accumulator& accumulator() const { return st->accumulator; }
+    NNUE::Accumulator& accumulator() { return st->accumulator; }
+    bool is_accumulator_computed() const { return st->accComputed; }
+    void refresh_accumulator();
 
     bool is_draw(int ply) const;
     bool has_repeated() const;

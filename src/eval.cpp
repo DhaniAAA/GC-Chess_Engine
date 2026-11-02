@@ -1,6 +1,9 @@
 #include "eval.hpp"
 #include "tuning.hpp"
 #include "profiler.hpp"
+#include "uci.hpp"
+#include "nnue.hpp"
+#include "tablebase.hpp"
 
 namespace Eval {
 
@@ -1192,17 +1195,23 @@ int eval_mop_up(const Board& board, Color c, const EvalContext& ctx, int phase) 
     return mopUp;
 }
 
-int evaluate(const Board& board, int alpha, int beta) {
-    (void)alpha;
-    (void)beta;
-    PROFILE_SCOPE("Eval::evaluate");
-    EvalScore score;
+static inline int compute_phase(const Board& board) {
     int phase = 0;
     phase += popcount(board.pieces(KNIGHT)) * PhaseValue[KNIGHT];
     phase += popcount(board.pieces(BISHOP)) * PhaseValue[BISHOP];
     phase += popcount(board.pieces(ROOK)) * PhaseValue[ROOK];
     phase += popcount(board.pieces(QUEEN)) * PhaseValue[QUEEN];
-    phase = std::min(phase, TotalPhase);
+    return std::min(phase, TotalPhase);
+}
+
+static inline bool is_bare_king_endgame(const Board& board) {
+    Square wk = board.king_square(WHITE);
+    Square bk = board.king_square(BLACK);
+    return (board.pieces(WHITE) == square_bb(wk)) || (board.pieces(BLACK) == square_bb(bk));
+}
+
+int evaluate_hce(const Board& board, EvalContext& ctx, int phase) {
+    EvalScore score;
 
     score += board.psqt_score(WHITE);
     score -= board.psqt_score(BLACK);
@@ -1229,7 +1238,6 @@ int evaluate(const Board& board, int alpha, int beta) {
     score += eval_passed_pawns_dynamic(board, WHITE, pawnEntry->passedPawns[WHITE], pawnEntry->hangingPawns[WHITE]);
     score -= eval_passed_pawns_dynamic(board, BLACK, pawnEntry->passedPawns[BLACK], pawnEntry->hangingPawns[BLACK]);
 
-    EvalContext ctx;
     init_eval_context(ctx, board);
 
     score += eval_pieces_with_context(board, WHITE, ctx);
@@ -1241,7 +1249,7 @@ int evaluate(const Board& board, int alpha, int beta) {
     score += eval_threats_with_context(board, WHITE, ctx);
     score -= eval_threats_with_context(board, BLACK, ctx);
     score += eval_space(board, WHITE);
-    score -= eval_space(board, BLACK);
+    score += eval_space(board, BLACK);
 
     score += eval_material_imbalance(board, WHITE);
     score -= eval_material_imbalance(board, BLACK);
@@ -1261,6 +1269,45 @@ int evaluate(const Board& board, int alpha, int beta) {
 
     constexpr int TEMPO = 12;
     return (board.side_to_move() == WHITE ? finalScore : -finalScore) + TEMPO;
+}
+
+int evaluate(const Board& board, int alpha, int beta) {
+    (void)alpha;
+    (void)beta;
+    PROFILE_SCOPE("Eval::evaluate");
+
+    // Priority 1: Bare King Endgame Mop-Up
+    // Must be retained as top priority to reliably checkmate lone king.
+    if (is_bare_king_endgame(board)) {
+        if (Tablebase::EndgameRules::is_known_draw(board)) {
+            return 0;
+        }
+        EvalContext ctx;
+        int phase = compute_phase(board);
+        return evaluate_hce(board, ctx, phase);
+    }
+
+    // Priority 2: Perspective NNUE
+    if (UCI::options.useNNUE && NNUE::is_loaded()) {
+        if (Tablebase::EndgameRules::is_known_draw(board)) {
+            return 0;
+        }
+        if (!board.is_accumulator_computed()) {
+            const_cast<Board&>(board).refresh_accumulator();
+        }
+        int score = NNUE::evaluate(board, board.accumulator());
+        int scale = Tablebase::EndgameRules::scale_factor(board);
+        if (scale != 128) {
+            score = (score * scale) / 128;
+        }
+        constexpr int TEMPO = 12;
+        return score + TEMPO;
+    }
+
+    // Priority 3: Fallback HCE
+    EvalContext ctx;
+    int phase = compute_phase(board);
+    return evaluate_hce(board, ctx, phase);
 }
 
 int evaluate(const Board& board) {
@@ -1299,6 +1346,7 @@ void print_eval(const Board& board) {
     EvalScore psqt = board.psqt_score(WHITE) - board.psqt_score(BLACK);
 
     Key pawnKey = board.pawn_key();
+    (void)pawnKey;
     Bitboard wPassed = 0, bPassed = 0, wHanging = 0, bHanging = 0;
     EvalScore pawnScore = eval_pawn_structure(board, WHITE, wPassed, wHanging) -
                           eval_pawn_structure(board, BLACK, bPassed, bHanging);

@@ -167,6 +167,22 @@ void Board::set(const std::string& fen, StateInfo* si) {
     }
 
     set_state(si);
+
+    if (NNUE::is_loaded()) {
+        NNUE::refresh_accumulator(*this, st->accumulator);
+        st->accComputed = true;
+    } else {
+        st->accComputed = false;
+    }
+}
+
+void Board::refresh_accumulator() {
+    if (NNUE::is_loaded()) {
+        NNUE::refresh_accumulator(*this, st->accumulator);
+        st->accComputed = true;
+    } else {
+        st->accComputed = false;
+    }
 }
 
 void Board::set_state(StateInfo* si) {
@@ -528,6 +544,53 @@ void Board::do_move(Move m, StateInfo& newSt) {
         }
     }
 
+    if (NNUE::is_loaded() && newSt.previous->accComputed) {
+        int addW[4], addB[4], remW[4], remB[4];
+        int addCount = 0, remCount = 0;
+
+        if (captured != NO_PIECE) {
+            Square capsq = m.is_enpassant() ? Square(to - pawn_push(us)) : to;
+            remW[remCount] = NNUE::feature_index(WHITE, captured, capsq);
+            remB[remCount] = NNUE::feature_index(BLACK, captured, capsq);
+            remCount++;
+        }
+
+        remW[remCount] = NNUE::feature_index(WHITE, pc, from);
+        remB[remCount] = NNUE::feature_index(BLACK, pc, from);
+        remCount++;
+
+        if (m.is_promotion()) {
+            Piece promoted = make_piece(us, m.promotion_type());
+            addW[addCount] = NNUE::feature_index(WHITE, promoted, to);
+            addB[addCount] = NNUE::feature_index(BLACK, promoted, to);
+            addCount++;
+        } else {
+            addW[addCount] = NNUE::feature_index(WHITE, pc, to);
+            addB[addCount] = NNUE::feature_index(BLACK, pc, to);
+            addCount++;
+        }
+
+        if (m.is_castling()) {
+            Square rfrom = (to > from) ? Square(from + 3) : Square(from - 4);
+            Square rto   = (to > from) ? Square(from + 1) : Square(from - 1);
+            Piece rook = make_piece(us, ROOK);
+
+            remW[remCount] = NNUE::feature_index(WHITE, rook, rfrom);
+            remB[remCount] = NNUE::feature_index(BLACK, rook, rfrom);
+            remCount++;
+
+            addW[addCount] = NNUE::feature_index(WHITE, rook, rto);
+            addB[addCount] = NNUE::feature_index(BLACK, rook, rto);
+            addCount++;
+        }
+
+        NNUE::update_accumulator(st->accumulator, WHITE, addW, addCount, remW, remCount);
+        NNUE::update_accumulator(st->accumulator, BLACK, addB, addCount, remB, remCount);
+        st->accComputed = true;
+    } else {
+        st->accComputed = false;
+    }
+
     st->positionKey = k;
     st->pliesFromNull++;
 
@@ -555,7 +618,6 @@ void Board::undo_move(Move m) {
     Color us = ~them;
     Square from = m.from();
     Square to = m.to();
-    Piece pc = piece_on(to);
 
     if (m.is_castling()) {
         Square rfrom, rto;
@@ -599,6 +661,7 @@ void Board::do_null_move(StateInfo& newSt) {
     std::memcpy(&newSt, st, sizeof(StateInfo));
     newSt.previous = st;
     st = &newSt;
+    st->accComputed = newSt.previous->accComputed;
     if (st->enPassant != SQ_NONE) {
         st->positionKey ^= Zobrist::enpassant_key(file_of(st->enPassant));
         st->enPassant = SQ_NONE;

@@ -21,6 +21,9 @@ struct EngineOptions {
     std::string syzygyPath = "";
     int moveOverhead = 50;
 
+    bool useNNUE = true;
+    std::string evalFile = "gc.nnue";
+
     int contempt = 20;
     bool dynamicContempt = true;
 
