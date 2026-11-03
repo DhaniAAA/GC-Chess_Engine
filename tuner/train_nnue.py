@@ -229,7 +229,8 @@ def resolve_dataset_files(data_sources=None):
         candidates = [
             "/kaggle/input",
             "/kaggle/working/data",
-            "/kaggle/working/dataset_all.txt",
+            "/kaggle/input/datasets/ramadhanigb19/nnue-dataset",
+            "/kaggle/input/datasets/ramadhanigb19/nnue-dataset/dataset_all.txt",
             "/kaggle/working",
             "output/data",
             "data",
@@ -246,8 +247,8 @@ def resolve_dataset_files(data_sources=None):
                 for ext in ('*.txt', '*.epd', '*.txt.gz'):
                     sub_files.extend(cand.rglob(ext))
                 filtered = [
-                    f.resolve() for f in sub_files 
-                    if f.is_file() and f.stat().st_size > 0 
+                    f.resolve() for f in sub_files
+                    if f.is_file() and f.stat().st_size > 0
                     and f.name.lower() not in ('requirements.txt', 'baseline.txt', 'cmakelists.txt', 'wac_miss.txt')
                 ]
                 if filtered:
