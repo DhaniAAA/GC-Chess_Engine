@@ -25,6 +25,8 @@ Architecture:
 """
 
 import argparse
+import glob
+import gzip
 import math
 import os
 import struct
@@ -187,31 +189,142 @@ class ChessNNUEDataset:
         return self.length
 
 
-def load_dataset(data_path, max_samples=None, lambda_wdl=0.5, log_interval=100000):
+def open_file_stream(filepath):
+    """Opens a plain text or gzip-compressed file transparently."""
+    if str(filepath).endswith(".gz"):
+        return gzip.open(filepath, "rt", encoding="utf-8", errors="ignore")
+    return open(filepath, "r", encoding="utf-8", errors="ignore")
+
+
+def resolve_dataset_files(data_sources=None):
+    """
+    Discovers all dataset files from single/multiple paths, directories (searched recursively),
+    or glob patterns.
+
+    Supports:
+      - None or empty: Auto-detects in Kaggle (/kaggle/input, /kaggle/working) or local paths (output/data, data).
+      - Directory (e.g. /kaggle/input): Recursively discovers all .txt, .epd, .txt.gz files across all subfolders.
+      - Multiple sources: List/tuple of paths or comma-separated strings.
+      - Wildcards: e.g. /kaggle/input/**/*.txt.
+    """
+    raw_sources = []
+    if data_sources is None:
+        raw_sources = []
+    elif isinstance(data_sources, (list, tuple)):
+        for item in data_sources:
+            if isinstance(item, str) and (',' in item or ';' in item):
+                raw_sources.extend([s.strip() for s in item.replace(';', ',').split(',') if s.strip()])
+            elif item:
+                raw_sources.append(item)
+    elif isinstance(data_sources, str):
+        if ',' in data_sources or ';' in data_sources:
+            raw_sources.extend([s.strip() for s in data_sources.replace(';', ',').split(',') if s.strip()])
+        elif data_sources.strip():
+            raw_sources.append(data_sources.strip())
+    else:
+        raw_sources.append(str(data_sources))
+
+    # Auto-detection if no sources specified or empty list passed
+    if not raw_sources:
+        candidates = [
+            "/kaggle/input",
+            "/kaggle/working/data",
+            "/kaggle/working/dataset_all.txt",
+            "/kaggle/working",
+            "output/data",
+            "data",
+            "."
+        ]
+        found_auto = []
+        for cand_str in candidates:
+            cand = Path(cand_str)
+            if cand.is_file() and cand.suffix.lower() in ('.txt', '.epd'):
+                found_auto.append(cand.resolve())
+                break
+            elif cand.is_dir():
+                sub_files = []
+                for ext in ('*.txt', '*.epd', '*.txt.gz'):
+                    sub_files.extend(cand.rglob(ext))
+                filtered = [
+                    f.resolve() for f in sub_files 
+                    if f.is_file() and f.stat().st_size > 0 
+                    and f.name.lower() not in ('requirements.txt', 'baseline.txt', 'cmakelists.txt', 'wac_miss.txt')
+                ]
+                if filtered:
+                    found_auto.extend(filtered)
+                    break
+        if not found_auto:
+            raise FileNotFoundError(
+                "No dataset file specified and none found in auto-detect locations "
+                "(/kaggle/input, /kaggle/working, output/data, data). "
+                "Please specify using --data <path_or_dir>."
+            )
+        raw_sources = found_auto
+
+    files_to_read = []
+    seen_paths = set()
+
+    def add_file(p):
+        rp = Path(p).resolve()
+        if rp.is_file() and rp.stat().st_size > 0 and str(rp) not in seen_paths:
+            if rp.name.lower() in ('requirements.txt', 'baseline.txt', 'cmakelists.txt', 'wac_miss.txt'):
+                return
+            seen_paths.add(str(rp))
+            files_to_read.append(rp)
+
+    for src in raw_sources:
+        src_str = str(src)
+        if any(c in src_str for c in ('*', '?', '[')):
+            matches = glob.glob(src_str, recursive=True)
+            for m in sorted(matches):
+                add_file(m)
+            continue
+
+        p = Path(src_str)
+        if p.is_file():
+            add_file(p)
+        elif p.is_dir():
+            dir_files = []
+            for ext in ('*.txt', '*.epd', '*.txt.gz'):
+                dir_files.extend(p.rglob(ext))
+
+            by_parent = {}
+            for f in dir_files:
+                parent = f.parent.resolve()
+                by_parent.setdefault(parent, []).append(f)
+
+            for parent, flist in by_parent.items():
+                has_all = any(f.name == 'dataset_all.txt' for f in flist)
+                for f in flist:
+                    # In a directory where dataset_all.txt is present, skip chunk_*.txt to prevent duplicate parsing
+                    if has_all and f.name.startswith('chunk_') and f.name.endswith('.txt'):
+                        continue
+                    add_file(f)
+        else:
+            if p.resolve().is_file():
+                add_file(p)
+
+    return sorted(files_to_read, key=lambda x: str(x))
+
+
+def load_dataset(data_path=None, max_samples=None, lambda_wdl=0.5, log_interval=100000):
     """
     Reads dataset file(s) with FEN deduplication and converts to tensor arrays.
-    Supports either a single file (e.g. dataset_all.txt) or a folder containing txt chunks.
+    Supports either single/multiple files, directories (recursively, e.g. /kaggle/input),
+    or automatic discovery.
     """
-    path = Path(data_path)
-    files_to_read = []
-    if path.is_file():
-        files_to_read.append(path)
-    elif path.is_dir():
-        if (path / "dataset_all.txt").is_file():
-            files_to_read.append(path / "dataset_all.txt")
-        else:
-            chunks = sorted(path.glob("chunk_*.txt"))
-            if chunks:
-                files_to_read.extend(chunks)
-            else:
-                txts = sorted(path.glob("*.txt"))
-                if txts:
-                    files_to_read.extend(txts)
+    files_to_read = resolve_dataset_files(data_path)
     if not files_to_read:
         raise FileNotFoundError(f"No valid dataset file(s) found at: {data_path}")
 
     total_bytes = sum(f.stat().st_size for f in files_to_read)
-    print(f"Loading dataset from {len(files_to_read)} file(s) ({total_bytes / (1024*1024):.1f} MB total)...")
+    total_mb = total_bytes / (1024 * 1024)
+    print("=" * 75)
+    print(f"[*] Dataset Discovery: Found {len(files_to_read)} file(s) ({total_mb:.1f} MB total)")
+    for idx, fpath in enumerate(files_to_read, 1):
+        fsize_mb = fpath.stat().st_size / (1024 * 1024)
+        print(f"    [{idx}/{len(files_to_read)}] {fpath} ({fsize_mb:.2f} MB)")
+    print("=" * 75)
 
     # Initial capacity
     cap = max_samples if max_samples is not None and max_samples > 0 else 500000
@@ -226,7 +339,7 @@ def load_dataset(data_path, max_samples=None, lambda_wdl=0.5, log_interval=10000
     start_time = time.time()
 
     for fpath in files_to_read:
-        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+        with open_file_stream(fpath) as f:
             for line in f:
                 total_lines += 1
                 parsed = parse_data_line(line, lambda_wdl=lambda_wdl)
@@ -520,34 +633,9 @@ def train_nnue(args):
         device = torch.device(args.device)
     print(f"Using device: {device}")
 
-    # 2. Find Dataset
-    data_path = args.data
-    if data_path is None:
-        # Default fallback search
-        candidates = [
-            "/kaggle/working/data/dataset_all.txt",
-            "/kaggle/working/data",
-            "data/dataset_all.txt",
-            "data",
-            "output/data/dataset_all.txt",
-            "output/data",
-            "data/selfplay.txt",
-            "output/data/selfplay.txt"
-        ]
-        for c in candidates:
-            if os.path.isfile(c) or (os.path.isdir(c) and any(Path(c).glob("*.txt"))):
-                data_path = c
-                break
-        if data_path is None:
-            raise FileNotFoundError(
-                "No dataset file specified and none found in default paths "
-                "(/kaggle/working/data, data/dataset_all.txt, data). "
-                "Please specify using --data <filepath_or_dir>."
-            )
-
-    # 3. Load & Deduplicate Dataset
+    # 2. Load & Deduplicate Dataset (handles single/multi-file, directories, and auto-detect)
     dataset = load_dataset(
-        data_path,
+        args.data,
         max_samples=args.max_samples,
         lambda_wdl=args.lambda_wdl
     )
@@ -676,10 +764,11 @@ def build_parser():
     )
     parser.add_argument(
         "--data", "-d",
-        type=str,
+        nargs="*",
         default=None,
-        help="Path to training dataset file (format: 'FEN | score | wdl' or pure FEN). "
-             "Defaults to searching output/data/dataset_all.txt."
+        help="Path(s) to training dataset file(s) or directory(ies). "
+             "Supports multiple paths, directories (searched recursively, e.g. /kaggle/input), "
+             "and glob patterns. Defaults to auto-detecting in /kaggle/input or local data/."
     )
     parser.add_argument(
         "--output", "-o",
