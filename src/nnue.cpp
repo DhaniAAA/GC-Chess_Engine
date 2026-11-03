@@ -13,9 +13,9 @@
 
 namespace NNUE {
 
-alignas(32) int16_t featureWeights[768][256];
-alignas(32) int16_t featureBiases[256];
-alignas(32) int16_t outputWeights[512];
+alignas(32) int16_t featureWeights[FEATURE_COUNT][HIDDEN_SIZE];
+alignas(32) int16_t featureBiases[HIDDEN_SIZE];
+alignas(32) int16_t outputWeights[OUTPUT_INPUT_SIZE];
 int32_t outputBias = 0;
 
 static bool networkLoaded = false;
@@ -58,8 +58,8 @@ bool load_eval_file(const std::string& path) {
         return false;
     }
 
-    if (std::memcmp(magic, "GCNNUE01", 8) != 0) {
-        std::cerr << "info string NNUE invalid magic header: expected 'GCNNUE01'" << std::endl;
+    if (std::memcmp(magic, "GCNNUE02", 8) != 0) {
+        std::cerr << "info string NNUE invalid magic header: expected 'GCNNUE02'" << std::endl;
         networkLoaded = false;
         return false;
     }
@@ -109,7 +109,7 @@ void refresh_accumulator(const Board& board, Accumulator& acc) {
         int idxB = feature_index(BLACK, c, pt, sq);
 
 #if defined(__AVX2__)
-        for (int i = 0; i < 256; i += 16) {
+        for (int i = 0; i < HIDDEN_SIZE; i += 16) {
             __m256i aW = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&acc.v[WHITE][i]));
             __m256i wW = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&featureWeights[idxW][i]));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(&acc.v[WHITE][i]), _mm256_add_epi16(aW, wW));
@@ -119,7 +119,7 @@ void refresh_accumulator(const Board& board, Accumulator& acc) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(&acc.v[BLACK][i]), _mm256_add_epi16(aB, wB));
         }
 #else
-        for (int i = 0; i < 256; ++i) {
+        for (int i = 0; i < HIDDEN_SIZE; ++i) {
             acc.v[WHITE][i] += featureWeights[idxW][i];
             acc.v[BLACK][i] += featureWeights[idxB][i];
         }
@@ -131,7 +131,7 @@ static inline void update_single_perspective(int16_t* acc,
                                              const int addedFeatures[], int addedCount,
                                              const int removedFeatures[], int removedCount) {
 #if defined(__AVX2__)
-    for (int i = 0; i < 256; i += 16) {
+    for (int i = 0; i < HIDDEN_SIZE; i += 16) {
         __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&acc[i]));
         for (int r = 0; r < removedCount; ++r) {
             __m256i rw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&featureWeights[removedFeatures[r]][i]));
@@ -144,7 +144,7 @@ static inline void update_single_perspective(int16_t* acc,
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(&acc[i]), v);
     }
 #else
-    for (int i = 0; i < 256; ++i) {
+    for (int i = 0; i < HIDDEN_SIZE; ++i) {
         int32_t val = acc[i];
         for (int r = 0; r < removedCount; ++r) {
             val -= featureWeights[removedFeatures[r]][i];
@@ -224,7 +224,7 @@ static inline int forward_avx2(const int16_t* stmAcc, const int16_t* nstmAcc,
     __m256i qa   = _mm256_set1_epi16(QA);
     __m256i sum  = _mm256_setzero_si256();
 
-    for (int i = 0; i < 256; i += 16) {
+    for (int i = 0; i < HIDDEN_SIZE; i += 16) {
         // STM perspective
         __m256i acc_stm = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&stmAcc[i]));
         __m256i clamped_stm = _mm256_min_epi16(_mm256_max_epi16(acc_stm, zero), qa);
@@ -256,7 +256,7 @@ static inline int forward_scalar(const int16_t* stmAcc, const int16_t* nstmAcc,
                                  const int16_t* stmWeights, const int16_t* nstmWeights,
                                  int32_t bias) {
     int32_t raw = 0;
-    for (int i = 0; i < 256; ++i) {
+    for (int i = 0; i < HIDDEN_SIZE; ++i) {
         int32_t c_stm = std::clamp(static_cast<int32_t>(stmAcc[i]), 0, QA);
         raw += c_stm * c_stm * stmWeights[i];
 
@@ -272,7 +272,7 @@ int evaluate(const Accumulator& acc, Color sideToMove) {
     const int16_t* stmAcc  = acc.v[sideToMove];
     const int16_t* nstmAcc = acc.v[~sideToMove];
     const int16_t* stmWeights  = &outputWeights[0];
-    const int16_t* nstmWeights = &outputWeights[256];
+    const int16_t* nstmWeights = &outputWeights[HIDDEN_SIZE];
 
 #if defined(__AVX2__)
     return forward_avx2(stmAcc, nstmAcc, stmWeights, nstmWeights, outputBias);

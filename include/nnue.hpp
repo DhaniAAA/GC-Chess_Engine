@@ -14,12 +14,14 @@ constexpr int QB = 64;
 constexpr int SCALE = 400;
 
 constexpr int FEATURE_COUNT = 768;
-constexpr int ACCUMULATOR_SIZE = 256;
-constexpr int OUTPUT_WEIGHTS_COUNT = 512;
-constexpr size_t EXPECTED_FILE_SIZE = 394764;
+constexpr int HIDDEN_SIZE = 512;
+constexpr int ACCUMULATOR_SIZE = HIDDEN_SIZE;
+constexpr int OUTPUT_INPUT_SIZE = HIDDEN_SIZE * 2;
+constexpr int OUTPUT_WEIGHTS_COUNT = OUTPUT_INPUT_SIZE;
+constexpr size_t EXPECTED_FILE_SIZE = 789516;
 
 struct alignas(32) Accumulator {
-    alignas(32) int16_t v[2][256];
+    alignas(32) int16_t v[2][HIDDEN_SIZE];
 };
 
 // Feature indexing matching PROJECT.md interface contract:
@@ -37,9 +39,9 @@ inline int feature_index(Color persp, Piece pc, Square sq) {
 }
 
 // Weights storage declarations
-alignas(32) extern int16_t featureWeights[768][256];
-alignas(32) extern int16_t featureBiases[256];
-alignas(32) extern int16_t outputWeights[512];
+alignas(32) extern int16_t featureWeights[FEATURE_COUNT][HIDDEN_SIZE];
+alignas(32) extern int16_t featureBiases[HIDDEN_SIZE];
+alignas(32) extern int16_t outputWeights[OUTPUT_INPUT_SIZE];
 extern int32_t outputBias;
 
 void init();

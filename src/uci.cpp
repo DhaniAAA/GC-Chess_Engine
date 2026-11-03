@@ -287,7 +287,7 @@ void UCIHandler::start_search(const SearchLimits& limits) {
         options.ponderAttempts++;
     }
     searchThread = std::thread([this, limits]() {
-        StateInfo validationHistory[512];
+        static thread_local StateInfo validationHistory[512];
         Board validationBoard;
         validationBoard.copy_with_history(board, validationHistory, 512);
 
@@ -427,7 +427,9 @@ void UCIHandler::cmd_setoption(std::istringstream& is) {
         options.useNNUE = (value == "true");
     } else if (name == "EvalFile") {
         options.evalFile = value;
-        NNUE::load_eval_file(value);
+        if (NNUE::load_eval_file(value)) {
+            board.refresh_accumulator();
+        }
     }
     else if (name == "PawnValueMG") Tuning::PawnValue.mg = std::stoi(value);
     else if (name == "PawnValueEG") Tuning::PawnValue.eg = std::stoi(value);
