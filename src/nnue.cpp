@@ -227,17 +227,35 @@ static inline int forward_avx2(const int16_t* stmAcc, const int16_t* nstmAcc,
     for (int i = 0; i < HIDDEN_SIZE; i += 16) {
         // STM perspective
         __m256i acc_stm = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&stmAcc[i]));
-        __m256i clamped_stm = _mm256_min_epi16(_mm256_max_epi16(acc_stm, zero), qa);
-        __m256i w_stm = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&stmWeights[i]));
-        __m256i prod_stm = _mm256_mullo_epi16(clamped_stm, w_stm);
-        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(clamped_stm, prod_stm));
+        __m256i c_stm   = _mm256_min_epi16(_mm256_max_epi16(acc_stm, zero), qa);
+        __m256i w_stm   = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&stmWeights[i]));
+
+        __m256i c_stm_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c_stm));
+        __m256i c_stm_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c_stm, 1));
+        __m256i w_stm_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w_stm));
+        __m256i w_stm_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w_stm, 1));
+
+        __m256i c2_stm_lo = _mm256_mullo_epi32(c_stm_lo, c_stm_lo);
+        __m256i c2_stm_hi = _mm256_mullo_epi32(c_stm_hi, c_stm_hi);
+
+        sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c2_stm_lo, w_stm_lo));
+        sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c2_stm_hi, w_stm_hi));
 
         // NSTM perspective
         __m256i acc_nstm = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&nstmAcc[i]));
-        __m256i clamped_nstm = _mm256_min_epi16(_mm256_max_epi16(acc_nstm, zero), qa);
-        __m256i w_nstm = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&nstmWeights[i]));
-        __m256i prod_nstm = _mm256_mullo_epi16(clamped_nstm, w_nstm);
-        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(clamped_nstm, prod_nstm));
+        __m256i c_nstm   = _mm256_min_epi16(_mm256_max_epi16(acc_nstm, zero), qa);
+        __m256i w_nstm   = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&nstmWeights[i]));
+
+        __m256i c_nstm_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c_nstm));
+        __m256i c_nstm_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c_nstm, 1));
+        __m256i w_nstm_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w_nstm));
+        __m256i w_nstm_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w_nstm, 1));
+
+        __m256i c2_nstm_lo = _mm256_mullo_epi32(c_nstm_lo, c_nstm_lo);
+        __m256i c2_nstm_hi = _mm256_mullo_epi32(c_nstm_hi, c_nstm_hi);
+
+        sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c2_nstm_lo, w_nstm_lo));
+        sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c2_nstm_hi, w_nstm_hi));
     }
 
     // Horizontal sum of 8x 32-bit integers in sum

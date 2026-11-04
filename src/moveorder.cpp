@@ -358,6 +358,36 @@ void MovePicker::score_quiets() {
     Bitboard enemyNonPawns = board.pieces(them) ^ board.pieces(them, PAWN, KING);
     Bitboard our7thPawns = board.pieces(us, PAWN) & ((us == WHITE) ? RANK_7_BB : RANK_2_BB);
     Bitboard promoBlockSquares = (us == WHITE) ? (our7thPawns << 8) : (our7thPawns >> 8);
+    Bitboard ourAdvPassedZone = EMPTY_BB;
+    Bitboard our67 = EMPTY_BB;
+    if (board.pieces(QUEEN) == 0 && board.pieces(us, KNIGHT) == 0 && popcount(board.pieces(ROOK)) <= 2) {
+        Bitboard our567 = board.pieces(us, PAWN) & ((us == WHITE) ? (RANK_5_BB | RANK_6_BB | RANK_7_BB) : (RANK_4_BB | RANK_3_BB | RANK_2_BB));
+        our67 = our567 & ((us == WHITE) ? (RANK_6_BB | RANK_7_BB) : (RANK_3_BB | RANK_2_BB));
+        if (more_than_one(our567)) {
+            Bitboard tmp67 = our67;
+            while (tmp67) {
+                Square psq = pop_lsb(tmp67);
+                ourAdvPassedZone |= king_attacks_bb(psq);
+            }
+        }
+    }
+    Bitboard ourQueens = board.pieces(us, QUEEN);
+    bool ourQueenThreatened = false;
+    if (ourQueens) {
+        Square qSq = lsb(ourQueens);
+        ourQueenThreatened = (pawn_attacks_bb(us, qSq) & board.pieces(them, PAWN)) ||
+                             (knight_attacks_bb(qSq) & board.pieces(them, KNIGHT)) ||
+                             (bishop_attacks_bb(qSq, occupied) & board.pieces(them, BISHOP)) ||
+                             (rook_attacks_bb(qSq, occupied) & board.pieces(them, ROOK));
+    }
+    Bitboard ourQAttackers = EMPTY_BB;
+    if (enemyQueens) {
+        Square eqSq = lsb(enemyQueens);
+        ourQAttackers = (pawn_attacks_bb(them, eqSq) & board.pieces(us, PAWN)) |
+                        (knight_attacks_bb(eqSq) & board.pieces(us, KNIGHT)) |
+                        (bishop_attacks_bb(eqSq, occupied) & board.pieces(us, BISHOP)) |
+                        (rook_attacks_bb(eqSq, occupied) & board.pieces(us, ROOK));
+    }
 
     const int moveCount = static_cast<int>(moves.size());
 
@@ -380,26 +410,34 @@ void MovePicker::score_quiets() {
         bool discCheck = (enemyKingBlockers & square_bb(from)) && !is_aligned(from, to, enemyKing);
         bool givesCheck = directCheck || discCheck;
         bool discHeavy = false;
-        if (!givesCheck && enemyRooksQueens) {
+        Bitboard backRankMinors = board.pieces(them, KNIGHT, BISHOP) & ((them == BLACK) ? RANK_8_BB : RANK_1_BB);
+        Bitboard discTargets = enemyRooksQueens | backRankMinors;
+        if (!givesCheck && discTargets) {
             Bitboard rAtk = rook_attacks_bb(from, occupied);
             Bitboard friendlyR = rAtk & board.pieces(us, ROOK, QUEEN);
-            Bitboard enemyR = rAtk & enemyRooksQueens;
+            Bitboard enemyR = rAtk & discTargets;
             if (friendlyR && enemyR) {
                 Square fSq = lsb(friendlyR);
-                Square eSq = lsb(enemyR);
-                if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
-                    discHeavy = true;
+                while (enemyR) {
+                    Square eSq = pop_lsb(enemyR);
+                    if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                        discHeavy = true;
+                        break;
+                    }
                 }
             }
             if (!discHeavy) {
                 Bitboard bAtk = bishop_attacks_bb(from, occupied);
                 Bitboard friendlyB = bAtk & board.pieces(us, BISHOP, QUEEN);
-                Bitboard enemyB = bAtk & enemyRooksQueens;
+                Bitboard enemyB = bAtk & discTargets;
                 if (friendlyB && enemyB) {
                     Square fSq = lsb(friendlyB);
-                    Square eSq = lsb(enemyB);
-                    if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
-                        discHeavy = true;
+                    while (enemyB) {
+                        Square eSq = pop_lsb(enemyB);
+                        if (is_aligned(fSq, from, eSq) && !is_aligned(from, to, eSq)) {
+                            discHeavy = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -416,6 +454,10 @@ void MovePicker::score_quiets() {
             mFlags |= FLAG_ATTACKS_KING_ZONE;
             tacticalBonus += 6000;
         }
+        if ((pt == ROOK || !more_than_one(our67)) && (ourAdvPassedZone & square_bb(to))) {
+            mFlags |= FLAG_ATTACKS_KING_ZONE;
+            tacticalBonus += 8000;
+        }
 
         if (givesCheck) {
             mFlags |= FLAG_GIVES_CHECK;
@@ -424,13 +466,19 @@ void MovePicker::score_quiets() {
             Bitboard atk = knight_attacks_bb(to);
             if (atk & (kingZone | enemyRooksQueens)) {
                 mFlags |= FLAG_ATTACKS_KING_ZONE;
-                tacticalBonus += 4500;
+                tacticalBonus += (atk & enemyQueens) ? 6500 : 4500;
+            }
+            if (ourQAttackers && (atk & ourQAttackers)) {
+                tacticalBonus += 5000;
             }
         } else if (pt == PAWN) {
             Bitboard atk = pawn_attacks_bb(us, to);
             if (atk & (kingZone | enemyNonPawns)) {
                 mFlags |= FLAG_ATTACKS_KING_ZONE;
-                tacticalBonus += 4500;
+                tacticalBonus += (atk & enemyQueens) ? 6500 : 4500;
+            }
+            if (ourQAttackers && (atk & ourQAttackers)) {
+                tacticalBonus += 5000;
             }
             Rank r = relative_rank(us, to);
             if (r == RANK_7) {
@@ -442,7 +490,10 @@ void MovePicker::score_quiets() {
             Bitboard atk = bishop_attacks_bb(to, occupied ^ square_bb(from));
             if (atk & (kingZone | enemyRooksQueens)) {
                 mFlags |= FLAG_ATTACKS_KING_ZONE;
-                tacticalBonus += 4500;
+                tacticalBonus += (atk & enemyQueens) ? 6500 : 4500;
+            }
+            if (ourQAttackers && (atk & ourQAttackers)) {
+                tacticalBonus += 5000;
             }
         } else if (pt == ROOK) {
             Bitboard atk = rook_attacks_bb(to, occupied ^ square_bb(from));
@@ -450,11 +501,20 @@ void MovePicker::score_quiets() {
                 mFlags |= FLAG_ATTACKS_KING_ZONE;
                 tacticalBonus += (atk & (kingZone | enemyQueens)) ? 4500 : 3000;
             }
+            if (ourQAttackers && (atk & ourQAttackers)) {
+                tacticalBonus += 5000;
+            }
         } else if (pt == QUEEN) {
             Bitboard atk = queen_attacks_bb(to, occupied ^ square_bb(from));
             if (atk & (kingZone2 | enemyRooksQueens)) {
                 mFlags |= FLAG_ATTACKS_KING_ZONE;
-                tacticalBonus += (atk & (kingZone | enemyQueens)) ? 4500 : 3000;
+                tacticalBonus += (atk & (kingZone | enemyQueens)) ? 6500 : 3500;
+            }
+            if (ourQueenThreatened) {
+                tacticalBonus += 6000;
+            }
+            if (ourQAttackers && (atk & ourQAttackers)) {
+                tacticalBonus += 5000;
             }
         }
 
