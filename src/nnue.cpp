@@ -33,7 +33,23 @@ void init() {
 }
 
 bool load_eval_file(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
+    std::string resolvedPath = path;
+    std::ifstream file(resolvedPath, std::ios::binary);
+    if (!file.is_open()) {
+        const std::string fallbacks[] = {
+            "../" + path,
+            "output/" + path,
+            "../output/" + path
+        };
+        for (const auto& candidate : fallbacks) {
+            file.clear();
+            file.open(candidate, std::ios::binary);
+            if (file.is_open()) {
+                resolvedPath = candidate;
+                break;
+            }
+        }
+    }
     if (!file.is_open()) {
         std::cerr << "info string NNUE file not found or unreadable: " << path << std::endl;
         networkLoaded = false;
@@ -89,7 +105,7 @@ bool load_eval_file(const std::string& path) {
     }
 
     networkLoaded = true;
-    std::cout << "info string NNUE loaded successfully: " << path << std::endl;
+    std::cout << "info string NNUE loaded successfully: " << resolvedPath << std::endl;
     return true;
 }
 
