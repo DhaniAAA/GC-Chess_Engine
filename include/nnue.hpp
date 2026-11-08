@@ -18,7 +18,15 @@ constexpr int HIDDEN_SIZE = 512;
 constexpr int ACCUMULATOR_SIZE = HIDDEN_SIZE;
 constexpr int OUTPUT_INPUT_SIZE = HIDDEN_SIZE * 2;
 constexpr int OUTPUT_WEIGHTS_COUNT = OUTPUT_INPUT_SIZE;
-constexpr size_t EXPECTED_FILE_SIZE = 789516;
+constexpr int OUTPUT_BUCKETS = 8;
+constexpr size_t EXPECTED_FILE_SIZE_V2 = 789516;
+constexpr size_t EXPECTED_FILE_SIZE_V3 = 803880;
+constexpr size_t EXPECTED_FILE_SIZE = EXPECTED_FILE_SIZE_V3;
+
+inline int output_bucket(int pieceCount) {
+    int b = (pieceCount - 1) / 4;
+    return (b < 0) ? 0 : (b > 7 ? 7 : b);
+}
 
 struct alignas(32) Accumulator {
     alignas(32) int16_t v[2][HIDDEN_SIZE];
@@ -41,8 +49,8 @@ inline int feature_index(Color persp, Piece pc, Square sq) {
 // Weights storage declarations
 alignas(32) extern int16_t featureWeights[FEATURE_COUNT][HIDDEN_SIZE];
 alignas(32) extern int16_t featureBiases[HIDDEN_SIZE];
-alignas(32) extern int16_t outputWeights[OUTPUT_INPUT_SIZE];
-extern int32_t outputBias;
+alignas(32) extern int16_t outputWeights[OUTPUT_BUCKETS][OUTPUT_INPUT_SIZE];
+extern int32_t outputBiases[OUTPUT_BUCKETS];
 
 void init();
 bool load_eval_file(const std::string& path);
@@ -75,7 +83,7 @@ void remove_piece(Accumulator& acc, Piece pc, Square sq);
 
 // Forward evaluation
 int evaluate(const Board& board);
-int evaluate(const Accumulator& acc, Color sideToMove);
+int evaluate(const Accumulator& acc, Color sideToMove, int bucket = 7);
 int evaluate(const Board& board, const Accumulator& acc);
 
 // Verification helper

@@ -15,8 +15,8 @@ namespace NNUE {
 
 alignas(32) int16_t featureWeights[FEATURE_COUNT][HIDDEN_SIZE];
 alignas(32) int16_t featureBiases[HIDDEN_SIZE];
-alignas(32) int16_t outputWeights[OUTPUT_INPUT_SIZE];
-int32_t outputBias = 0;
+alignas(32) int16_t outputWeights[OUTPUT_BUCKETS][OUTPUT_INPUT_SIZE];
+int32_t outputBiases[OUTPUT_BUCKETS];
 
 static bool networkLoaded = false;
 
@@ -29,7 +29,7 @@ void init() {
     std::memset(featureWeights, 0, sizeof(featureWeights));
     std::memset(featureBiases, 0, sizeof(featureBiases));
     std::memset(outputWeights, 0, sizeof(outputWeights));
-    outputBias = 0;
+    std::memset(outputBiases, 0, sizeof(outputBiases));
 }
 
 bool load_eval_file(const std::string& path) {
@@ -60,9 +60,10 @@ bool load_eval_file(const std::string& path) {
     std::streampos fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    if (fileSize != static_cast<std::streampos>(EXPECTED_FILE_SIZE)) {
-        std::cerr << "info string NNUE file size mismatch: expected " << EXPECTED_FILE_SIZE
-                  << " bytes, got " << fileSize << " bytes" << std::endl;
+    if (fileSize != static_cast<std::streampos>(EXPECTED_FILE_SIZE_V3) &&
+        fileSize != static_cast<std::streampos>(EXPECTED_FILE_SIZE_V2)) {
+        std::cerr << "info string NNUE file size mismatch: expected " << EXPECTED_FILE_SIZE_V3
+                  << " (v3) or " << EXPECTED_FILE_SIZE_V2 << " (v2) bytes, got " << fileSize << " bytes" << std::endl;
         networkLoaded = false;
         return false;
     }
@@ -74,8 +75,11 @@ bool load_eval_file(const std::string& path) {
         return false;
     }
 
-    if (std::memcmp(magic, "GCNNUE02", 8) != 0) {
-        std::cerr << "info string NNUE invalid magic header: expected 'GCNNUE02'" << std::endl;
+    bool is_v3 = (std::memcmp(magic, "GCNNUE03", 8) == 0);
+    bool is_v2 = (std::memcmp(magic, "GCNNUE02", 8) == 0);
+
+    if (!is_v3 && !is_v2) {
+        std::cerr << "info string NNUE invalid magic header: expected 'GCNNUE03' or 'GCNNUE02'" << std::endl;
         networkLoaded = false;
         return false;
     }
@@ -92,20 +96,40 @@ bool load_eval_file(const std::string& path) {
         return false;
     }
 
-    if (!file.read(reinterpret_cast<char*>(outputWeights), sizeof(outputWeights))) {
-        std::cerr << "info string NNUE failed reading output weights" << std::endl;
-        networkLoaded = false;
-        return false;
-    }
-
-    if (!file.read(reinterpret_cast<char*>(&outputBias), sizeof(outputBias))) {
-        std::cerr << "info string NNUE failed reading output bias" << std::endl;
-        networkLoaded = false;
-        return false;
+    if (is_v3) {
+        if (!file.read(reinterpret_cast<char*>(outputWeights), sizeof(outputWeights))) {
+            std::cerr << "info string NNUE failed reading output weights (v3)" << std::endl;
+            networkLoaded = false;
+            return false;
+        }
+        if (!file.read(reinterpret_cast<char*>(outputBiases), sizeof(outputBiases))) {
+            std::cerr << "info string NNUE failed reading output biases (v3)" << std::endl;
+            networkLoaded = false;
+            return false;
+        }
+    } else {
+        // v2 format: single 1024-weight layer and 1 bias -> broadcast across all 8 buckets
+        int16_t singleOutWeights[OUTPUT_INPUT_SIZE];
+        int32_t singleOutBias = 0;
+        if (!file.read(reinterpret_cast<char*>(singleOutWeights), sizeof(singleOutWeights))) {
+            std::cerr << "info string NNUE failed reading output weights (v2)" << std::endl;
+            networkLoaded = false;
+            return false;
+        }
+        if (!file.read(reinterpret_cast<char*>(&singleOutBias), sizeof(singleOutBias))) {
+            std::cerr << "info string NNUE failed reading output bias (v2)" << std::endl;
+            networkLoaded = false;
+            return false;
+        }
+        for (int b = 0; b < OUTPUT_BUCKETS; ++b) {
+            std::memcpy(outputWeights[b], singleOutWeights, sizeof(singleOutWeights));
+            outputBiases[b] = singleOutBias;
+        }
     }
 
     networkLoaded = true;
-    std::cout << "info string NNUE loaded successfully: " << resolvedPath << std::endl;
+    std::cout << "info string NNUE loaded successfully: " << resolvedPath
+              << " (" << (is_v3 ? "GCNNUE03 8-bucket" : "GCNNUE02 single-bucket") << ")" << std::endl;
     return true;
 }
 
@@ -300,18 +324,21 @@ static inline int forward_scalar(const int16_t* stmAcc, const int16_t* nstmAcc,
     return static_cast<int>(((raw / QA + bias) * SCALE) / (QA * QB));
 }
 
-int evaluate(const Accumulator& acc, Color sideToMove) {
+int evaluate(const Accumulator& acc, Color sideToMove, int bucket) {
     if (!networkLoaded) return 0;
+    if (bucket < 0) bucket = 0;
+    if (bucket >= OUTPUT_BUCKETS) bucket = OUTPUT_BUCKETS - 1;
 
     const int16_t* stmAcc  = acc.v[sideToMove];
     const int16_t* nstmAcc = acc.v[~sideToMove];
-    const int16_t* stmWeights  = &outputWeights[0];
-    const int16_t* nstmWeights = &outputWeights[HIDDEN_SIZE];
+    const int16_t* stmWeights  = &outputWeights[bucket][0];
+    const int16_t* nstmWeights = &outputWeights[bucket][HIDDEN_SIZE];
+    int32_t bias = outputBiases[bucket];
 
 #if defined(__AVX2__)
-    return forward_avx2(stmAcc, nstmAcc, stmWeights, nstmWeights, outputBias);
+    return forward_avx2(stmAcc, nstmAcc, stmWeights, nstmWeights, bias);
 #else
-    return forward_scalar(stmAcc, nstmAcc, stmWeights, nstmWeights, outputBias);
+    return forward_scalar(stmAcc, nstmAcc, stmWeights, nstmWeights, bias);
 #endif
 }
 
@@ -319,11 +346,15 @@ int evaluate(const Board& board) {
     if (!networkLoaded) return 0;
     Accumulator acc;
     refresh_accumulator(board, acc);
-    return evaluate(acc, board.side_to_move());
+    int pieceCount = popcount(board.pieces());
+    int bucket = output_bucket(pieceCount);
+    return evaluate(acc, board.side_to_move(), bucket);
 }
 
 int evaluate(const Board& board, const Accumulator& acc) {
-    return evaluate(acc, board.side_to_move());
+    int pieceCount = popcount(board.pieces());
+    int bucket = output_bucket(pieceCount);
+    return evaluate(acc, board.side_to_move(), bucket);
 }
 
 bool verify_accumulator(const Board& board, const Accumulator& acc) {
