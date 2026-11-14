@@ -562,17 +562,41 @@ void UCIHandler::cmd_d() {
 
 void UCIHandler::cmd_eval() {
     int finalEval = Eval::evaluate(board);
+    if (options.useNNUE && NNUE::is_loaded() && NNUE::network_version() >= 5) {
+        std::cout << "Evaluation Method: 100% Pure GCNNUE05 (RelGeo Dual-Stream + DrawGate)" << std::endl;
+        std::cout << "NNUE Model File  : " << options.evalFile << std::endl;
+        if (!board.is_accumulator_computed()) {
+            const_cast<Board&>(board).refresh_accumulator();
+        }
+        int rawScore = NNUE::evaluate(board, board.accumulator());
+        std::cout << "Raw NNUE Score   : " << rawScore << " cp" << std::endl;
+        std::cout << "Final Evaluation : " << finalEval << " cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+        return;
+    }
+
+    int kpkScore = 0;
+    bool isKnownDraw = Tablebase::EndgameRules::is_known_draw(board);
+    bool isKpk = !isKnownDraw && Tablebase::EndgameRules::eval_kpk(board, kpkScore);
     bool isBareKing = (board.pieces(WHITE) == square_bb(board.king_square(WHITE))) ||
                       (board.pieces(BLACK) == square_bb(board.king_square(BLACK)));
 
-    if (isBareKing) {
-        std::cout << "Evaluation Method: Bare King Endgame Mop-Up (Priority 1)" << std::endl;
+    if (isKnownDraw) {
+        std::cout << "Evaluation Method: Insufficient Material Known Draw" << std::endl;
+        std::cout << "Final Evaluation : 0 cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+    } else if (isKpk) {
+        std::cout << "Evaluation Method: Exact KPK Bitbase" << std::endl;
+        std::cout << "Final Evaluation : " << finalEval << " cp (side to move: "
+                  << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
+    } else if (isBareKing) {
+        std::cout << "Evaluation Method: Bare King Endgame Mop-Up Fallback" << std::endl;
         std::cout << "Final Evaluation: " << finalEval << " cp (side to move: "
                   << (board.side_to_move() == WHITE ? "white" : "black") << ")" << std::endl;
         std::cout << std::endl;
         Eval::print_eval(board);
     } else if (options.useNNUE && NNUE::is_loaded()) {
-        std::cout << "Evaluation Method: NNUE (Perspective SCReLU)" << std::endl;
+        std::cout << "Evaluation Method: Pure NNUE (Perspective SCReLU)" << std::endl;
         std::cout << "NNUE Model File  : " << options.evalFile << std::endl;
         if (!board.is_accumulator_computed()) {
             const_cast<Board&>(board).refresh_accumulator();

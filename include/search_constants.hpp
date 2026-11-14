@@ -84,8 +84,7 @@ constexpr int NULL_MOVE_MIN_DEPTH = 3;
 constexpr int NULL_MOVE_BASE_R = 3;           // Base reduction for NMP (2 tested: -5 WAC, +43% nodes)
 constexpr int NULL_MOVE_DEPTH_DIVISOR = 4;    // R += depth / DIVISOR
 constexpr int NULL_MOVE_EVAL_MARGIN = 200;    // If (eval - beta) > MARGIN, R += 1
-constexpr int NULL_MOVE_VERIFY_DEPTH = 20;    // Restored: prevents zugzwang errors in endgame.
-                                               // 24 was effectively disabled; 20 is practical ceiling.
+constexpr int NULL_MOVE_VERIFY_DEPTH = 11;    // Verify deep null-move cutoffs with NMP disabled in subtree
 
 // ============================================================================
 // Aspiration Window Parameters
@@ -98,7 +97,7 @@ constexpr int ASPIRATION_MIN_DEPTH = 6;
 // IIR (Internal Iterative Reductions) Parameters
 // ============================================================================
 
-constexpr int IIR_MIN_DEPTH = 3;
+constexpr int IIR_MIN_DEPTH = 5;
 constexpr int IIR_REDUCTION = 1;
 constexpr int IIR_PV_REDUCTION = 1;
 constexpr int IIR_CUT_REDUCTION = 1;

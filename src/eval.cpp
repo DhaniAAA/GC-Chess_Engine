@@ -1137,7 +1137,26 @@ int eval_mop_up(const Board& board, Color c, const EvalContext& ctx, int phase) 
     int fileDistFromCenter = std::max(3 - ekFile, ekFile - 4);
     int rankDistFromCenter = std::max(3 - ekRank, ekRank - 4);
     int centerDist = fileDistFromCenter + rankDistFromCenter;
-    int mopUp = centerDist * 45 + (fileDistFromCenter * rankDistFromCenter) * 15;
+    bool isKbnk = enemyBareKing &&
+                  board.pieces(c, PAWN) == 0 &&
+                  board.pieces(c, ROOK, QUEEN) == 0 &&
+                  popcount(board.pieces(c, KNIGHT)) >= 1 &&
+                  popcount(board.pieces(c, BISHOP)) == 1;
+    int mopUp = 0;
+    if (isKbnk) {
+        Square bSq = lsb(board.pieces(c, BISHOP));
+        bool lightBishop = ((file_of(bSq) + rank_of(bSq)) & 1) != 0;
+        // Light-squared bishop forces mate on h1 (7,0) / a8 (0,7); dark-squared on a1 (0,0) / h8 (7,7).
+        int chebCorner = lightBishop
+            ? std::min(std::max(7 - ekFile, ekRank), std::max(ekFile, 7 - ekRank))
+            : std::min(std::max(ekFile, ekRank), std::max(7 - ekFile, 7 - ekRank));
+        int manhCorner = lightBishop
+            ? std::min(ekFile + (7 - ekRank), (7 - ekFile) + ekRank)
+            : std::min(ekFile + ekRank, (7 - ekFile) + (7 - ekRank));
+        mopUp = centerDist * 20 + (7 - chebCorner) * 180 + (7 - manhCorner) * 65;
+    } else {
+        mopUp = centerDist * 45 + (fileDistFromCenter * rankDistFromCenter) * 15;
+    }
 
     // 2. Bring our King close to the enemy King (opposition & mating support)
     // Chebyshev distance is the true number of King moves between the two Kings.
@@ -1168,27 +1187,6 @@ int eval_mop_up(const Board& board, Color c, const EvalContext& ctx, int phase) 
                     mopUp += 20;
                 }
             }
-        }
-
-        // 4. KBN vs K: Drive enemy King to the corner matching our Bishop's color
-        int ourBishops = popcount(board.pieces(c, BISHOP));
-        int ourKnights = popcount(board.pieces(c, KNIGHT));
-        int ourMajors = popcount(board.pieces(c, ROOK, QUEEN));
-        if (ourBishops == 1 && ourKnights >= 1 && ourMajors == 0) {
-            Square bSq = lsb(board.pieces(c, BISHOP));
-            bool lightBishop = ((file_of(bSq) + rank_of(bSq)) % 2) == 1;
-            int distCorner1, distCorner2;
-            if (lightBishop) {
-                // Light corners: A8 (0,7) and H1 (7,0)
-                distCorner1 = ekFile + (7 - ekRank);
-                distCorner2 = (7 - ekFile) + ekRank;
-            } else {
-                // Dark corners: A1 (0,0) and H8 (7,7)
-                distCorner1 = ekFile + ekRank;
-                distCorner2 = (7 - ekFile) + (7 - ekRank);
-            }
-            int minCornerDist = std::min(distCorner1, distCorner2);
-            mopUp += (7 - minCornerDist) * 65;
         }
     }
 
@@ -1276,170 +1274,37 @@ int evaluate(const Board& board, int alpha, int beta) {
     (void)beta;
     PROFILE_SCOPE("Eval::evaluate");
 
-    // Priority 1: Bare King Endgame Mop-Up
-    // Must be retained as top priority to reliably checkmate lone king.
-    if (is_bare_king_endgame(board)) {
-        if (Tablebase::EndgameRules::is_known_draw(board)) {
-            return 0;
+    // 100% Pure NNUE (GCNNUE05): RelGeo + DrawGate handle endgames & rule50 internally
+    if (UCI::options.useNNUE && NNUE::is_loaded() && NNUE::network_version() >= 5) {
+        if (!board.is_accumulator_computed()) {
+            const_cast<Board&>(board).refresh_accumulator();
         }
+        constexpr int TEMPO = 12;
+        return NNUE::evaluate(board, board.accumulator()) + TEMPO;
+    }
+
+    if (Tablebase::EndgameRules::is_known_draw(board)) {
+        return 0;
+    }
+
+    int kpkScore = 0;
+    if (Tablebase::EndgameRules::eval_kpk(board, kpkScore)) {
+        return kpkScore;
+    }
+
+    // Bare King Endgame Mop-Up Fallback (KQK, KRK, KBNK, etc. without Syzygy)
+    if (is_bare_king_endgame(board)) {
         EvalContext ctx;
         int phase = compute_phase(board);
         return evaluate_hce(board, ctx, phase);
     }
 
-    // Priority 2: Perspective NNUE
+    // Primary Evaluation: Pure Perspective NNUE (with top-engine 50-move & OCB scaling)
     if (UCI::options.useNNUE && NNUE::is_loaded()) {
-        if (Tablebase::EndgameRules::is_known_draw(board)) {
-            return 0;
-        }
         if (!board.is_accumulator_computed()) {
             const_cast<Board&>(board).refresh_accumulator();
         }
         int score = NNUE::evaluate(board, board.accumulator());
-        if (board.pieces(QUEEN) == 0) {
-            Bitboard wAdv = board.pieces(WHITE, PAWN) & (RANK_5_BB | RANK_6_BB | RANK_7_BB);
-            Bitboard bAdv = board.pieces(BLACK, PAWN) & (RANK_4_BB | RANK_3_BB | RANK_2_BB);
-            bool wPureKp = (board.pieces(BLACK) == board.pieces(BLACK, PAWN, KING));
-            bool bPureKp = (board.pieces(WHITE) == board.pieces(WHITE, PAWN, KING));
-            if (wAdv | bAdv | wPureKp | bPureKp) {
-                int ppBonus = 0;
-                for (Color c : {WHITE, BLACK}) {
-                    Color enemy = ~c;
-                    bool enemyNoPieces = (c == WHITE) ? wPureKp : bPureKp;
-                    Bitboard adv = (c == WHITE) ? wAdv : bAdv;
-                    Bitboard ourPawns = enemyNoPieces ? board.pieces(c, PAWN) : adv;
-                    if (!ourPawns) continue;
-                    Bitboard theirPawns = board.pieces(enemy, PAWN);
-                    Square enemyKingSq = board.king_square(enemy);
-                    Rank promoRank = (c == WHITE) ? RANK_8 : RANK_1;
-                    Bitboard passedAdv = 0;
-                    Bitboard passed567 = 0;
-                    Bitboard tmp = ourPawns;
-                    int sideBonus = 0;
-                    while (tmp) {
-                        Square sq = pop_lsb(tmp);
-                        if (!(passed_pawn_mask(c, sq) & theirPawns)) {
-                            Rank r = relative_rank(c, sq);
-                            if (r >= RANK_5) {
-                                passed567 |= square_bb(sq);
-                            }
-                            if (r >= RANK_6) {
-                                passedAdv |= square_bb(sq);
-                                Square stopSq = pawn_push(c, sq);
-                                if (r == RANK_7 && board.empty(stopSq)) {
-                                    sideBonus += (board.pieces(ROOK) == 0) ? 380 : 150;
-                                } else if (r == RANK_6 && board.empty(stopSq)) {
-                                    sideBonus += 60;
-                                }
-                            }
-                            if (enemyNoPieces && !(pawn_front_span(c, sq) & board.pieces())) {
-                                int stepsToPromo = std::abs(int(promoRank) - int(rank_of(sq)));
-                                if (stepsToPromo == 6) stepsToPromo = 5;
-                                int effectiveSquares = stepsToPromo + (board.side_to_move() != c ? 1 : 0);
-                                int kingToPromo = std::max(
-                                    std::abs(int(file_of(enemyKingSq)) - int(file_of(sq))),
-                                    std::abs(int(rank_of(enemyKingSq)) - int(promoRank))
-                                );
-                                if (kingToPromo > effectiveSquares) {
-                                    sideBonus += 550 - stepsToPromo * 25;
-                                }
-                            }
-                        }
-                    }
-                    if (passedAdv && board.pieces(c, ROOK) == 0) {
-                        if (more_than_one(passedAdv)) {
-                            Bitboard p = passedAdv;
-                            while (p) {
-                                Square sq = pop_lsb(p);
-                                bool isConnected = (adjacent_files_bb(file_of(sq)) & passed567) != 0;
-                                if (isConnected || board.empty(pawn_push(c, sq))) {
-                                    if (isConnected) {
-                                        sideBonus += (relative_rank(c, sq) == RANK_7) ? 380 : 350;
-                                    } else {
-                                        sideBonus += (relative_rank(c, sq) == RANK_7) ? 280 : 220;
-                                    }
-                                }
-                            }
-                        } else if (more_than_one(passed567)) {
-                            Square sq6 = lsb(passedAdv);
-                            if (adjacent_files_bb(file_of(sq6)) & passed567) {
-                                sideBonus += 320;
-                            }
-                        }
-                    }
-                    if (adv && board.pieces(KNIGHT, BISHOP) == 0 && popcount(board.pieces(c, ROOK)) >= 2 && relative_rank(enemy, enemyKingSq) <= RANK_2) {
-                        Bitboard kRing = king_attacks_bb(enemyKingSq);
-                        Bitboard p6 = adv & ((c == WHITE) ? RANK_6_BB : RANK_3_BB);
-                        while (p6) {
-                            Square psq = pop_lsb(p6);
-                            if (pawn_attacks_bb(c, psq) & kRing) {
-                                Bitboard kFlankFiles = file_bb(file_of(enemyKingSq)) | adjacent_files_bb(file_of(enemyKingSq));
-                                Bitboard openRook = board.pieces(c, ROOK) & kFlankFiles;
-                                while (openRook) {
-                                    Square rsq = pop_lsb(openRook);
-                                    if (!(board.pieces(enemy, PAWN) & file_bb(file_of(rsq)))) {
-                                        sideBonus += 480;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ppBonus += (c == board.side_to_move()) ? sideBonus : -sideBonus;
-                }
-                score += ppBonus;
-            }
-            for (Color c : {WHITE, BLACK}) {
-                Color enemy = ~c;
-                Bitboard rimKnights = board.pieces(c, KNIGHT) & (FILE_A_BB | FILE_H_BB);
-                Bitboard enemyBishops = board.pieces(enemy, BISHOP);
-                if (rimKnights && enemyBishops) {
-                    while (rimKnights) {
-                        Square nSq = pop_lsb(rimKnights);
-                        if (!(pawn_attacks_bb(enemy, nSq) & board.pieces(c, PAWN)) &&
-                            (bishop_attacks_bb(nSq, EMPTY_BB) & enemyBishops)) {
-                            score += (c == board.side_to_move()) ? -90 : 90;
-                        }
-                    }
-                }
-            }
-        }
-        if (board.pieces(QUEEN)) {
-            Bitboard occ = board.pieces();
-            for (Color c : {WHITE, BLACK}) {
-                Bitboard qBB = board.pieces(c, QUEEN) & (FILE_A_BB | FILE_H_BB) & king_attacks_bb(board.king_square(c));
-                if (qBB) {
-                    Square qSq = lsb(qBB);
-                    Bitboard qMoves = queen_attacks_bb(qSq, occ) & ~board.pieces(c);
-                    if (popcount(qMoves) <= 8) {
-                        Color enemy = ~c;
-                        File qf = file_of(qSq);
-                        Bitboard ownHalf = (c == WHITE) ? (RANK_1_BB | RANK_2_BB | RANK_3_BB | RANK_4_BB)
-                                                        : (RANK_5_BB | RANK_6_BB | RANK_7_BB | RANK_8_BB);
-                        Bitboard flankMask = ((qf <= FILE_B) ? (FILE_A_BB | FILE_B_BB) : (FILE_G_BB | FILE_H_BB)) & ownHalf;
-                        Bitboard flankMoves = qMoves & flankMask;
-                        if (flankMoves) {
-                            Bitboard enemyAtk = king_attacks_bb(board.king_square(enemy));
-                            Bitboard ep = board.pieces(enemy, PAWN);
-                            while (ep) enemyAtk |= pawn_attacks_bb(enemy, pop_lsb(ep));
-                            Bitboard en = board.pieces(enemy, KNIGHT);
-                            while (en) enemyAtk |= knight_attacks_bb(pop_lsb(en));
-                            Bitboard eb = board.pieces(enemy, BISHOP);
-                            while (eb) enemyAtk |= bishop_attacks_bb(pop_lsb(eb), occ);
-                            Bitboard er = board.pieces(enemy, ROOK);
-                            while (er) enemyAtk |= rook_attacks_bb(pop_lsb(er), occ);
-                            Bitboard eq = board.pieces(enemy, QUEEN);
-                            while (eq) enemyAtk |= queen_attacks_bb(pop_lsb(eq), occ);
-                            Bitboard defendedEnemy = board.pieces(enemy) & enemyAtk;
-                            Bitboard safeFlank = flankMoves & ~enemyAtk & ~defendedEnemy;
-                            if (!safeFlank && (enemyAtk & (square_bb(qSq) | king_attacks_bb(qSq)))) {
-                                score += (c == board.side_to_move()) ? -380 : 380;
-                            }
-                        }
-                    }
-                }
-            }
-        }
         int scale = Tablebase::EndgameRules::scale_factor(board);
         if (scale != 128) {
             score = (score * scale) / 128;
@@ -1448,7 +1313,7 @@ int evaluate(const Board& board, int alpha, int beta) {
         return score + TEMPO;
     }
 
-    // Priority 3: Fallback HCE
+    // Fallback HCE (when UseNNUE is disabled or weights not loaded)
     EvalContext ctx;
     int phase = compute_phase(board);
     return evaluate_hce(board, ctx, phase);

@@ -97,6 +97,10 @@ private:
 extern Tablebases TB;
 
 namespace EndgameRules {
+void init_kpk();
+bool probe_kpk(const Board& board);
+bool eval_kpk(const Board& board, int& outScore);
+
 inline bool is_known_draw(const Board& board) {
     int whitePawns = popcount(board.pieces(WHITE, PAWN));
     int blackPawns = popcount(board.pieces(BLACK, PAWN));
@@ -146,11 +150,40 @@ inline bool is_known_draw(const Board& board) {
 }
 
 inline int scale_factor(const Board& board) {
-    // The previous implementation scaled down the evaluation if one or both sides
-    // had no pawns, which caused wild score fluctuations in the endgame (e.g., 
-    // a mating net with Q+R vs K would have its score divided by 4). 
-    // It's safer to rely on the base evaluation and `is_known_draw` for accuracy.
-    return 128;
+    int scale = 128;
+
+    // Opposite-colored bishops endgame scaling (pure KB+P vs KB+P)
+    if (board.pieces(KNIGHT) == 0 && board.pieces(ROOK) == 0 && board.pieces(QUEEN) == 0) {
+        int wb = popcount(board.pieces(WHITE, BISHOP));
+        int bb = popcount(board.pieces(BLACK, BISHOP));
+        if (wb == 1 && bb == 1) {
+            Square wsq = lsb(board.pieces(WHITE, BISHOP));
+            Square bsq = lsb(board.pieces(BLACK, BISHOP));
+            bool wLight = ((file_of(wsq) + rank_of(wsq)) & 1) != 0;
+            bool bLight = ((file_of(bsq) + rank_of(bsq)) & 1) != 0;
+            if (wLight != bLight) {
+                int wp = popcount(board.pieces(WHITE, PAWN));
+                int bp = popcount(board.pieces(BLACK, PAWN));
+                int totalP = wp + bp;
+                int diffP = std::abs(wp - bp);
+                if (totalP > 0 && totalP <= 6) {
+                    if (diffP <= 1) {
+                        scale = 64;
+                    } else if (diffP == 2) {
+                        scale = 88;
+                    }
+                }
+            }
+        }
+    }
+
+    // 50-move rule dampening (Stockfish-style): discourage endless shuffling near halfmove 50-100
+    int hmc = board.halfmove_clock();
+    if (hmc >= 16) {
+        scale = std::max(0, (scale * (200 - std::min(100, hmc))) / 200);
+    }
+
+    return scale;
 }
 
 }

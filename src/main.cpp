@@ -2,11 +2,13 @@
 #include "tt.hpp"
 #include "uci.hpp"
 #include "nnue.hpp"
+#include "tablebase.hpp"
 
 void init_engine() {
     // Single canonical init path. Position::init() covers
     // Bitboards/Magics/Zobrist deterministically (same seeds each run).
     Position::init();
+    Tablebase::EndgameRules::init_kpk();
 
     NNUE::init();
     NNUE::load_eval_file(UCI::options.evalFile);

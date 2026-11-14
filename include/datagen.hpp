@@ -12,6 +12,17 @@ struct Config {
     int threads = 1;
     uint64_t nodes = 5000;
     int depth = 0;
+    int minPieces = 5;
+    int maxScore = 3000;
+    int winAdjCp = 1000;
+    int maxPositions = 0;
+    int minOverlay = 0;
+    bool relabel = false;
+    bool staticEval = false;
+    bool stratified = false;
+    bool egDelay = false;
+    std::string inputPath = "";
+    std::string fenFile = "";
     std::string outputPath = "data/selfplay.txt";
 };
 

@@ -259,6 +259,7 @@ private:
     int rootPly;
     std::vector<RootMove> rootMoves;
     int pvIdx;
+    int nmpMinPly = 0;
 
     std::chrono::steady_clock::time_point startTime;
     int baseOptimumTime = 0;
