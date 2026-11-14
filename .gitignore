@@ -34,9 +34,10 @@
 *.app
 
 # Build outputs
-/output/
-output/
+# /output/
+# output/
 /.scopecairn
+.cache/
 /tests
 /scratch
 # ====================================================================
@@ -62,6 +63,7 @@ gmon.out
 *.pgn.gz
 *.epd.tmp
 tuner/*.epd
+!tuner/endgame_seeds.epd
 *_miss.txt
 *.log
 
