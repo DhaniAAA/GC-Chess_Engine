@@ -24,6 +24,7 @@ struct SearchLimits {
     int movestogo = 0;
     bool infinite = false;
     bool ponder = false;
+    bool hasTimeControl = false;
 
     std::vector<Move> searchmoves;
 };

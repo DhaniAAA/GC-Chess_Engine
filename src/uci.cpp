@@ -240,12 +240,15 @@ void UCIHandler::cmd_go(std::istringstream& is) {
     std::string token;
 
     int wtime = 0, btime = 0, winc = 0, binc = 0, movestogo = 0;
+    bool hasClock = false;
 
     while (is >> token) {
         if (token == "wtime") {
             is >> wtime;
+            if (board.side_to_move() == WHITE) hasClock = true;
         } else if (token == "btime") {
             is >> btime;
+            if (board.side_to_move() == BLACK) hasClock = true;
         } else if (token == "winc") {
             is >> winc;
         } else if (token == "binc") {
@@ -268,9 +271,10 @@ void UCIHandler::cmd_go(std::istringstream& is) {
     Color us = board.side_to_move();
     int timeLeft = (us == WHITE) ? wtime : btime;
     int increment = (us == WHITE) ? winc : binc;
-    if (timeLeft > 0 && !limits.infinite && limits.movetime == 0) {
-        limits.time[us] = timeLeft;
-        limits.inc[us] = increment;
+    if (hasClock && !limits.infinite && limits.movetime == 0) {
+        limits.hasTimeControl = true;
+        limits.time[us] = std::max(0, timeLeft);
+        limits.inc[us] = std::max(0, increment);
         limits.movestogo = movestogo;
     }
 

@@ -647,8 +647,8 @@ void extract_relgeo_features(const Board& board, int* outIndices, int& outCount)
     // 5. Halfmove Clock Thermometer [2607..2618]
     static constexpr int HMC_THRESH[12] = {8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96};
     int hmc = board.halfmove_clock();
-    for (int k = 0; k < 12; ++k) {
-        if (hmc >= HMC_THRESH[k]) {
+    if (hmc >= 8) {
+        for (int k = 0; k < 12 && hmc >= HMC_THRESH[k]; ++k) {
             outIndices[n++] = 2607 + k;
         }
     }
@@ -714,6 +714,135 @@ static int evaluate_v5(const Board& board, const Accumulator& acc) {
     // Pack 1024 CP-HG (Stream A) + 128 RelGeo (Stream B) scaled to [0, QA]
     alignas(32) int16_t feat1152[MLP_INPUT_SIZE];
 
+#if defined(__AVX2__)
+    const __m256i vZero = _mm256_setzero_si256();
+    const __m256i vQa   = _mm256_set1_epi16(QA);
+    const __m256i vOne  = _mm256_set1_epi16(1);
+
+    // Exact (v / 255) for 0 <= v <= 65025 (unsigned uint16 arithmetic)
+    auto screlu_div_qa = [&](__m256i prod) -> __m256i {
+        return _mm256_srli_epi16(
+            _mm256_add_epi16(_mm256_add_epi16(prod, vOne), _mm256_srli_epi16(prod, 8)), 8);
+    };
+
+    // Zone 1 (0..255)
+    for (int i = 0; i < 256; i += 16) {
+        __m256i s = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&stmAcc[i])), vZero), vQa);
+        __m256i n = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&nstmAcc[i])), vZero), vQa);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[i]),
+                           screlu_div_qa(_mm256_mullo_epi16(s, s)));
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[512 + i]),
+                           screlu_div_qa(_mm256_mullo_epi16(n, n)));
+    }
+    // Zone 2 (256..383)
+    for (int i = 256; i < 384; i += 16) {
+        __m256i s = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&stmAcc[i])), vZero), vQa);
+        __m256i n = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&nstmAcc[i])), vZero), vQa);
+        __m256i diff = _mm256_sub_epi16(s, n);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[i]),
+                           screlu_div_qa(_mm256_mullo_epi16(s, n)));
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[512 + i]),
+                           screlu_div_qa(_mm256_mullo_epi16(diff, diff)));
+    }
+    // Zone 3 (384..511)
+    for (int i = 384; i < 512; i += 16) {
+        __m256i s = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&stmAcc[i])), vZero), vQa);
+        __m256i n = _mm256_min_epi16(_mm256_max_epi16(
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(&nstmAcc[i])), vZero), vQa);
+        __m256i s_nb = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(s, 0xB1), 0xB1);
+        __m256i n_nb = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(n, 0xB1), 0xB1);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[i]),
+                           screlu_div_qa(_mm256_mullo_epi16(s, n_nb)));
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[512 + i]),
+                           screlu_div_qa(_mm256_mullo_epi16(n, s_nb)));
+    }
+
+    // Stream B: Register-resident RelGeo accumulation at leaf
+    int relIdx[64];
+    int relCount = 0;
+    extract_relgeo_features(board, relIdx, relCount);
+
+    __m256i r0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[0]));
+    __m256i r1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[16]));
+    __m256i r2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[32]));
+    __m256i r3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[48]));
+    __m256i r4 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[64]));
+    __m256i r5 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[80]));
+    __m256i r6 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[96]));
+    __m256i r7 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&relBiases[112]));
+    for (int r = 0; r < relCount; ++r) {
+        const __m256i* rw = reinterpret_cast<const __m256i*>(relWeights[relIdx[r]]);
+        r0 = _mm256_add_epi16(r0, _mm256_load_si256(rw + 0));
+        r1 = _mm256_add_epi16(r1, _mm256_load_si256(rw + 1));
+        r2 = _mm256_add_epi16(r2, _mm256_load_si256(rw + 2));
+        r3 = _mm256_add_epi16(r3, _mm256_load_si256(rw + 3));
+        r4 = _mm256_add_epi16(r4, _mm256_load_si256(rw + 4));
+        r5 = _mm256_add_epi16(r5, _mm256_load_si256(rw + 5));
+        r6 = _mm256_add_epi16(r6, _mm256_load_si256(rw + 6));
+        r7 = _mm256_add_epi16(r7, _mm256_load_si256(rw + 7));
+    }
+    auto store_rel = [&](int offset, __m256i v) {
+        __m256i c = _mm256_min_epi16(_mm256_max_epi16(v, vZero), vQa);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(&feat1152[OUTPUT_INPUT_SIZE + offset]),
+                           screlu_div_qa(_mm256_mullo_epi16(c, c)));
+    };
+    store_rel(0, r0);
+    store_rel(16, r1);
+    store_rel(32, r2);
+    store_rel(48, r3);
+    store_rel(64, r4);
+    store_rel(80, r5);
+    store_rel(96, r6);
+    store_rel(112, r7);
+
+    auto hsum_epi32 = [](__m256i s) -> int32_t {
+        __m128i lo = _mm256_castsi256_si128(s);
+        __m128i hi = _mm256_extracti128_si256(s, 1);
+        __m128i h = _mm_add_epi32(lo, hi);
+        h = _mm_hadd_epi32(h, h);
+        h = _mm_hadd_epi32(h, h);
+        return _mm_cvtsi128_si32(h);
+    };
+
+    // Fusion Bottleneck: 4-row tiled AVX2 (1152 -> 32 + SCReLU)
+    alignas(32) int16_t h32[MLP_HIDDEN];
+    for (int k = 0; k < MLP_HIDDEN; k += 4) {
+        __m256i s0 = _mm256_setzero_si256();
+        __m256i s1 = _mm256_setzero_si256();
+        __m256i s2 = _mm256_setzero_si256();
+        __m256i s3 = _mm256_setzero_si256();
+        const int8_t* w0 = mlp1Weights[k];
+        const int8_t* w1 = mlp1Weights[k + 1];
+        const int8_t* w2 = mlp1Weights[k + 2];
+        const int8_t* w3 = mlp1Weights[k + 3];
+        for (int i = 0; i < MLP_INPUT_SIZE; i += 16) {
+            __m256i va = _mm256_load_si256(reinterpret_cast<const __m256i*>(&feat1152[i]));
+            s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(
+                va, _mm256_cvtepi8_epi16(_mm_load_si128(reinterpret_cast<const __m128i*>(&w0[i])))));
+            s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(
+                va, _mm256_cvtepi8_epi16(_mm_load_si128(reinterpret_cast<const __m128i*>(&w1[i])))));
+            s2 = _mm256_add_epi32(s2, _mm256_madd_epi16(
+                va, _mm256_cvtepi8_epi16(_mm_load_si128(reinterpret_cast<const __m128i*>(&w2[i])))));
+            s3 = _mm256_add_epi32(s3, _mm256_madd_epi16(
+                va, _mm256_cvtepi8_epi16(_mm_load_si128(reinterpret_cast<const __m128i*>(&w3[i])))));
+        }
+        int32_t z[4] = {
+            hsum_epi32(s0) + mlp1Biases[k],
+            hsum_epi32(s1) + mlp1Biases[k + 1],
+            hsum_epi32(s2) + mlp1Biases[k + 2],
+            hsum_epi32(s3) + mlp1Biases[k + 3],
+        };
+        for (int r = 0; r < 4; ++r) {
+            int32_t hc = std::clamp(z[r] / QB, 0, QA);
+            h32[k + r] = static_cast<int16_t>((hc * hc) / QA);
+        }
+    }
+#else
     // Zone 1 (0..255)
     for (int i = 0; i < 256; ++i) {
         int32_t s = std::clamp(static_cast<int32_t>(stmAcc[i]), 0, QA);
@@ -748,17 +877,9 @@ static int evaluate_v5(const Board& board, const Accumulator& acc) {
     std::memcpy(relAcc, relBiases, sizeof(relAcc));
     for (int r = 0; r < relCount; ++r) {
         const int16_t* rw = relWeights[relIdx[r]];
-#if defined(__AVX2__)
-        for (int j = 0; j < RELGEO_HIDDEN; j += 16) {
-            __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&relAcc[j]));
-            __m256i w = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&rw[j]));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(&relAcc[j]), _mm256_add_epi16(a, w));
-        }
-#else
         for (int j = 0; j < RELGEO_HIDDEN; ++j) {
             relAcc[j] += rw[j];
         }
-#endif
     }
     for (int j = 0; j < RELGEO_HIDDEN; ++j) {
         int32_t rc = std::clamp(static_cast<int32_t>(relAcc[j]), 0, QA);
@@ -772,15 +893,7 @@ static int evaluate_v5(const Board& board, const Accumulator& acc) {
         int32_t hc = std::clamp(z / QB, 0, QA);
         h32[k] = static_cast<int16_t>((hc * hc) / QA);
     }
-
-    auto eval_bucket = [&](int bucket, int64_t& outV, int64_t& outD) {
-        int64_t skipSum = dot_i16_i16(feat1152, outputWeights[bucket], OUTPUT_INPUT_SIZE);
-        int64_t mlpV = dot_i16_i16(h32, mlpOutVWeights[bucket], MLP_HIDDEN);
-        outV = skipSum + mlpV + static_cast<int64_t>(outputBiases[bucket]);
-
-        int64_t mlpD = dot_i16_i16(h32, mlpOutDWeights[bucket], MLP_HIDDEN);
-        outD = mlpD + static_cast<int64_t>(outDBiases[bucket]);
-    };
+#endif
 
     int pieceCount = popcount(board.pieces());
     int p = std::clamp(pieceCount, 2, 32) - 1;
@@ -788,19 +901,43 @@ static int evaluate_v5(const Board& board, const Accumulator& acc) {
     int rem = p % 4;
     int b1 = std::min(b0 + 1, OUTPUT_BUCKETS - 1);
 
-    int64_t v0 = 0, d0 = 0;
-    eval_bucket(b0, v0, d0);
-
-    int64_t vBlended = v0;
-    int64_t dBlended = d0;
+    int64_t vBlended = 0;
+    int64_t dBlended = 0;
     double denom = static_cast<double>(QA) * static_cast<double>(QB);
 
     if (b0 != b1 && rem != 0) {
-        int64_t v1 = 0, d1 = 0;
-        eval_bucket(b1, v1, d1);
+        int64_t skip0 = 0, skip1 = 0;
+        const int16_t* ow0 = outputWeights[b0];
+        const int16_t* ow1 = outputWeights[b1];
+#if defined(__AVX2__)
+        for (int base = 0; base < OUTPUT_INPUT_SIZE; base += 64) {
+            __m256i s0 = _mm256_setzero_si256();
+            __m256i s1 = _mm256_setzero_si256();
+            for (int i = base; i < base + 64; i += 16) {
+                __m256i va = _mm256_load_si256(reinterpret_cast<const __m256i*>(&feat1152[i]));
+                s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(
+                    va, _mm256_load_si256(reinterpret_cast<const __m256i*>(&ow0[i]))));
+                s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(
+                    va, _mm256_load_si256(reinterpret_cast<const __m256i*>(&ow1[i]))));
+            }
+            skip0 += static_cast<int64_t>(hsum_epi32(s0));
+            skip1 += static_cast<int64_t>(hsum_epi32(s1));
+        }
+#else
+        skip0 = dot_i16_i16(feat1152, ow0, OUTPUT_INPUT_SIZE);
+        skip1 = dot_i16_i16(feat1152, ow1, OUTPUT_INPUT_SIZE);
+#endif
+        int64_t v0 = skip0 + dot_i16_i16(h32, mlpOutVWeights[b0], MLP_HIDDEN) + static_cast<int64_t>(outputBiases[b0]);
+        int64_t d0 = dot_i16_i16(h32, mlpOutDWeights[b0], MLP_HIDDEN) + static_cast<int64_t>(outDBiases[b0]);
+        int64_t v1 = skip1 + dot_i16_i16(h32, mlpOutVWeights[b1], MLP_HIDDEN) + static_cast<int64_t>(outputBiases[b1]);
+        int64_t d1 = dot_i16_i16(h32, mlpOutDWeights[b1], MLP_HIDDEN) + static_cast<int64_t>(outDBiases[b1]);
         vBlended = v0 * (4 - rem) + v1 * rem;
         dBlended = d0 * (4 - rem) + d1 * rem;
         denom *= 4.0;
+    } else {
+        int64_t skip0 = dot_i16_i16(feat1152, outputWeights[b0], OUTPUT_INPUT_SIZE);
+        vBlended = skip0 + dot_i16_i16(h32, mlpOutVWeights[b0], MLP_HIDDEN) + static_cast<int64_t>(outputBiases[b0]);
+        dBlended = dot_i16_i16(h32, mlpOutDWeights[b0], MLP_HIDDEN) + static_cast<int64_t>(outDBiases[b0]);
     }
 
     double vCp = (static_cast<double>(vBlended) * SCALE) / denom;

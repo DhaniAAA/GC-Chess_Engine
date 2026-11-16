@@ -175,7 +175,6 @@ void Search::start(Board& board, const SearchLimits& lim) {
 
 void Search::on_ponderhit() {
     isPondering = false;
-    limits.ponder = false;
     startTime = std::chrono::steady_clock::now();
 }
 
@@ -195,7 +194,7 @@ void Search::init_time_management(Color us) {
         return;
     }
 
-    if (limits.time[us] == 0) {
+    if (!limits.hasTimeControl) {
         optimumTime = 1000000;
         maximumTime = 1000000;
         baseOptimumTime = optimumTime;
@@ -204,45 +203,45 @@ void Search::init_time_management(Color us) {
 
     int time_left = limits.time[us];
     int inc = limits.inc[us];
-    int moves_to_go = limits.movestogo > 0 ? limits.movestogo : 30;
-
     int safeTime = std::max(1, time_left - moveOverhead);
 
-    if (time_left < 500) {
-
+    if (time_left <= 0 || safeTime <= 10) {
         emergencyMode = true;
-        optimumTime = std::max(5, time_left / 20);
-        maximumTime = std::max(10, time_left / 10);
-        baseOptimumTime = optimumTime;
-        return;
-    } else if (time_left < 2000) {
-        emergencyMode = true;
-        optimumTime = std::max(20, time_left / 15 + inc / 2);
-        maximumTime = std::max(50, time_left / 8 + inc / 2);
-        baseOptimumTime = optimumTime;
-        return;
-    } else if (time_left < 5000) {
-        emergencyMode = false;
-        optimumTime = time_left / 12 + inc * 2 / 3;
-        maximumTime = time_left / 6 + inc;
-
-        optimumTime = std::min(optimumTime, safeTime - 100);
-        maximumTime = std::min(maximumTime, safeTime - 50);
-
-        optimumTime = std::max(optimumTime, 30);
-        maximumTime = std::max(maximumTime, 60);
+        optimumTime = 1;
+        maximumTime = std::min(safeTime, 5);
         baseOptimumTime = optimumTime;
         return;
     }
 
+    if (time_left < 500) {
+        emergencyMode = true;
+        optimumTime = std::clamp(safeTime / 18, 1, safeTime);
+        maximumTime = std::clamp(safeTime / 8, optimumTime, safeTime);
+        baseOptimumTime = optimumTime;
+        return;
+    } else if (time_left < 2000) {
+        emergencyMode = true;
+        optimumTime = std::clamp(safeTime / 16 + inc / 2, 1, safeTime);
+        maximumTime = std::clamp(safeTime / 7 + inc / 2, optimumTime, safeTime);
+        baseOptimumTime = optimumTime;
+        return;
+    } else if (time_left < 5000) {
+        emergencyMode = false;
+        optimumTime = std::clamp(safeTime / 16 + inc * 2 / 3, 1, std::max(1, safeTime - 50));
+        maximumTime = std::clamp(safeTime / 7 + inc, optimumTime, std::max(1, safeTime - 25));
+        baseOptimumTime = optimumTime;
+        return;
+    }
+
+    int moves_to_go = limits.movestogo > 0 ? limits.movestogo : (inc > 0 ? 34 : 44);
     optimumTime = safeTime / moves_to_go + inc * 3 / 4;
-    maximumTime = std::min(safeTime / 3, optimumTime * 5);
+    maximumTime = std::min(safeTime / 4, optimumTime * 3);
 
-    optimumTime = std::min(optimumTime, safeTime - 100);
-    maximumTime = std::min(maximumTime, safeTime - 50);
+    optimumTime = std::min(optimumTime, std::max(1, safeTime - 100));
+    maximumTime = std::min(maximumTime, std::max(1, safeTime - 50));
 
-    optimumTime = std::max(optimumTime, 50);
-    maximumTime = std::max(maximumTime, 100);
+    optimumTime = std::clamp(optimumTime, std::min(50, safeTime), safeTime);
+    maximumTime = std::clamp(maximumTime, optimumTime, safeTime);
     baseOptimumTime = optimumTime;
 }
 
@@ -250,12 +249,11 @@ void Search::check_time() {
     if (stopped) return;
     if (threadId != 0 && !standalone) return;
 
-    if (limits.infinite || limits.ponder || isPondering) return;
+    if (limits.infinite || isPondering) return;
 
     // "go depth N" tanpa clock: hanya batasi oleh node limit (maximumTime
     // sudah di-set 1.000.000 ms oleh init_time_management sebagai safety net).
-    bool depthOnly = limits.depth > 0 && limits.time[WHITE] == 0 &&
-                     limits.time[BLACK] == 0 && limits.movetime == 0;
+    bool depthOnly = limits.depth > 0 && !limits.hasTimeControl && limits.movetime == 0;
 
     U64 totalNodes = (standalone || Threads.thread_count() <= 1) ? searchStats.nodes : Threads.total_nodes();
     if (limits.nodes > 0 && totalNodes >= limits.nodes) {
@@ -558,10 +556,8 @@ void Search::iterative_deepening(Board& board) {
                     failCount++;
                     if (rootDepth >= 11) {
                         beta = (alpha + beta) / 2;
-                        delta += delta;
-                    } else {
-                        delta += delta / 2;
                     }
+                    delta += delta;
 
                     if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         alpha = -VALUE_INFINITE;
@@ -574,11 +570,7 @@ void Search::iterative_deepening(Board& board) {
 
                 } else if (score >= beta) {
                     failCount++;
-                    if (rootDepth >= 11) {
-                        delta += delta;
-                    } else {
-                        delta += delta / 2;
-                    }
+                    delta += delta;
 
                     if (delta > 500 || std::abs(score) >= VALUE_MATE_IN_MAX_PLY) {
                         beta = VALUE_INFINITE;
@@ -872,13 +864,26 @@ void Search::iterative_deepening(Board& board) {
                     stabilityFactor = std::max(stabilityFactor, 0.5);
                     int effectiveOptimum = static_cast<int>(optimumTime * stabilityFactor);
 
-                    const int MIN_DEPTH_FOR_EARLY_STOP = 10;
-                    if (multiPV == 1) {
+                    if (multiPV > 1) {
+                        if (elapsed >= optimumTime) {
+                            break;
+                        }
+                    } else {
                         bool isMateScore = std::abs(score) >= VALUE_MATE_IN_MAX_PLY;
 
-                        if (!isMateScore && rootDepth >= MIN_DEPTH_FOR_EARLY_STOP) {
+                        if (!isMateScore) {
                             bool recentBigChange = (rootDepth - lastBigScoreChange) <= 3;
-                            if (!recentBigChange) {
+
+                            // Hard soft-budget cap: never launch another depth past optimumTime
+                            // regardless of depth < 10 or recent score swings.
+                            int hardSoftCap = failingLow
+                                ? std::min(maximumTime / 2, static_cast<int>(optimumTime * 1.25))
+                                : optimumTime;
+                            if (elapsed >= hardSoftCap) {
+                                break;
+                            }
+
+                            if (rootDepth >= 6 && !recentBigChange) {
                                 if (bestMoveStability >= 5 && pvStability >= 3 && scoreStable &&
                                     elapsed > effectiveOptimum * 0.6) {
                                     break;
@@ -892,36 +897,44 @@ void Search::iterative_deepening(Board& board) {
                                 if (!failingLow && elapsed > effectiveOptimum * 0.85) {
                                     break;
                                 }
-                                if (failingLow && elapsed > optimumTime * 0.95) {
-                                    break;
-                                }
                             }
-                        } else if (isMateScore) {
+                        } else {
                             int matePlies = VALUE_MATE - std::abs(score);
                             int mateIn = (matePlies + 1) / 2;
 
                             if (score > 0 && rootDepth >= std::max(4, matePlies + 2) && bestMoveStability >= 2) {
                                 break;
                             }
-                            if (rootDepth >= MIN_DEPTH_FOR_EARLY_STOP &&
+                            if (rootDepth >= 6 &&
                                 mateIn <= 6 && bestMoveStability >= 3 &&
                                 elapsed > optimumTime * 0.4) {
                                 break;
                             }
+                            if (elapsed >= optimumTime) {
+                                break;
+                            }
                         }
+                    }
+                } else {
+                    auto now = std::chrono::steady_clock::now();
+                    int elapsed = static_cast<int>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
+                    );
+                    if (elapsed >= maximumTime / 2) {
+                        break;
                     }
                 }
 
                 previousRootScore = score;
                 previousRootBestMove = rootBestMove;
             }
-            else if (emergencyMode) {
+            else if (emergencyMode && threadId == 0 && !limits.infinite && !stopped && limits.movetime == 0 && limits.depth == 0) {
                 auto now = std::chrono::steady_clock::now();
                 int elapsed = static_cast<int>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count()
                 );
 
-                if (rootDepth >= 4 && elapsed > optimumTime) {
+                if ((rootDepth >= 4 && elapsed >= optimumTime) || elapsed >= maximumTime / 2) {
                     break;
                 }
 
@@ -948,7 +961,8 @@ int Search::search(Board& board, int alpha, int beta, int depth, bool cutNode) {
 
     TT.prefetch(board.key());
 
-    const U64 nodeMask = (limits.nodes > 0 && limits.nodes < 16384) ? 255 : 16383;
+    const U64 nodeMask = ((limits.nodes > 0 && limits.nodes < 16384) ||
+                          (maximumTime > 0 && maximumTime <= 300)) ? 255 : 1023;
     if (UNLIKELY((searchStats.nodes & nodeMask) == 0)) {
         check_time();
     }
@@ -2223,7 +2237,8 @@ int Search::qsearch(Board& board, int alpha, int beta, int qsDepth, Square recap
     PROFILE_FUNCTION();
     ++searchStats.nodes;
 
-    const U64 nodeMask = (limits.nodes > 0 && limits.nodes < 16384) ? 255 : 16383;
+    const U64 nodeMask = ((limits.nodes > 0 && limits.nodes < 16384) ||
+                          (maximumTime > 0 && maximumTime <= 300)) ? 255 : 1023;
     if (UNLIKELY((searchStats.nodes & nodeMask) == 0)) {
         check_time();
     }

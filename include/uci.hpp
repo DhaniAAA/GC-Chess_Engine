@@ -14,7 +14,7 @@ namespace UCI {
 
 struct EngineOptions {
     int hash = 128;
-    int threads = 2;
+    int threads = 1;
     int multiPV = 1;
     bool ponder = true;
     std::string bookPath = "";
